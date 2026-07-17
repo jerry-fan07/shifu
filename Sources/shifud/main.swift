@@ -21,7 +21,10 @@ if arguments.contains("--version") {
 }
 
 try ShifuPaths.ensureHomeExists()
-let database = try ShifuDatabase(at: ShifuPaths.database)
+let (database, rotated) = try ShifuDatabase.openRotatingOnCorruption(at: ShifuPaths.database)
+if let rotated {
+    log("WARNING: database was corrupt — rotated aside to \(rotated.lastPathComponent), starting fresh")
+}
 let recorder = ObservationRecorder(database: database)
 let exclusions = try Exclusions(database: database)
 let engine = CaptureEngine(recorder: recorder, exclusions: exclusions)

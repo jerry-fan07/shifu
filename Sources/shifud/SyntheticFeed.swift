@@ -40,10 +40,13 @@ enum SyntheticFeed {
         var usage = rusage()
         getrusage(RUSAGE_SELF, &usage)
         let peakRSSMB = Double(usage.ru_maxrss) / 1_048_576  // ru_maxrss is bytes on macOS
+        let cpuSeconds = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1e6
+            + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1e6
 
         print("synthetic-feed: \(count) triggers in \(String(format: "%.2f", elapsed))s "
             + "(\(String(format: "%.0f", Double(count) / max(elapsed, 0.001)))/s), "
             + "\(inserted) inserted, \(refreshed) deduped, "
+            + "cpu \(String(format: "%.2f", cpuSeconds))s, "
             + "peak RSS \(String(format: "%.1f", peakRSSMB)) MB")
     }
 

@@ -25,6 +25,27 @@ public struct ShifuDatabase: Sendable {
         try ShifuDatabase(queue: DatabaseQueue())
     }
 
+    /// Opens the database; on corruption, rotates the damaged files aside and
+    /// starts fresh rather than silently dropping capture (design.md §10).
+    /// Returns the rotated-aside URL when rotation happened.
+    public static func openRotatingOnCorruption(at url: URL) throws -> (ShifuDatabase, rotatedTo: URL?) {
+        do {
+            return (try ShifuDatabase(at: url), nil)
+        } catch {
+            let stamp = Int(Date().timeIntervalSince1970)
+            let aside = url.deletingLastPathComponent()
+                .appendingPathComponent("\(url.lastPathComponent).corrupt-\(stamp)")
+            for suffix in ["", "-wal", "-shm"] {
+                let source = URL(fileURLWithPath: url.path + suffix)
+                if FileManager.default.fileExists(atPath: source.path) {
+                    try? FileManager.default.moveItem(
+                        at: source, to: URL(fileURLWithPath: aside.path + suffix))
+                }
+            }
+            return (try ShifuDatabase(at: url), aside)
+        }
+    }
+
     private init(queue: DatabaseQueue) throws {
         self.queue = queue
         try Self.migrator.migrate(queue)

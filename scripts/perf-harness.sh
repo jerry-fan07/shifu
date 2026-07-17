@@ -8,6 +8,9 @@ FEED_COUNT=5000
 # Budget: a full workday is <2000 real triggers; 5000 in a few seconds is
 # generous headroom. Fail if it takes longer than this many seconds.
 TIME_BUDGET_S=10
+# CPU budget (§3.4): 0.5% of one core over 8h ≈ 144 cpu-seconds for a whole
+# day. 5000 triggers is >2 days of real load; give it 20 cpu-seconds.
+CPU_BUDGET_S=20
 
 # Budgets are measured on the release build — that's what ships.
 cd "$(dirname "$0")/.."
@@ -23,9 +26,14 @@ ELAPSED=$(( $(date +%s) - START ))
 echo "$OUTPUT"
 
 RSS_MB=$(echo "$OUTPUT" | sed -n 's/.*peak RSS \([0-9.]*\) MB.*/\1/p' | cut -d. -f1)
+CPU_S=$(echo "$OUTPUT" | sed -n 's/.*cpu \([0-9.]*\)s.*/\1/p' | cut -d. -f1)
 
-if [ -z "$RSS_MB" ]; then
-    echo "perf-harness: FAIL — could not parse RSS from output"
+if [ -z "$RSS_MB" ] || [ -z "$CPU_S" ]; then
+    echo "perf-harness: FAIL — could not parse RSS/CPU from output"
+    exit 1
+fi
+if [ "$CPU_S" -ge "$CPU_BUDGET_S" ]; then
+    echo "perf-harness: FAIL — ${CPU_S}s CPU over ${CPU_BUDGET_S}s budget"
     exit 1
 fi
 if [ "$RSS_MB" -ge "$RSS_BUDGET_MB" ]; then
@@ -36,4 +44,4 @@ if [ "$ELAPSED" -gt "$TIME_BUDGET_S" ]; then
     echo "perf-harness: FAIL — ${ELAPSED}s over ${TIME_BUDGET_S}s budget for ${FEED_COUNT} triggers"
     exit 1
 fi
-echo "perf-harness: PASS (RSS ${RSS_MB} MB < ${RSS_BUDGET_MB} MB, ${ELAPSED}s ≤ ${TIME_BUDGET_S}s)"
+echo "perf-harness: PASS (RSS ${RSS_MB} MB < ${RSS_BUDGET_MB} MB, cpu ${CPU_S}s < ${CPU_BUDGET_S}s, ${ELAPSED}s ≤ ${TIME_BUDGET_S}s)"

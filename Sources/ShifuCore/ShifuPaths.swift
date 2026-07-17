@@ -21,6 +21,9 @@ public enum ShifuPaths {
     public static var workModeFile: URL { home.appendingPathComponent("work_mode") }
 
     public static func ensureHomeExists() throws {
-        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: home, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]   // owner-only (§8)
+        )
     }
 }

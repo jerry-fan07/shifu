@@ -5,7 +5,8 @@ Read [design.md](design.md) for the spec and [implementation.md](implementation.
 
 ## Build & test
 
-- `make check` — build all targets + unit tests + SwiftLint. Must be green before every commit.
+- `make check` — build all targets + unit tests + SwiftLint + privacy invariants
+  (no network symbols in shifud). Must be green before every commit.
 - `make perf` — perf harness: shifud against a synthetic feed, asserts design.md §3.4 budgets.
   **A perf budget regression blocks like a test failure.**
 - Swift Package workspace; macOS 14+ deployment target, Apple Silicon primary.

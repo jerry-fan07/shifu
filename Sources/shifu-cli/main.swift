@@ -13,6 +13,8 @@ usage: shifu <command>
   resume         resume capture
   work on|off    toggle Work Mode (focus contract with glow nudges)
   review         spaced-repetition session over due vault notes
+  forget last <2h|1d> | app <bundle-id> | all --yes
+                 delete captured data (range, per-app, or everything)
 """
 
 func openDatabase() throws -> ShifuDatabase {
@@ -170,6 +172,46 @@ func commandReview() throws {
     print("done — \(done) reviewed 🎉")
 }
 
+func commandForget(_ arguments: [String]) throws {
+    switch arguments.first {
+    case "all":
+        guard arguments.contains("--yes") else {
+            print("this deletes the database, vault, and digests. Re-run with --yes to confirm.")
+            exit(1)
+        }
+        try DeletionTools.deleteEverything()
+        print("all Shifu data deleted")
+    case "app":
+        guard let bundle = arguments.dropFirst().first else {
+            print("usage: shifu forget app <bundle-id>")
+            exit(1)
+        }
+        let counts = try DeletionTools.purgeApp(database: try openDatabase(), bundleID: bundle)
+        print("purged \(bundle): \(counts.observations) observations, \(counts.activities) activities")
+    case "last":
+        guard let spec = arguments.dropFirst().first, spec.count >= 2,
+              let amount = Double(spec.dropLast()) else {
+            print("usage: shifu forget last <2h|30m|1d>")
+            exit(1)
+        }
+        let unit: TimeInterval
+        switch spec.last {
+        case "m": unit = 60
+        case "h": unit = 3_600
+        case "d": unit = 86_400
+        default:
+            print("unknown unit '\(spec.last!)' — use m, h, or d")
+            exit(1)
+        }
+        let counts = try DeletionTools.forgetRange(
+            database: try openDatabase(),
+            from: Date().addingTimeInterval(-amount * unit), to: Date())
+        print("forgot last \(spec): \(counts.observations) observations, \(counts.activities) activities")
+    default:
+        print("usage: shifu forget last <2h|1d> | app <bundle-id> | all --yes")
+    }
+}
+
 let args = CommandLine.arguments.dropFirst()
 switch args.first {
 case "log":
@@ -183,6 +225,8 @@ case "resume":
     try commandResume()
 case "review":
     try commandReview()
+case "forget":
+    try commandForget(Array(args.dropFirst()))
 case "work":
     switch args.dropFirst().first {
     case "on":

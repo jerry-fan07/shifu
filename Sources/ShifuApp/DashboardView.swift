@@ -2,9 +2,20 @@ import Charts
 import ShifuCore
 import SwiftUI
 
-/// Dashboard (design.md §7): *Time* and *Vault* tabs (Radar arrives Phase 5).
+/// Dashboard (design.md §7): *Time*, *Vault*, and *Radar* tabs.
+/// Shows onboarding instead until the first-run flow completes.
 struct DashboardView: View {
+    @AppStorage("shifu.onboarded") private var onboarded = false
+
     var body: some View {
+        if onboarded {
+            tabs
+        } else {
+            OnboardingView()
+        }
+    }
+
+    private var tabs: some View {
         TabView {
             TimeTabView()
                 .tabItem { Label("Time", systemImage: "chart.bar") }
