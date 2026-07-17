@@ -15,6 +15,7 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var workModeOn = false
     @Published private(set) var inboxNotes: [Note] = []
     @Published private(set) var dueNotes: [Note] = []
+    @Published private(set) var suggestions: [Suggestion] = []
     @Published private(set) var lastError: String?
 
     private var vault: VaultStore { VaultStore(database: try? db()) }
@@ -42,6 +43,7 @@ final class LedgerStore: ObservableObject {
         workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
         inboxNotes = (try? vault.inbox()) ?? []
         dueNotes = (try? vault.due()) ?? []
+        suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         do {
             let start = Calendar.current.startOfDay(for: Date())
             todayTotals = try LedgerBuilder.totals(
@@ -95,6 +97,18 @@ final class LedgerStore: ObservableObject {
 
     func review(_ note: Note, grade: FSRS.Grade) {
         _ = try? vault.review(note, grade: grade)
+        refresh()
+    }
+
+    // MARK: - Radar
+
+    func dismiss(_ suggestion: Suggestion) {
+        if let database = try? db() { try? Radar.dismiss(suggestion, database: database) }
+        refresh()
+    }
+
+    func snooze(_ suggestion: Suggestion) {
+        if let database = try? db() { try? Radar.snooze(suggestion, database: database) }
         refresh()
     }
 

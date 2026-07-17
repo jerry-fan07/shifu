@@ -81,6 +81,32 @@ if let backend {
     }
 }
 
+// Radar: mine patterns weekly (§6.1), or on demand with --radar.
+let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
+if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
+    let mineFrom = nowMs - 14 * 86_400_000
+    let recent = try database.queue.read { db in
+        try Activity
+            .filter(sql: "ended_at > ? AND category != 'private'", arguments: [mineFrom])
+            .order(sql: "started_at")
+            .fetchAll(db)
+    }
+    let patterns = PatternMiner.mine(recent)
+    let inserted = try Radar.upsert(patterns: patterns, database: database)
+    try Settings.set("radar.last_mined", to: String(nowMs), database: database)
+    if !patterns.isEmpty {
+        print("radar: \(patterns.count) patterns mined, \(inserted) new")
+    }
+    if let backend {
+        do {
+            let described = try await Radar.describe(database: database, backend: backend)
+            if described > 0 { print("radar: described \(described) suggestions") }
+        } catch {
+            print("radar describer failed (retries next run): \(error)")
+        }
+    }
+}
+
 // Daily digest at/after the configured hour (default 18:00, §4.3).
 let digestHour = Int((try? Settings.get(Settings.digestHourKey, database: database)) ?? "18") ?? 18
 if Calendar.current.component(.hour, from: Date()) >= digestHour || args.contains("--digest") {

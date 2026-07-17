@@ -10,6 +10,8 @@ struct DashboardView: View {
                 .tabItem { Label("Time", systemImage: "chart.bar") }
             VaultTabView()
                 .tabItem { Label("Vault", systemImage: "tray.full") }
+            RadarTabView()
+                .tabItem { Label("Radar", systemImage: "dot.radiowaves.left.and.right") }
         }
         .frame(minWidth: 680, minHeight: 580)
     }

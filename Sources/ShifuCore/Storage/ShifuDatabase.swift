@@ -114,6 +114,26 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            // Automation suggestions from the pattern miner (design.md §6, §9).
+            try db.create(table: "suggestions") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("created_at", .integer).notNull()
+                t.column("pattern_key", .text).notNull().unique()
+                t.column("kind", .text).notNull()          // ngram | frequent_visit | alternation
+                t.column("evidence", .text).notNull()
+                t.column("occurrences", .integer).notNull()
+                t.column("avg_minutes", .double).notNull()
+                t.column("est_minutes_saved_weekly", .double).notNull()
+                t.column("title", .text)
+                t.column("suggestion", .text)              // LLM description; nil until described
+                t.column("confidence", .double)
+                t.column("status", .text).notNull().defaults(to: "new")
+                t.column("dismissed_at_occurrences", .integer)
+                t.column("snoozed_until", .integer)
+            }
+        }
+
         return migrator
     }
 }

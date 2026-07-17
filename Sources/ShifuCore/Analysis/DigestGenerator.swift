@@ -11,6 +11,8 @@ public enum DigestGenerator {
         var topBlocks: [(label: String, category: Category, ms: Int64)]
         var topics: [String]
         var weekAverages: [Category: Int64]   // per-day average over trailing week
+        var inboxCount: Int = 0               // new knowledge candidates (§5.1)
+        var suggestions: [String] = []        // top radar suggestions (§6.2)
     }
 
     static func render(_ data: DayData) -> String {
@@ -45,6 +47,20 @@ public enum DigestGenerator {
             lines.append("## Topics")
             for topic in data.topics.prefix(8) {
                 lines.append("- \(topic)")
+            }
+        }
+
+        if data.inboxCount > 0 {
+            lines.append("")
+            lines.append("## Vault")
+            lines.append("\(data.inboxCount) new knowledge candidate\(data.inboxCount == 1 ? "" : "s") awaiting triage")
+        }
+
+        if !data.suggestions.isEmpty {
+            lines.append("")
+            lines.append("## Radar")
+            for suggestion in data.suggestions.prefix(3) {
+                lines.append("- \(suggestion)")
             }
         }
         lines.append("")
@@ -99,10 +115,16 @@ public enum DigestGenerator {
 
         guard !totals.isEmpty else { return nil }   // nothing tracked, no digest
 
+        let inboxCount = (try? VaultStore(database: database).inbox().count) ?? 0
+        let suggestionLines = ((try? Radar.active(database: database)) ?? []).prefix(3).map {
+            $0.title ?? $0.evidence
+        }
+
         let markdown = render(DayData(
             date: dayStart, totals: totals,
             topBlocks: topBlocks.map { (label: $0.0, category: $0.1, ms: $0.2) },
-            topics: topics, weekAverages: weekAverages
+            topics: topics, weekAverages: weekAverages,
+            inboxCount: inboxCount, suggestions: Array(suggestionLines)
         ))
         try FileManager.default.createDirectory(at: ShifuPaths.digests, withIntermediateDirectories: true)
         try markdown.write(to: url, atomically: true, encoding: .utf8)
