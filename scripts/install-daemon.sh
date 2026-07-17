@@ -16,9 +16,12 @@ fi
 
 cd "$(dirname "$0")/.."
 swift build -c release --product shifud
-BIN_SRC="$(swift build -c release --show-bin-path)/shifud"
+swift build -c release --product shifu-analyzer
+swift build -c release --product shifu
+BIN_DIR="$(swift build -c release --show-bin-path)"
 mkdir -p "$SHIFU_HOME/bin" "$SHIFU_HOME/logs"
-cp "$BIN_SRC" "$SHIFU_HOME/bin/shifud"
+# shifud spawns shifu-analyzer from its own directory; keep them together.
+cp "$BIN_DIR/shifud" "$BIN_DIR/shifu-analyzer" "$BIN_DIR/shifu" "$SHIFU_HOME/bin/"
 
 mkdir -p "$(dirname "$AGENT_PLIST")"
 sed -e "s|__BIN__|$SHIFU_HOME/bin/shifud|" -e "s|__HOME__|$SHIFU_HOME|" \

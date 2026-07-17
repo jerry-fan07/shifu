@@ -58,6 +58,33 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v2") { db in
+            // Classified activity blocks — the ledger (design.md §4.1, §9).
+            try db.create(table: "activities") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("started_at", .integer).notNull()
+                t.column("ended_at", .integer).notNull()
+                t.column("app_bundle", .text).notNull()
+                t.column("domain", .text)
+                t.column("category", .text).notNull()
+                t.column("topic", .text)
+                t.column("confidence", .double)
+                t.column("source", .text).notNull().defaults(to: "rules")
+                t.column("ambiguous", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "idx_activities_started_at", on: "activities", columns: ["started_at"])
+
+            // User classification overrides (design.md §4.2 tier 1, §9).
+            try db.create(table: "rules") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("kind", .text).notNull()      // "bundle" | "domain"
+                t.column("value", .text).notNull()
+                t.column("category", .text).notNull()
+                t.column("ambiguous", .boolean).notNull().defaults(to: false)
+                t.uniqueKey(["kind", "value"])
+            }
+        }
+
         return migrator
     }
 }

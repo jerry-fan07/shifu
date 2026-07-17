@@ -15,6 +15,8 @@ final class Daemon: NSObject {
 
     private var workspaceObserverInstalled = false
     private var heartbeat: Timer?
+    private var analyzerTimer: Timer?
+    private var analyzerProcess: Process?
     private var axObserver: AXObserver?
     private var observedPid: pid_t?
     private var debounceWork: DispatchWorkItem?
@@ -37,6 +39,7 @@ final class Daemon: NSObject {
             }
         }
         pauseController.startWatching()
+        scheduleAnalyzer()
         if pauseController.isPaused {
             log("starting paused (pause_until is in the future)")
         } else {
@@ -155,6 +158,39 @@ final class Daemon: NSObject {
         }
         debounceWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.titleDebounce, execute: work)
+    }
+
+    // MARK: - Analyzer scheduling (§2.2)
+
+    /// Spawns shifu-analyzer hourly. A separate process so analysis spikes can
+    /// never make the capture path feel heavy; it self-gates on battery.
+    /// Runs even while paused — it only processes already-captured data.
+    private func scheduleAnalyzer() {
+        let timer = Timer(timeInterval: 3_600, repeats: true) { _ in
+            MainActor.assumeIsolated { [weak self] in self?.runAnalyzer() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        analyzerTimer = timer
+    }
+
+    private func runAnalyzer() {
+        if let existing = analyzerProcess, existing.isRunning { return }
+        let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let analyzerURL = selfPath.deletingLastPathComponent()
+            .appendingPathComponent("shifu-analyzer")
+        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else {
+            log("analyzer not found next to shifud (\(analyzerURL.path)) — skipping")
+            return
+        }
+        let process = Process()
+        process.executableURL = analyzerURL
+        process.qualityOfService = .utility
+        do {
+            try process.run()
+            analyzerProcess = process
+        } catch {
+            log("failed to launch analyzer: \(error)")
+        }
     }
 
     // MARK: - Permissions (§10: degrade, don't die)
