@@ -12,6 +12,7 @@ import ShifuCore
 final class LedgerStore: ObservableObject {
     @Published private(set) var todayTotals: [ShifuCore.Category: Int64] = [:]
     @Published private(set) var pausedUntil: Date?
+    @Published private(set) var workModeOn = false
     @Published private(set) var lastError: String?
 
     var isPaused: Bool { pausedUntil.map { $0 > Date() } ?? false }
@@ -34,6 +35,7 @@ final class LedgerStore: ObservableObject {
         } else {
             pausedUntil = nil
         }
+        workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
         do {
             let start = Calendar.current.startOfDay(for: Date())
             todayTotals = try LedgerBuilder.totals(
@@ -70,6 +72,16 @@ final class LedgerStore: ObservableObject {
 
     func resume() {
         try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
+        refresh()
+    }
+
+    func toggleWorkMode() {
+        try? ShifuPaths.ensureHomeExists()
+        if workModeOn {
+            try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+        } else {
+            try? Data().write(to: ShifuPaths.workModeFile)
+        }
         refresh()
     }
 

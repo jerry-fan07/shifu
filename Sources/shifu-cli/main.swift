@@ -11,6 +11,7 @@ usage: shifu <command>
   status         daemon pause state and today's counts
   pause [dur]    pause capture: 30m, 1h (default), 2h, tomorrow
   resume         resume capture
+  work on|off    toggle Work Mode (focus contract with glow nudges)
 """
 
 func openDatabase() throws -> ShifuDatabase {
@@ -81,6 +82,10 @@ func commandStatus() throws {
         print("capture: active (if shifud is running)")
     }
 
+    if FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path) {
+        print("work mode: ON")
+    }
+
     let db = try openDatabase()
     let since = startOfToday()
     let counts = try db.queue.read { sqlite in
@@ -138,6 +143,19 @@ case "pause":
     try commandPause(args.dropFirst().first ?? "1h")
 case "resume":
     try commandResume()
+case "work":
+    switch args.dropFirst().first {
+    case "on":
+        try ShifuPaths.ensureHomeExists()
+        try Data().write(to: ShifuPaths.workModeFile)
+        print("work mode on")
+    case "off":
+        try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+        print("work mode off")
+    default:
+        let on = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
+        print("work mode: \(on ? "ON" : "off")")
+    }
 case "--version":
     print("shifu \(Shifu.version)")
 default:

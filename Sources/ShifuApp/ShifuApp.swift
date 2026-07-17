@@ -14,6 +14,12 @@ struct ShifuApp: App {
 
             Divider()
 
+            Button(store.workModeOn ? "Work Mode: on ✓" : "Work Mode") {
+                store.toggleWorkMode()
+            }
+
+            Divider()
+
             if store.isPaused {
                 Button("Resume capture") { store.resume() }
                 if let until = store.pausedUntil {

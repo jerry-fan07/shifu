@@ -18,6 +18,19 @@ public enum Sessionizer {
         public var excluded: Bool
 
         public var durationMs: Int64 { endedAt - startedAt }
+
+        public init(
+            appBundle: String, domain: String?, startedAt: Int64, endedAt: Int64,
+            observationIDs: [Int64], titles: [String], excluded: Bool
+        ) {
+            self.appBundle = appBundle
+            self.domain = domain
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.observationIDs = observationIDs
+            self.titles = titles
+            self.excluded = excluded
+        }
     }
 
     /// Observations must be sorted by `startedAt` (the analyzer queries them so).

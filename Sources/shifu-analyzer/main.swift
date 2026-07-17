@@ -50,3 +50,29 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + "\(summary.blocksWritten) activities"
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
+
+// Tier-2 LLM pass over ambiguous blocks (§4.2). Backend selection: explicit
+// "claude" opt-in wins; otherwise on-device Foundation Models if the OS has
+// it; otherwise rules-only (nothing to do — §10 fallback).
+let backend: (any LLMBackend)? = try ClaudeBackend.ifConfigured(database: database)
+    ?? FoundationModelsBackend.ifAvailable()
+if let backend {
+    do {
+        let relabeled = try await AmbiguousClassifier.run(
+            database: database, backend: backend, from: from, to: nowMs)
+        if relabeled > 0 {
+            print("llm (\(backend.name)): relabeled \(relabeled) ambiguous blocks")
+        }
+    } catch {
+        // LLM problems never block the ledger (§10); blocks stay queued.
+        print("llm (\(backend.name)) failed, blocks stay queued: \(error)")
+    }
+}
+
+// Daily digest at/after the configured hour (default 18:00, §4.3).
+let digestHour = Int((try? Settings.get(Settings.digestHourKey, database: database)) ?? "18") ?? 18
+if Calendar.current.component(.hour, from: Date()) >= digestHour || args.contains("--digest") {
+    if let url = try DigestGenerator.generate(database: database, force: args.contains("--digest")) {
+        print("digest written: \(url.path)")
+    }
+}

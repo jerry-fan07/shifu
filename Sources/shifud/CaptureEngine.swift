@@ -17,6 +17,10 @@ final class CaptureEngine {
 
     private(set) var lastCaptureAt: Date = .distantPast
 
+    /// Fired after each recorded capture (bundle, url, excluded) — Work Mode
+    /// listens here for its rules-only near-real-time classification (§4.4).
+    var onCapture: ((String, String?, Bool) -> Void)?
+
     init(recorder: ObservationRecorder, exclusions: Exclusions) {
         self.recorder = recorder
         self.exclusions = exclusions
@@ -129,5 +133,6 @@ final class CaptureEngine {
         } catch {
             FileHandle.standardError.write(Data("record failed: \(error)\n".utf8))
         }
+        onCapture?(candidate.appBundle, candidate.url, candidate.captureKind == .excluded)
     }
 }

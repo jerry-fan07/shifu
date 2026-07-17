@@ -85,6 +85,45 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v3") { db in
+            // Key/value settings (design.md §9): analysis backend, digest hour…
+            try db.create(table: "settings") { t in
+                t.primaryKey("key", .text)
+                t.column("value", .text).notNull()
+            }
+            // Work Mode sessions, for adherence stats (design.md §4.4).
+            try db.create(table: "work_mode_sessions") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("started_at", .integer).notNull()
+                t.column("ended_at", .integer)
+            }
+        }
+
         return migrator
+    }
+}
+
+/// Typed access to the `settings` table.
+public enum Settings {
+    /// Analysis backend: "auto" (Foundation Models if available, else rules-only),
+    /// "claude" (opt-in cloud, analyzer-only), "off" (rules-only).
+    public static let analysisBackendKey = "analysis.backend"
+    public static let claudeAPIKeyKey = "claude.api_key"
+    public static let digestHourKey = "digest.hour"
+
+    public static func get(_ key: String, database: ShifuDatabase) throws -> String? {
+        try database.queue.read { db in
+            try String.fetchOne(db, sql: "SELECT value FROM settings WHERE key = ?", arguments: [key])
+        }
+    }
+
+    public static func set(_ key: String, to value: String, database: ShifuDatabase) throws {
+        try database.queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO settings (key, value) VALUES (?, ?) "
+                    + "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                arguments: [key, value]
+            )
+        }
     }
 }
