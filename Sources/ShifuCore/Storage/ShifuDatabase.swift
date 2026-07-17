@@ -9,6 +9,13 @@ public struct ShifuDatabase: Sendable {
     public init(at url: URL) throws {
         var config = Configuration()
         config.qos = .utility
+        config.prepareDatabase { db in
+            // WAL (§3.5): kill -9 mid-write loses at most one observation.
+            // synchronous=NORMAL is the recommended WAL pairing — durable
+            // across app crashes, loses at most the last commit on power loss.
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+        }
         queue = try DatabaseQueue(path: url.path, configuration: config)
         try Self.migrator.migrate(queue)
     }

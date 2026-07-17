@@ -101,6 +101,22 @@ public final class ObservationRecorder {
         return .inserted(id: id)
     }
 
+    /// Bumps `last_seen` of the previous observation for this window without
+    /// recording new content (used when a dHash gate says the screen is
+    /// unchanged). Returns false if there is no previous observation to touch.
+    @discardableResult
+    public func touch(appBundle: String, windowTitle: String?, url: String?, timestamp: Int64) throws -> Bool {
+        let key = WindowKey(appBundle: appBundle, windowTitle: windowTitle, url: url)
+        guard let last = lastByWindow[key] else { return false }
+        try database.queue.write { db in
+            try db.execute(
+                sql: "UPDATE observations SET last_seen = ? WHERE id = ?",
+                arguments: [timestamp, last.id]
+            )
+        }
+        return true
+    }
+
     private func isNearDuplicate(_ a: UInt64?, _ b: UInt64?) -> Bool {
         switch (a, b) {
         case (nil, nil):
