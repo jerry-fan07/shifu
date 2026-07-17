@@ -13,11 +13,11 @@ private func act(_ start: Int64, _ durationMs: Int64, bundle: String = "com.appl
     @Test func findsRecurringNgram() {
         // gmail → sheets → github ritual, 6 times over the window.
         var activities: [Activity] = []
-        var t: Int64 = 0
+        var time: Int64 = 0
         for _ in 0..<6 {
-            activities.append(act(t, 120_000, domain: "gmail.com")); t += 200_000
-            activities.append(act(t, 240_000, domain: "docs.google.com")); t += 300_000
-            activities.append(act(t, 120_000, domain: "github.com")); t += 86_400_000
+            activities.append(act(time, 120_000, domain: "gmail.com")); time += 200_000
+            activities.append(act(time, 240_000, domain: "docs.google.com")); time += 300_000
+            activities.append(act(time, 120_000, domain: "github.com")); time += 86_400_000
         }
         let patterns = PatternMiner.mine(activities)
         let ngram = patterns.first { $0.kind == "ngram" }
@@ -29,10 +29,10 @@ private func act(_ start: Int64, _ durationMs: Int64, bundle: String = "com.appl
     @Test func findsFrequentShortVisits() {
         // A dashboard checked ~12×/day for 30 s over 14 days.
         var activities: [Activity] = []
-        var t: Int64 = 0
+        var time: Int64 = 0
         for _ in 0..<(12 * 14) {
-            activities.append(act(t, 30_000, domain: "grafana.example.com"))
-            t += 7_000_000
+            activities.append(act(time, 30_000, domain: "grafana.example.com"))
+            time += 7_000_000
         }
         let patterns = PatternMiner.mine(activities)
         let freq = patterns.first { $0.kind == "frequent_visit" }
@@ -44,16 +44,16 @@ private func act(_ start: Int64, _ durationMs: Int64, bundle: String = "com.appl
     @Test func findsAlternationRuns() {
         // 4 bouts of rapid sheets↔terminal copying, 6 blocks each.
         var activities: [Activity] = []
-        var t: Int64 = 0
+        var time: Int64 = 0
         for _ in 0..<4 {
             for index in 0..<6 {
                 let domain = index % 2 == 0 ? "docs.google.com" : nil
                 let bundle = index % 2 == 0 ? "com.apple.Safari" : "com.apple.Terminal"
-                activities.append(act(t, 45_000, bundle: bundle, domain: domain))
-                t += 50_000
+                activities.append(act(time, 45_000, bundle: bundle, domain: domain))
+                time += 50_000
             }
-            activities.append(act(t, 600_000, bundle: "com.apple.dt.Xcode"))
-            t += 700_000
+            activities.append(act(time, 600_000, bundle: "com.apple.dt.Xcode"))
+            time += 700_000
         }
         let patterns = PatternMiner.mine(activities)
         let alt = patterns.first { $0.kind == "alternation" }
@@ -65,7 +65,7 @@ private func act(_ start: Int64, _ durationMs: Int64, bundle: String = "com.appl
     @Test func quietDayYieldsNothing() {
         let activities = [
             act(0, 3_600_000, bundle: "com.apple.dt.Xcode"),
-            act(4_000_000, 1_800_000, domain: "github.com"),
+            act(4_000_000, 1_800_000, domain: "github.com")
         ]
         #expect(PatternMiner.mine(activities).isEmpty)
     }

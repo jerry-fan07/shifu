@@ -55,103 +55,103 @@ public struct ShifuDatabase: Sendable {
         var migrator = DatabaseMigrator()
 
         migrator.registerMigration("v1") { db in
-            try db.create(table: "observations") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("started_at", .integer).notNull()
-                t.column("last_seen", .integer).notNull()
-                t.column("app_bundle", .text).notNull()
-                t.column("window_title", .text)
-                t.column("url", .text)
-                t.column("capture_kind", .text).notNull()
-                t.column("text", .text)
-                t.column("text_simhash", .integer)
-                t.column("session_id", .integer)
+            try db.create(table: "observations") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("started_at", .integer).notNull()
+                table.column("last_seen", .integer).notNull()
+                table.column("app_bundle", .text).notNull()
+                table.column("window_title", .text)
+                table.column("url", .text)
+                table.column("capture_kind", .text).notNull()
+                table.column("text", .text)
+                table.column("text_simhash", .integer)
+                table.column("session_id", .integer)
             }
             try db.create(index: "idx_observations_started_at", on: "observations", columns: ["started_at"])
             try db.create(index: "idx_observations_session", on: "observations", columns: ["session_id"])
 
             // User-added exclusions, merged with the hardcoded defaults (§8).
-            try db.create(table: "exclusions") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("kind", .text).notNull()   // "bundle" | "domain"
-                t.column("value", .text).notNull()
-                t.uniqueKey(["kind", "value"])
+            try db.create(table: "exclusions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("kind", .text).notNull()   // "bundle" | "domain"
+                table.column("value", .text).notNull()
+                table.uniqueKey(["kind", "value"])
             }
         }
 
         migrator.registerMigration("v2") { db in
             // Classified activity blocks — the ledger (design.md §4.1, §9).
-            try db.create(table: "activities") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("started_at", .integer).notNull()
-                t.column("ended_at", .integer).notNull()
-                t.column("app_bundle", .text).notNull()
-                t.column("domain", .text)
-                t.column("category", .text).notNull()
-                t.column("topic", .text)
-                t.column("confidence", .double)
-                t.column("source", .text).notNull().defaults(to: "rules")
-                t.column("ambiguous", .boolean).notNull().defaults(to: false)
+            try db.create(table: "activities") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("started_at", .integer).notNull()
+                table.column("ended_at", .integer).notNull()
+                table.column("app_bundle", .text).notNull()
+                table.column("domain", .text)
+                table.column("category", .text).notNull()
+                table.column("topic", .text)
+                table.column("confidence", .double)
+                table.column("source", .text).notNull().defaults(to: "rules")
+                table.column("ambiguous", .boolean).notNull().defaults(to: false)
             }
             try db.create(index: "idx_activities_started_at", on: "activities", columns: ["started_at"])
 
             // User classification overrides (design.md §4.2 tier 1, §9).
-            try db.create(table: "rules") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("kind", .text).notNull()      // "bundle" | "domain"
-                t.column("value", .text).notNull()
-                t.column("category", .text).notNull()
-                t.column("ambiguous", .boolean).notNull().defaults(to: false)
-                t.uniqueKey(["kind", "value"])
+            try db.create(table: "rules") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("kind", .text).notNull()      // "bundle" | "domain"
+                table.column("value", .text).notNull()
+                table.column("category", .text).notNull()
+                table.column("ambiguous", .boolean).notNull().defaults(to: false)
+                table.uniqueKey(["kind", "value"])
             }
         }
 
         migrator.registerMigration("v3") { db in
             // Key/value settings (design.md §9): analysis backend, digest hour…
-            try db.create(table: "settings") { t in
-                t.primaryKey("key", .text)
-                t.column("value", .text).notNull()
+            try db.create(table: "settings") { table in
+                table.primaryKey("key", .text)
+                table.column("value", .text).notNull()
             }
             // Work Mode sessions, for adherence stats (design.md §4.4).
-            try db.create(table: "work_mode_sessions") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("started_at", .integer).notNull()
-                t.column("ended_at", .integer)
+            try db.create(table: "work_mode_sessions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("started_at", .integer).notNull()
+                table.column("ended_at", .integer)
             }
         }
 
         migrator.registerMigration("v4") { db in
             // Review log for later FSRS parameter fitting (design.md §5.2, §9).
-            try db.create(table: "srs_reviews") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("note_id", .text).notNull()
-                t.column("reviewed_at", .integer).notNull()
-                t.column("grade", .integer).notNull()
-                t.column("interval_days", .double)
+            try db.create(table: "srs_reviews") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("note_id", .text).notNull()
+                table.column("reviewed_at", .integer).notNull()
+                table.column("grade", .integer).notNull()
+                table.column("interval_days", .double)
             }
             // High-water mark for knowledge extraction (Phase 4).
-            try db.alter(table: "activities") { t in
-                t.add(column: "extracted", .boolean).notNull().defaults(to: false)
+            try db.alter(table: "activities") { table in
+                table.add(column: "extracted", .boolean).notNull().defaults(to: false)
             }
         }
 
         migrator.registerMigration("v5") { db in
             // Automation suggestions from the pattern miner (design.md §6, §9).
-            try db.create(table: "suggestions") { t in
-                t.autoIncrementedPrimaryKey("id")
-                t.column("created_at", .integer).notNull()
-                t.column("pattern_key", .text).notNull().unique()
-                t.column("kind", .text).notNull()          // ngram | frequent_visit | alternation
-                t.column("evidence", .text).notNull()
-                t.column("occurrences", .integer).notNull()
-                t.column("avg_minutes", .double).notNull()
-                t.column("est_minutes_saved_weekly", .double).notNull()
-                t.column("title", .text)
-                t.column("suggestion", .text)              // LLM description; nil until described
-                t.column("confidence", .double)
-                t.column("status", .text).notNull().defaults(to: "new")
-                t.column("dismissed_at_occurrences", .integer)
-                t.column("snoozed_until", .integer)
+            try db.create(table: "suggestions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("created_at", .integer).notNull()
+                table.column("pattern_key", .text).notNull().unique()
+                table.column("kind", .text).notNull()          // ngram | frequent_visit | alternation
+                table.column("evidence", .text).notNull()
+                table.column("occurrences", .integer).notNull()
+                table.column("avg_minutes", .double).notNull()
+                table.column("est_minutes_saved_weekly", .double).notNull()
+                table.column("title", .text)
+                table.column("suggestion", .text)              // LLM description; nil until described
+                table.column("confidence", .double)
+                table.column("status", .text).notNull().defaults(to: "new")
+                table.column("dismissed_at_occurrences", .integer)
+                table.column("snoozed_until", .integer)
             }
         }
 

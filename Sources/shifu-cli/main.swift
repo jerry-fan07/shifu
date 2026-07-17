@@ -172,6 +172,18 @@ func commandReview() throws {
     print("done — \(done) reviewed 🎉")
 }
 
+func parseForgetRangeSpec(_ spec: String) -> TimeInterval? {
+    guard spec.count >= 2, let amount = Double(spec.dropLast()) else { return nil }
+    let unit: TimeInterval
+    switch spec.last {
+    case "m": unit = 60
+    case "h": unit = 3_600
+    case "d": unit = 86_400
+    default: return nil
+    }
+    return amount * unit
+}
+
 func commandForget(_ arguments: [String]) throws {
     switch arguments.first {
     case "all":
@@ -189,23 +201,14 @@ func commandForget(_ arguments: [String]) throws {
         let counts = try DeletionTools.purgeApp(database: try openDatabase(), bundleID: bundle)
         print("purged \(bundle): \(counts.observations) observations, \(counts.activities) activities")
     case "last":
-        guard let spec = arguments.dropFirst().first, spec.count >= 2,
-              let amount = Double(spec.dropLast()) else {
+        guard let spec = arguments.dropFirst().first,
+              let interval = parseForgetRangeSpec(spec) else {
             print("usage: shifu forget last <2h|30m|1d>")
-            exit(1)
-        }
-        let unit: TimeInterval
-        switch spec.last {
-        case "m": unit = 60
-        case "h": unit = 3_600
-        case "d": unit = 86_400
-        default:
-            print("unknown unit '\(spec.last!)' — use m, h, or d")
             exit(1)
         }
         let counts = try DeletionTools.forgetRange(
             database: try openDatabase(),
-            from: Date().addingTimeInterval(-amount * unit), to: Date())
+            from: Date().addingTimeInterval(-interval), to: Date())
         print("forgot last \(spec): \(counts.observations) observations, \(counts.activities) activities")
     default:
         print("usage: shifu forget last <2h|1d> | app <bundle-id> | all --yes")

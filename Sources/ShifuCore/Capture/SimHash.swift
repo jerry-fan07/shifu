@@ -7,9 +7,9 @@ public enum SimHash {
         var tokenCount = 0
         for token in tokens(of: text) {
             tokenCount += 1
-            let h = fnv1a(token)
+            let tokenHash = fnv1a(token)
             for bit in 0..<64 {
-                votes[bit] += (h >> UInt64(bit)) & 1 == 1 ? 1 : -1
+                votes[bit] += (tokenHash >> UInt64(bit)) & 1 == 1 ? 1 : -1
             }
         }
         guard tokenCount > 0 else { return 0 }
@@ -20,15 +20,15 @@ public enum SimHash {
         return result
     }
 
-    public static func hammingDistance(_ a: UInt64, _ b: UInt64) -> Int {
-        (a ^ b).nonzeroBitCount
+    public static func hammingDistance(_ lhs: UInt64, _ rhs: UInt64) -> Int {
+        (lhs ^ rhs).nonzeroBitCount
     }
 
     /// Near-duplicate threshold: ≤ this many differing bits means "same content".
     public static let nearDuplicateThreshold = 3
 
-    public static func isNearDuplicate(_ a: UInt64, _ b: UInt64) -> Bool {
-        hammingDistance(a, b) <= nearDuplicateThreshold
+    public static func isNearDuplicate(_ lhs: UInt64, _ rhs: UInt64) -> Bool {
+        hammingDistance(lhs, rhs) <= nearDuplicateThreshold
     }
 
     private static func tokens(of text: String) -> [Substring] {

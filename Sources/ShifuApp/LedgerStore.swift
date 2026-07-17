@@ -62,7 +62,7 @@ final class LedgerStore: ObservableObject {
             try Activity
                 .filter(sql: "ended_at > ? AND started_at < ?", arguments: [
                     Int64(from.timeIntervalSince1970 * 1_000),
-                    Int64(to.timeIntervalSince1970 * 1_000),
+                    Int64(to.timeIntervalSince1970 * 1_000)
                 ])
                 .order(sql: "started_at")
                 .fetchAll(sqlite)

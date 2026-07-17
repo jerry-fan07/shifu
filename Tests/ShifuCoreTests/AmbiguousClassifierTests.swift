@@ -40,7 +40,7 @@ private struct MockBackend: LLMBackend {
     @Test func promptListsBlocksAndCategories() {
         let prompt = AmbiguousClassifier.prompt(for: [
             .init(id: 7, appBundle: "com.apple.Safari", domain: "youtube.com",
-                  titles: ["WWDC session"], textSample: "swift concurrency deep dive"),
+                  titles: ["WWDC session"], textSample: "swift concurrency deep dive")
         ])
         #expect(prompt.contains("id=7"))
         #expect(prompt.contains("youtube.com"))
@@ -51,11 +51,11 @@ private struct MockBackend: LLMBackend {
     @Test func runAppliesConfidentVerdictsOnly() async throws {
         let db = try ShifuDatabase.inMemory()
         try await db.queue.write { sqlite in
-            var a = Activity(startedAt: 0, endedAt: 600_000, appBundle: "com.apple.Safari",
-                             domain: "youtube.com", category: .entertainment, ambiguous: true)
-            var b = Activity(startedAt: 700_000, endedAt: 900_000, appBundle: "com.random.app",
-                             category: .unclassified, ambiguous: true)
-            try a.insert(sqlite); try b.insert(sqlite)
+            var activityA = Activity(startedAt: 0, endedAt: 600_000, appBundle: "com.apple.Safari",
+                                     domain: "youtube.com", category: .entertainment, ambiguous: true)
+            var activityB = Activity(startedAt: 700_000, endedAt: 900_000, appBundle: "com.random.app",
+                                     category: .unclassified, ambiguous: true)
+            try activityA.insert(sqlite); try activityB.insert(sqlite)
         }
         let backend = MockBackend(response: """
         [{"id": 1, "category": "learning", "confidence": 0.9, "topic": "wwdc swift talks"},
@@ -81,7 +81,7 @@ private struct MockBackend: LLMBackend {
         let markdown = DigestGenerator.render(.init(
             date: Date(timeIntervalSince1970: 1_752_700_000),
             totals: [.work: 14_400_000, .social: 7_200_000],
-            topBlocks: [(label: "github.com", category: .work, ms: 3_600_000)],
+            topBlocks: [DigestGenerator.TopBlock(label: "github.com", category: .work, ms: 3_600_000)],
             topics: ["debugging shifu daemon"],
             weekAverages: [.work: 14_400_000, .social: 1_800_000]
         ))
@@ -106,9 +106,9 @@ private struct MockBackend: LLMBackend {
         let dayStart = Calendar.current.startOfDay(for: Date())
         let base = Int64(dayStart.timeIntervalSince1970 * 1_000)
         try db.queue.write { sqlite in
-            var a = Activity(startedAt: base + 3_600_000, endedAt: base + 7_200_000,
-                             appBundle: "com.apple.dt.Xcode", category: .work, topic: "shifu phase 3")
-            try a.insert(sqlite)
+            var activity = Activity(startedAt: base + 3_600_000, endedAt: base + 7_200_000,
+                                    appBundle: "com.apple.dt.Xcode", category: .work, topic: "shifu phase 3")
+            try activity.insert(sqlite)
         }
 
         let first = try DigestGenerator.generate(database: db)

@@ -9,6 +9,15 @@ final class CaptureEngine {
     /// fall through to the OCR rung.
     static let axTextFloor = 80
 
+    private struct OCRTarget {
+        let app: NSRunningApplication
+        let bundle: String
+        let title: String?
+        let url: String?
+        let timestamp: Int64
+        let axFallbackText: String
+    }
+
     private let recorder: ObservationRecorder
     private let exclusions: Exclusions
     private let ocr = OCRCapture()
@@ -43,12 +52,12 @@ final class CaptureEngine {
         }
 
         // Metadata via AX (title, URL for browsers).
-        guard let window = AX.focusedWindow(pid: app.processIdentifier) else {
+        guard let window = AXHelper.focusedWindow(pid: app.processIdentifier) else {
             // No AX (permission missing or opaque app): metadata-only rung.
             record(.init(timestamp: now, appBundle: bundle, captureKind: .meta))
             return
         }
-        let title: String? = AX.string(window, kAXTitleAttribute)
+        let title: String? = AXHelper.string(window, kAXTitleAttribute)
 
         var url: String?
         if Browsers.isBrowser(bundle) {
@@ -57,7 +66,7 @@ final class CaptureEngine {
                 record(.init(timestamp: now, appBundle: bundle, captureKind: .excluded))
                 return
             }
-            url = AX.webAreaURL(in: window)
+            url = AXHelper.webAreaURL(in: window)
             if let url, exclusions.isExcluded(url: url) {
                 record(.init(timestamp: now, appBundle: bundle, captureKind: .excluded))
                 return
@@ -65,7 +74,7 @@ final class CaptureEngine {
         }
 
         // Rung 2: AX text extraction.
-        let text = AX.extractText(from: window, byteCap: ObservationRecorder.maxTextBytes)
+        let text = AXHelper.extractText(from: window, byteCap: ObservationRecorder.maxTextBytes)
         if text.count >= Self.axTextFloor {
             record(.init(timestamp: now, appBundle: bundle, windowTitle: title, url: url,
                          captureKind: .ax, text: text))
@@ -73,45 +82,45 @@ final class CaptureEngine {
         }
 
         // Rung 3: screenshot → OCR, gated by dHash change detection.
-        captureViaOCR(app: app, bundle: bundle, title: title, url: url, timestamp: now,
-                      axFallbackText: text)
+        let target = OCRTarget(
+            app: app, bundle: bundle, title: title, url: url,
+            timestamp: now, axFallbackText: text
+        )
+        captureViaOCR(target: target)
     }
 
-    private func captureViaOCR(
-        app: NSRunningApplication, bundle: String, title: String?, url: String?,
-        timestamp: Int64, axFallbackText: String
-    ) {
+    private func captureViaOCR(target: OCRTarget) {
         guard !ocrInFlight else { return }
         ocrInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.ocrInFlight = false }
             do {
-                guard let result = try await self.ocr.captureText(pid: app.processIdentifier) else {
-                    self.recordMetaOrAX(bundle: bundle, title: title, url: url,
-                                        timestamp: timestamp, axText: axFallbackText)
+                guard let result = try await self.ocr.captureText(pid: target.app.processIdentifier) else {
+                    self.recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
+                                        timestamp: target.timestamp, axText: target.axFallbackText)
                     return
                 }
-                let key = "\(bundle)|\(title ?? "")"
+                let key = "\(target.bundle)|\(target.title ?? "")"
                 if let last = self.lastDHashByKey[key], DHash.isUnchanged(last, result.dhash) {
                     // Same screen as last time (e.g. fullscreen video): bump last_seen only.
-                    _ = try? self.recorder.touch(appBundle: bundle, windowTitle: title,
-                                                 url: url, timestamp: timestamp)
+                    _ = try? self.recorder.touch(appBundle: target.bundle, windowTitle: target.title,
+                                                 url: target.url, timestamp: target.timestamp)
                     return
                 }
                 self.lastDHashByKey[key] = result.dhash
                 if result.text.isEmpty {
-                    self.recordMetaOrAX(bundle: bundle, title: title, url: url,
-                                        timestamp: timestamp, axText: axFallbackText)
+                    self.recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
+                                        timestamp: target.timestamp, axText: target.axFallbackText)
                 } else {
-                    self.record(.init(timestamp: timestamp, appBundle: bundle, windowTitle: title,
-                                      url: url, captureKind: .ocr, text: result.text))
+                    self.record(.init(timestamp: target.timestamp, appBundle: target.bundle, windowTitle: target.title,
+                                      url: target.url, captureKind: .ocr, text: result.text))
                 }
             } catch {
                 // Screen Recording permission missing or capture failed:
                 // degrade to metadata/AX rather than dropping the trigger (§10).
-                self.recordMetaOrAX(bundle: bundle, title: title, url: url,
-                                    timestamp: timestamp, axText: axFallbackText)
+                self.recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
+                                    timestamp: target.timestamp, axText: target.axFallbackText)
             }
         }
     }

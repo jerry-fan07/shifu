@@ -19,9 +19,9 @@ import Testing
     }
 
     @Test func differentTextIsNotNearDuplicate() {
-        let a = SimHash.hash("swift concurrency actors sendable isolation runtime")
-        let b = SimHash.hash("formula one qualifying results verstappen hamilton monza")
-        #expect(!SimHash.isNearDuplicate(a, b))
+        let hashA = SimHash.hash("swift concurrency actors sendable isolation runtime")
+        let hashB = SimHash.hash("formula one qualifying results verstappen hamilton monza")
+        #expect(!SimHash.isNearDuplicate(hashA, hashB))
     }
 
     @Test func hammingDistance() {
@@ -54,9 +54,9 @@ import Testing
                 grid.append(UInt8((row * 9 + col) * 2))
             }
         }
-        let a = DHash.hash(luminance: grid)
+        let hashA = DHash.hash(luminance: grid)
         grid[40] = grid[40] &+ 200
-        let b = DHash.hash(luminance: grid)
-        #expect(DHash.isUnchanged(a, b))
+        let hashB = DHash.hash(luminance: grid)
+        #expect(DHash.isUnchanged(hashA, hashB))
     }
 }

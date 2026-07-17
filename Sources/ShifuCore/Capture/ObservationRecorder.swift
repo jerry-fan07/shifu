@@ -117,12 +117,12 @@ public final class ObservationRecorder {
         return true
     }
 
-    private func isNearDuplicate(_ a: UInt64?, _ b: UInt64?) -> Bool {
-        switch (a, b) {
+    private func isNearDuplicate(_ lhs: UInt64?, _ rhs: UInt64?) -> Bool {
+        switch (lhs, rhs) {
         case (nil, nil):
             return true  // both content-free (meta/excluded): same window, just bump last_seen
-        case let (a?, b?):
-            return SimHash.isNearDuplicate(a, b)
+        case let (lhsVal?, rhsVal?):
+            return SimHash.isNearDuplicate(lhsVal, rhsVal)
         default:
             return false
         }

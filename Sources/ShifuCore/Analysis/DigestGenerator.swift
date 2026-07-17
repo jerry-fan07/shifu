@@ -5,10 +5,16 @@ import GRDB
 /// Markdown into `~/Shifu/digests/`; the menu bar app notices new files.
 public enum DigestGenerator {
     /// Pure renderer — testable without a database.
+    public struct TopBlock {
+        public let label: String
+        public let category: Category
+        public let ms: Int64
+    }
+
     struct DayData {
         var date: Date
         var totals: [Category: Int64]
-        var topBlocks: [(label: String, category: Category, ms: Int64)]
+        var topBlocks: [TopBlock]
         var topics: [String]
         var weekAverages: [Category: Int64]   // per-day average over trailing week
         var inboxCount: Int = 0               // new knowledge candidates (§5.1)
@@ -94,16 +100,19 @@ public enum DigestGenerator {
         let weekTotals = try LedgerBuilder.totals(database: database, from: weekStartMs, to: startMs)
         let weekAverages = weekTotals.mapValues { $0 / 7 }
 
-        let (topBlocks, topics) = try database.queue.read { db -> ([(String, Category, Int64)], [String]) in
+        let (topBlocks, topics) = try database.queue.read { db -> ([TopBlock], [String]) in
             let rows = try Activity
                 .filter(sql: "ended_at > ? AND started_at < ?", arguments: [startMs, endMs])
                 .order(sql: "(ended_at - started_at) DESC")
                 .limit(10)
                 .fetchAll(db)
             let blocks = rows.map { activity in
-                (activity.domain ?? activity.appBundle.split(separator: ".").last.map(String.init)
-                    ?? activity.appBundle,
-                 activity.category, activity.durationMs)
+                TopBlock(
+                    label: activity.domain ?? activity.appBundle.split(separator: ".").last.map(String.init)
+                        ?? activity.appBundle,
+                    category: activity.category,
+                    ms: activity.durationMs
+                )
             }
             let topics = try String.fetchAll(db, sql: """
                 SELECT DISTINCT topic FROM activities
@@ -122,7 +131,7 @@ public enum DigestGenerator {
 
         let markdown = render(DayData(
             date: dayStart, totals: totals,
-            topBlocks: topBlocks.map { (label: $0.0, category: $0.1, ms: $0.2) },
+            topBlocks: topBlocks,
             topics: topics, weekAverages: weekAverages,
             inboxCount: inboxCount, suggestions: Array(suggestionLines)
         ))

@@ -29,7 +29,7 @@ public enum Redactor {
              "[REDACTED:SSN]"),
             // Payment card numbers: 13–19 digits, optionally space/dash separated
             (re(#"\b(?:\d[ -]?){12,18}\d\b"#),
-             "[REDACTED:CARD]"),
+             "[REDACTED:CARD]")
         ]
     }()
 

@@ -12,7 +12,7 @@ enum Browsers {
         "com.microsoft.edgemac",
         "com.vivaldi.Vivaldi",
         "com.operasoftware.Opera",
-        "org.chromium.Chromium",
+        "org.chromium.Chromium"
     ]
 
     static func isBrowser(_ bundleID: String) -> Bool {
@@ -21,7 +21,7 @@ enum Browsers {
 
     /// Title-based heuristic; browsers put a marker in private-window titles.
     private static let privateMarkers = [
-        "Private Browsing", "(Incognito)", "(Private)", "InPrivate",
+        "Private Browsing", "(Incognito)", "(Private)", "InPrivate"
     ]
 
     static func isPrivateWindow(title: String?) -> Bool {

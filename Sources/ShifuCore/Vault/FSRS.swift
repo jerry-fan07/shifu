@@ -28,9 +28,9 @@ public enum FSRS {
     }
 
     // FSRS-4.5 default weights.
-    static let w: [Double] = [
+    static let weights: [Double] = [
         0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975, 0.031,
-        1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587, 0.2272, 2.8755,
+        1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587, 0.2272, 2.8755
     ]
     static let decay = -0.5
     static let factor = pow(0.9, 1 / decay) - 1   // ≈ 0.2346 so interval(R=0.9) = stability
@@ -45,8 +45,8 @@ public enum FSRS {
 
         if state.reps == 0 || state.stability <= 0 {
             // First review: seed from initial-stability/difficulty weights.
-            next.stability = w[grade.rawValue - 1]
-            next.difficulty = clampDifficulty(w[4] - Double(grade.rawValue - 3) * w[5])
+            next.stability = weights[grade.rawValue - 1]
+            next.difficulty = clampDifficulty(weights[4] - Double(grade.rawValue - 3) * weights[5])
         } else {
             let elapsed = max(0, now.timeIntervalSince(state.lastReview ?? now) / 86_400)
             let retrievability = pow(1 + factor * elapsed / state.stability, decay)
@@ -74,28 +74,28 @@ public enum FSRS {
     }
 
     static func nextDifficulty(_ difficulty: Double, grade: Grade) -> Double {
-        let d0easy = clampDifficulty(w[4] - 1 * w[5])   // D0(4), mean-reversion target
-        let updated = difficulty - w[6] * Double(grade.rawValue - 3)
-        return clampDifficulty(w[7] * d0easy + (1 - w[7]) * updated)
+        let d0easy = clampDifficulty(weights[4] - 1 * weights[5])   // D0(4), mean-reversion target
+        let updated = difficulty - weights[6] * Double(grade.rawValue - 3)
+        return clampDifficulty(weights[7] * d0easy + (1 - weights[7]) * updated)
     }
 
     static func recallStability(
         difficulty: Double, stability: Double, retrievability: Double, grade: Grade
     ) -> Double {
-        let hardPenalty = grade == .hard ? w[15] : 1
-        let easyBonus = grade == .easy ? w[16] : 1
-        let growth = exp(w[8]) * (11 - difficulty) * pow(stability, -w[9])
-            * (exp(w[10] * (1 - retrievability)) - 1) * hardPenalty * easyBonus
+        let hardPenalty = grade == .hard ? weights[15] : 1
+        let easyBonus = grade == .easy ? weights[16] : 1
+        let growth = exp(weights[8]) * (11 - difficulty) * pow(stability, -weights[9])
+            * (exp(weights[10] * (1 - retrievability)) - 1) * hardPenalty * easyBonus
         return stability * (1 + growth)
     }
 
     static func forgetStability(
         difficulty: Double, stability: Double, retrievability: Double
     ) -> Double {
-        let s = w[11] * pow(difficulty, -w[12]) * (pow(stability + 1, w[13]) - 1)
-            * exp(w[14] * (1 - retrievability))
-        return min(s, stability)
+        let forgottenStability = weights[11] * pow(difficulty, -weights[12]) * (pow(stability + 1, weights[13]) - 1)
+            * exp(weights[14] * (1 - retrievability))
+        return min(forgottenStability, stability)
     }
 
-    static func clampDifficulty(_ d: Double) -> Double { min(10, max(1, d)) }
+    static func clampDifficulty(_ val: Double) -> Double { min(10, max(1, val)) }
 }

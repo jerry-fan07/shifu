@@ -143,7 +143,7 @@ public enum Radar {
             "Confidence 0-1 that automation is genuinely worthwhile. Be honest — mark",
             "patterns that are probably fine as manual habits with low confidence.",
             "",
-            "Patterns:",
+            "Patterns:"
         ]
         for item in pending {
             guard let id = item.id else { continue }
@@ -153,7 +153,14 @@ public enum Radar {
         return lines.joined(separator: "\n")
     }
 
-    static func parseDescriptions(_ response: String) -> [(id: Int64, title: String, suggestion: String, confidence: Double)] {
+    struct ParsedDescription {
+        let id: Int64
+        let title: String
+        let suggestion: String
+        let confidence: Double
+    }
+
+    static func parseDescriptions(_ response: String) -> [ParsedDescription] {
         guard let start = response.firstIndex(of: "["),
               let end = response.lastIndex(of: "]"), start < end,
               let data = String(response[start...end]).data(using: .utf8),
@@ -165,7 +172,7 @@ public enum Radar {
                   let suggestion = obj["suggestion"] as? String,
                   let confidence = (obj["confidence"] as? NSNumber)?.doubleValue
             else { return nil }
-            return (id, title, suggestion, confidence)
+            return ParsedDescription(id: id, title: title, suggestion: suggestion, confidence: confidence)
         }
     }
 

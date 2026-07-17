@@ -16,20 +16,20 @@ enum SyntheticFeed {
             ("com.apple.Safari", "ScreenCaptureKit | Apple Developer"),
             ("com.googlecode.iterm2", "zsh — ~/code/shifu"),
             ("com.tinyspeck.slackmacgap", "#eng-infra — Slack"),
-            ("com.spotify.client", "Spotify"),
+            ("com.spotify.client", "Spotify")
         ]
 
         let start = Date()
         var inserted = 0
         var refreshed = 0
-        for i in 0..<count {
-            let (bundle, title) = apps[i % apps.count]
+        for index in 0..<count {
+            let (bundle, title) = apps[index % apps.count]
             // Every third trigger repeats the previous screen (dedupe path);
             // others get fresh content of realistic size (~2 KB).
-            let page = (i % 3 == 0) ? i - 1 : i
+            let page = (index % 3 == 0) ? index - 1 : index
             let text = Self.syntheticText(seed: page / apps.count, bundle: bundle)
             let outcome = try recorder.record(.init(
-                timestamp: Int64(1_700_000_000_000) + Int64(i) * 30_000,
+                timestamp: Int64(1_700_000_000_000) + Int64(index) * 30_000,
                 appBundle: bundle, windowTitle: title,
                 captureKind: .ax, text: text
             ))

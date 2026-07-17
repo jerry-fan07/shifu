@@ -68,7 +68,8 @@ public enum PatternMiner {
             return Pattern(
                 key: "freq:\(key)",
                 kind: "frequent_visit",
-                evidence: "\(key) visited \(stat.count)× (\(Int(perDay))/day), avg \(String(format: "%.1f", avgMinutes)) min",
+                evidence: "\(key) visited \(stat.count)× (\(Int(perDay))/day), "
+                    + "avg \(String(format: "%.1f", avgMinutes)) min",
                 occurrences: stat.count,
                 avgMinutes: avgMinutes,
                 estMinutesSavedWeekly: perDay * 7 * max(avgMinutes, 0.25)
@@ -82,9 +83,9 @@ public enum PatternMiner {
         var runs: [String: (count: Int, totalMs: Int64)] = [:]
         var index = 0
         while index + 3 < sorted.count {
-            let a = label(sorted[index])
-            let b = label(sorted[index + 1])
-            guard a != b else { index += 1; continue }
+            let labelA = label(sorted[index])
+            let labelB = label(sorted[index + 1])
+            guard labelA != labelB else { index += 1; continue }
 
             // Extend a maximal a,b,a,b… run (each block matches two back).
             var end = index + 1
@@ -94,7 +95,7 @@ public enum PatternMiner {
             let runLength = end - index + 1
             let allShort = sorted[index...end].allSatisfy { $0.durationMs < 90_000 }
             if runLength >= 4 && allShort {
-                let pair = [a, b].sorted().joined(separator: " ↔ ")
+                let pair = [labelA, labelB].sorted().joined(separator: " ↔ ")
                 let ms = sorted[index...end].reduce(Int64(0)) { $0 + $1.durationMs }
                 runs[pair, default: (0, 0)].count += 1
                 runs[pair]!.totalMs += ms
@@ -109,7 +110,8 @@ public enum PatternMiner {
             return Pattern(
                 key: "alt:\(pair)",
                 kind: "alternation",
-                evidence: "rapid switching \(pair), \(stat.count) bouts, avg \(String(format: "%.1f", avgMinutes)) min each",
+                evidence: "rapid switching \(pair), \(stat.count) bouts, "
+                    + "avg \(String(format: "%.1f", avgMinutes)) min each",
                 occurrences: stat.count,
                 avgMinutes: avgMinutes,
                 estMinutesSavedWeekly: Double(stat.count) / windowDays * 7 * avgMinutes * 0.6

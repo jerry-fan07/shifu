@@ -61,7 +61,7 @@ public struct RulesClassifier: Sendable {
         "com.apple.Safari": Rule(.unclassified, ambiguous: true),
         "com.google.Chrome": Rule(.unclassified, ambiguous: true),
         "org.mozilla.firefox": Rule(.unclassified, ambiguous: true),
-        "company.thebrowser.Browser": Rule(.unclassified, ambiguous: true),
+        "company.thebrowser.Browser": Rule(.unclassified, ambiguous: true)
     ]
 
     static let seedDomains: [String: Rule] = [
@@ -109,7 +109,7 @@ public struct RulesClassifier: Sendable {
         "gmail.com": Rule(.admin),
         "outlook.live.com": Rule(.admin),
         "calendar.google.com": Rule(.admin),
-        "amazon.com": Rule(.admin, ambiguous: true),
+        "amazon.com": Rule(.admin, ambiguous: true)
     ]
 
     private var userBundles: [String: Rule]

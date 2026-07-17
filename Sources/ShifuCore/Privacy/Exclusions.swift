@@ -16,7 +16,7 @@ public struct Exclusions: Sendable {
         "in.sinew.Enpass-Desktop",
         "com.dashlane.dashlanephonefinal",
         "com.apple.SecurityAgent",
-        "com.apple.LocalAuthentication.UIAgent",
+        "com.apple.LocalAuthentication.UIAgent"
     ]
 
     /// Banking/financial and health portals. User-editable; seed list only.
@@ -26,7 +26,7 @@ public struct Exclusions: Sendable {
         "fidelity.com", "schwab.com", "vanguard.com", "etrade.com",
         "robinhood.com", "wealthfront.com", "betterment.com",
         "paypal.com", "venmo.com", "wise.com",
-        "mychart.com", "healthcare.gov", "irs.gov", "ssa.gov",
+        "mychart.com", "healthcare.gov", "irs.gov", "ssa.gov"
     ]
 
     public var bundleIDs: Set<String>

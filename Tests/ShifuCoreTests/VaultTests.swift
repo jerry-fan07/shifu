@@ -133,7 +133,11 @@ import Testing
         #expect(notes.count == 1)
         #expect(notes[0].seenCount == 2)
 
-        let fresh = Note(topic: "dhash", body: "completely different content about perceptual hashing thresholds and hamming distance tuning")
+        let fresh = Note(
+            topic: "dhash",
+            body: "completely different content about perceptual hashing "
+                + "thresholds and hamming distance tuning"
+        )
         #expect(try !vault.mergeIfDuplicate(of: fresh))
     }
 }

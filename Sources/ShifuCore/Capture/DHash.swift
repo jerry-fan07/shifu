@@ -41,14 +41,14 @@ public enum DHash {
         return hash(luminance: pixels)
     }
 
-    public static func hammingDistance(_ a: UInt64, _ b: UInt64) -> Int {
-        (a ^ b).nonzeroBitCount
+    public static func hammingDistance(_ lhs: UInt64, _ rhs: UInt64) -> Int {
+        (lhs ^ rhs).nonzeroBitCount
     }
 
     /// Frames within this distance are "the same screen" — skip OCR.
     public static let unchangedThreshold = 5
 
-    public static func isUnchanged(_ a: UInt64, _ b: UInt64) -> Bool {
-        hammingDistance(a, b) <= unchangedThreshold
+    public static func isUnchanged(_ lhs: UInt64, _ rhs: UInt64) -> Bool {
+        hammingDistance(lhs, rhs) <= unchangedThreshold
     }
 }

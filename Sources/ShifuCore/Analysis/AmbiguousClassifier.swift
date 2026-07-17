@@ -45,7 +45,7 @@ public enum AmbiguousClassifier {
             #"[{"id": 1, "category": "work", "confidence": 0.9, "topic": "debugging capture daemon"}]"#,
             "Confidence is 0-1. Use low confidence when the evidence is thin.",
             "",
-            "Blocks:",
+            "Blocks:"
         ]
         for block in blocks {
             var desc = "id=\(block.id) app=\(block.appBundle)"

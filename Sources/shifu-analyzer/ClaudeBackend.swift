@@ -35,7 +35,7 @@ struct ClaudeBackend: LLMBackend {
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model,
             "max_tokens": maxTokens,
-            "messages": [["role": "user", "content": prompt]],
+            "messages": [["role": "user", "content": prompt]]
         ])
 
         let (data, response) = try await URLSession.shared.data(for: request)

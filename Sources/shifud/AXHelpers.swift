@@ -2,7 +2,7 @@ import ApplicationServices
 import Foundation
 
 /// Thin wrappers over the C Accessibility API.
-enum AX {
+enum AXHelper {
     static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
@@ -28,7 +28,7 @@ enum AX {
     /// Roles whose values are visible text worth capturing. Secure fields are
     /// deliberately absent — their values are never read.
     private static let textRoles: Set<String> = [
-        kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole,
+        kAXStaticTextRole, kAXTextAreaRole, kAXTextFieldRole
     ]
 
     /// Breadth-first visible-text extraction from a window's AX tree

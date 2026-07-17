@@ -67,10 +67,10 @@ import Testing
     @Test func totalsSumByCategory() throws {
         let db = try ShifuDatabase.inMemory()
         try db.queue.write { sqlite in
-            var a = Activity(startedAt: 0, endedAt: 60_000, appBundle: "x", category: .work)
-            var b = Activity(startedAt: 60_000, endedAt: 90_000, appBundle: "x", category: .work)
-            var c = Activity(startedAt: 90_000, endedAt: 100_000, appBundle: "y", category: .social)
-            try a.insert(sqlite); try b.insert(sqlite); try c.insert(sqlite)
+            var activityA = Activity(startedAt: 0, endedAt: 60_000, appBundle: "x", category: .work)
+            var activityB = Activity(startedAt: 60_000, endedAt: 90_000, appBundle: "x", category: .work)
+            var activityC = Activity(startedAt: 90_000, endedAt: 100_000, appBundle: "y", category: .social)
+            try activityA.insert(sqlite); try activityB.insert(sqlite); try activityC.insert(sqlite)
         }
         let totals = try LedgerBuilder.totals(database: db, from: 0, to: 200_000)
         #expect(totals[.work] == 90_000)

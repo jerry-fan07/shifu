@@ -39,7 +39,7 @@ struct TimeTabView: View {
     static let categoryColors: KeyValuePairs<String, Color> = [
         "work": .blue, "learning": .green, "entertainment": .orange,
         "social": .pink, "communication": .teal, "admin": .gray,
-        "private": .secondary, "unclassified": Color.gray.opacity(0.4),
+        "private": .secondary, "unclassified": Color.gray.opacity(0.4)
     ]
 
     var body: some View {
