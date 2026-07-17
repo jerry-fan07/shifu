@@ -1,0 +1,26 @@
+# Strict but short (implementation.md §0). Add rules only when they catch real bugs.
+included:
+  - Sources
+  - Tests
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - contains_over_first_not_nil
+
+disabled_rules:
+  - todo
+
+line_length:
+  warning: 120
+  error: 160
+
+identifier_name:
+  min_length: 2
+  max_length: 50
+
+type_body_length:
+  warning: 300
+
+file_length:
+  warning: 500
