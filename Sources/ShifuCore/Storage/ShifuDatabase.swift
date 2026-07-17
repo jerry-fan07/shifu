@@ -5,11 +5,27 @@ import GRDB
 public struct ShifuDatabase: Sendable {
     public let queue: DatabaseQueue
 
-    /// Opens (creating if needed) the database at the given URL and runs migrations.
-    public init(at url: URL) throws {
+    public enum OpenError: Error, CustomStringConvertible {
+        /// The file is SQLCipher-encrypted but no key is available. This is a
+        /// configuration problem, not corruption — never rotate on it.
+        case encryptedButNoKey
+
+        public var description: String {
+            "database is encrypted but no key was found (Keychain item missing "
+                + "and \(DatabaseKey.envVar) unset)"
+        }
+    }
+
+    /// Opens (creating if needed) the database at the given URL and runs
+    /// migrations. Pass a passphrase to open/create SQLCipher-encrypted (§8).
+    public init(at url: URL, passphrase: String? = nil) throws {
         var config = Configuration()
         config.qos = .utility
         config.prepareDatabase { db in
+            // The key must be applied before any other statement touches the file.
+            if let passphrase {
+                try db.usePassphrase(passphrase)
+            }
             // WAL (§3.5): kill -9 mid-write loses at most one observation.
             // synchronous=NORMAL is the recommended WAL pairing — durable
             // across app crashes, loses at most the last commit on power loss.
@@ -20,6 +36,33 @@ public struct ShifuDatabase: Sendable {
         try Self.migrator.migrate(queue)
     }
 
+    /// True when the file exists and does not start with the plaintext SQLite
+    /// magic — i.e. it is SQLCipher-encrypted (or garbage).
+    public static func isEncrypted(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let header = try? handle.read(upToCount: 16) else { return false }
+        return header != Data("SQLite format 3\0".utf8)
+    }
+
+    /// The standard opener: resolves the key (env override or Keychain) and
+    /// picks plaintext vs encrypted based on the file and key state.
+    ///
+    /// - plaintext file → open plaintext (even if a key exists; migration to
+    ///   encrypted is explicit, via `shifu encrypt`)
+    /// - encrypted file → key required, else `OpenError.encryptedButNoKey`
+    /// - no file → encrypted when a key exists, plaintext otherwise
+    public static func open(at url: URL = ShifuPaths.database) throws -> ShifuDatabase {
+        let key = try DatabaseKey.existing()
+        if FileManager.default.fileExists(atPath: url.path) {
+            if isEncrypted(at: url) {
+                guard let key else { throw OpenError.encryptedButNoKey }
+                return try ShifuDatabase(at: url, passphrase: key)
+            }
+            return try ShifuDatabase(at: url)
+        }
+        return try ShifuDatabase(at: url, passphrase: key)
+    }
+
     /// In-memory database for tests.
     public static func inMemory() throws -> ShifuDatabase {
         try ShifuDatabase(queue: DatabaseQueue())
@@ -28,9 +71,16 @@ public struct ShifuDatabase: Sendable {
     /// Opens the database; on corruption, rotates the damaged files aside and
     /// starts fresh rather than silently dropping capture (design.md §10).
     /// Returns the rotated-aside URL when rotation happened.
+    ///
+    /// A Keychain *error* (locked, access denied) is rethrown — the key may
+    /// exist, so rotating could orphan good data. A confirmed missing key
+    /// rotates: the file is unreadable forever either way, and rotation
+    /// renames rather than deletes.
     public static func openRotatingOnCorruption(at url: URL) throws -> (ShifuDatabase, rotatedTo: URL?) {
         do {
-            return (try ShifuDatabase(at: url), nil)
+            return (try open(at: url), nil)
+        } catch let error as DatabaseKey.KeyError {
+            throw error
         } catch {
             let stamp = Int(Date().timeIntervalSince1970)
             let aside = url.deletingLastPathComponent()
@@ -42,7 +92,7 @@ public struct ShifuDatabase: Sendable {
                         at: source, to: URL(fileURLWithPath: aside.path + suffix))
                 }
             }
-            return (try ShifuDatabase(at: url), aside)
+            return (try open(at: url), aside)
         }
     }
 

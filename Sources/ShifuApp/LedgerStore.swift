@@ -27,7 +27,7 @@ final class LedgerStore: ObservableObject {
     private func db() throws -> ShifuDatabase {
         if let database { return database }
         try ShifuPaths.ensureHomeExists()
-        let opened = try ShifuDatabase(at: ShifuPaths.database)
+        let opened = try ShifuDatabase.open(at: ShifuPaths.database)
         database = opened
         return opened
     }

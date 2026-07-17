@@ -48,6 +48,7 @@ shifu review            spaced-repetition session over due notes
 shifu forget last 2h    delete a time range (raw + derived)
 shifu forget app <id>   purge one app's data
 shifu forget all --yes  delete everything
+shifu encrypt           migrate the database to SQLCipher (key in Keychain)
 ```
 
 `shifu-analyzer` runs hourly from the daemon (on AC power); run it by hand with
@@ -65,6 +66,10 @@ shifu forget all --yes  delete everything
   (`scripts/check-no-network.sh`). Only the analyzer may talk to the network,
   and only when cloud analysis is switched on.
 - Raw text expires after 14 days; the ledger and confirmed notes persist.
+- **Encryption at rest (opt-in)**: `shifu encrypt` migrates the database to
+  SQLCipher (via DuckDuckGo's GRDB+SQLCipher build); the key lives in your
+  login Keychain. Stop the daemon during migration. Until the binaries are
+  code-signed, each one prompts once for Keychain access.
 
 ## Data layout
 

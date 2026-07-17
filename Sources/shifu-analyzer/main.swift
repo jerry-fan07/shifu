@@ -34,7 +34,7 @@ guard force || onACPower() else {
 }
 
 try ShifuPaths.ensureHomeExists()
-let database = try ShifuDatabase(at: ShifuPaths.database)
+let database = try ShifuDatabase.open(at: ShifuPaths.database)
 let classifier = try RulesClassifier(database: database)
 
 let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)

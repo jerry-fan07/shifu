@@ -12,7 +12,10 @@ let package = Package(
         .executable(name: "ShifuApp", targets: ["ShifuApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
+        // DuckDuckGo's GRDB distribution: GRDB 7.4.1 compiled with SQLCipher
+        // 4.7.0 (encryption at rest, design.md §8). Upstream groue/GRDB.swift
+        // has no SPM SQLCipher flavor.
+        .package(url: "https://github.com/duckduckgo/GRDB.swift.git", exact: "3.0.0"),
     ],
     targets: [
         // Models, DB access, capture ladder logic, sessionizer, classifier, FSRS.

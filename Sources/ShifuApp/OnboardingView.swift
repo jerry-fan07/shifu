@@ -117,7 +117,7 @@ struct OnboardingView: View {
     }
 
     private func finish() {
-        if let database = try? ShifuDatabase(at: ShifuPaths.database) {
+        if let database = try? ShifuDatabase.open(at: ShifuPaths.database) {
             try? Settings.set(Settings.analysisBackendKey, to: backend, database: database)
             if backend == "claude" && !apiKey.isEmpty {
                 try? Settings.set(Settings.claudeAPIKeyKey, to: apiKey, database: database)

@@ -15,10 +15,11 @@ usage: shifu <command>
   review         spaced-repetition session over due vault notes
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
+  encrypt        encrypt the database with SQLCipher (key in Keychain)
 """
 
 func openDatabase() throws -> ShifuDatabase {
-    try ShifuDatabase(at: ShifuPaths.database)
+    try ShifuDatabase.open(at: ShifuPaths.database)
 }
 
 func startOfToday() -> Int64 {
@@ -104,7 +105,10 @@ func commandStatus() throws {
         print("today: \(parts.joined(separator: ", "))")
     }
     if let size = try? FileManager.default.attributesOfItem(atPath: ShifuPaths.database.path)[.size] as? Int64 {
-        print("db: \(String(format: "%.1f", Double(size) / 1_048_576)) MB at \(ShifuPaths.database.path)")
+        let encryption = ShifuDatabase.isEncrypted(at: ShifuPaths.database)
+            ? "encrypted" : "plaintext"
+        print("db: \(String(format: "%.1f", Double(size) / 1_048_576)) MB, \(encryption), "
+            + "at \(ShifuPaths.database.path)")
     }
 }
 
@@ -215,7 +219,56 @@ func commandForget(_ arguments: [String]) throws {
     }
 }
 
+func commandEncrypt() throws {
+    guard FileManager.default.fileExists(atPath: ShifuPaths.database.path) else {
+        print("no database yet — it will be created encrypted once a key exists.")
+        _ = try DatabaseKey.getOrCreate()
+        print("key stored in Keychain; the next daemon start creates an encrypted database")
+        return
+    }
+    guard !ShifuDatabase.isEncrypted(at: ShifuPaths.database) else {
+        print("database is already encrypted")
+        return
+    }
+    print("""
+    stop the daemon first so nothing writes during migration:
+      launchctl bootout gui/$(id -u)/com.shifu.shifud   (restart it afterwards)
+    encrypting…
+    """)
+    let passphrase = try DatabaseKey.getOrCreate()
+    try EncryptionMigrator.encrypt(at: ShifuPaths.database, passphrase: passphrase)
+    if ProcessInfo.processInfo.environment[DatabaseKey.envVar] != nil {
+        print("done — database is SQLCipher-encrypted with the \(DatabaseKey.envVar) key")
+    } else {
+        print("done — database is SQLCipher-encrypted, key is in your login Keychain")
+        print("note: unsigned binaries each prompt once for Keychain access; sign them to share silently")
+    }
+}
+
 let args = CommandLine.arguments.dropFirst()
+func commandWork(_ toggle: String?) throws {
+    switch toggle {
+    case "on":
+        try ShifuPaths.ensureHomeExists()
+        try Data().write(to: ShifuPaths.workModeFile)
+        print("work mode on")
+    case "off":
+        try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+        print("work mode off")
+    default:
+        let on = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
+        print("work mode: \(on ? "ON" : "off")")
+    }
+}
+
+do {
+    try run()
+} catch {
+    FileHandle.standardError.write(Data("shifu: \(error)\n".utf8))
+    exit(1)
+}
+
+func run() throws {
 switch args.first {
 case "log":
     let days = args.dropFirst().first.flatMap(Int.init) ?? 1
@@ -230,21 +283,13 @@ case "review":
     try commandReview()
 case "forget":
     try commandForget(Array(args.dropFirst()))
+case "encrypt":
+    try commandEncrypt()
 case "work":
-    switch args.dropFirst().first {
-    case "on":
-        try ShifuPaths.ensureHomeExists()
-        try Data().write(to: ShifuPaths.workModeFile)
-        print("work mode on")
-    case "off":
-        try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
-        print("work mode off")
-    default:
-        let on = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
-        print("work mode: \(on ? "ON" : "off")")
-    }
+    try commandWork(args.dropFirst().first)
 case "--version":
     print("shifu \(Shifu.version)")
 default:
     print(usage)
+}
 }

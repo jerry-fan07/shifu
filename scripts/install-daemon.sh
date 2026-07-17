@@ -22,6 +22,10 @@ BIN_DIR="$(swift build -c release --show-bin-path)"
 mkdir -p "$SHIFU_HOME/bin" "$SHIFU_HOME/logs"
 # shifud spawns shifu-analyzer from its own directory; keep them together.
 cp "$BIN_DIR/shifud" "$BIN_DIR/shifu-analyzer" "$BIN_DIR/shifu" "$SHIFU_HOME/bin/"
+# GRDB (with SQLCipher) is a dynamic framework resolved via @loader_path —
+# it must sit next to the binaries.
+rm -rf "$SHIFU_HOME/bin/GRDB.framework"
+cp -R "$BIN_DIR/GRDB.framework" "$SHIFU_HOME/bin/"
 
 mkdir -p "$(dirname "$AGENT_PLIST")"
 sed -e "s|__BIN__|$SHIFU_HOME/bin/shifud|" -e "s|__HOME__|$SHIFU_HOME|" \

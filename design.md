@@ -339,10 +339,11 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
 - Audio-free meeting awareness (detect meeting apps, log attendance time, never record content).
 - Vault embeddings for semantic search ("what did I read about SQLite WAL?").
 - Direct Claude Code handoff for automation suggestions (§6.2).
-- **SQLCipher at rest** (deferred from Phase 6): GRDB's SQLCipher flavor isn't
-  distributable via SwiftPM without switching to a community fork. v1 ships with
-  `~/Shifu` locked to owner-only permissions (0700) instead; revisit when GRDB
-  gains first-party SPM SQLCipher support or the storage layer is worth forking for.
+- ~~SQLCipher at rest~~ — shipped after v1 via DuckDuckGo's GRDB 7.4.1 +
+  SQLCipher 4.7.0 xcframework (`shifu encrypt`, key in the login Keychain,
+  `SHIFU_DB_KEY` override for tests). Remaining follow-up: code-sign the
+  binaries with a shared team ID so the Keychain item is shared without
+  per-binary prompts.
 - **Bundled MLX local model** (deferred from Phase 3): Apple Foundation Models
   covers the on-device path on macOS 26+; a ~2 GB bundled model only earns its
   place if dogfooding shows meaningful demand on older systems.
