@@ -2,9 +2,22 @@ import Charts
 import ShifuCore
 import SwiftUI
 
-/// Dashboard, *Time* tab only for Phase 2 (implementation.md): stacked bars,
-/// day/week toggle, block drill-down. System fonts and colors throughout (§7).
+/// Dashboard (design.md §7): *Time* and *Vault* tabs (Radar arrives Phase 5).
 struct DashboardView: View {
+    var body: some View {
+        TabView {
+            TimeTabView()
+                .tabItem { Label("Time", systemImage: "chart.bar") }
+            VaultTabView()
+                .tabItem { Label("Vault", systemImage: "tray.full") }
+        }
+        .frame(minWidth: 680, minHeight: 580)
+    }
+}
+
+/// *Time* tab: stacked bars, day/week toggle, block drill-down.
+/// System fonts and colors throughout (§7).
+struct TimeTabView: View {
     enum Span: String, CaseIterable { case day = "Day", week = "Week" }
 
     @EnvironmentObject private var store: LedgerStore

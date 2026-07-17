@@ -99,6 +99,21 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v4") { db in
+            // Review log for later FSRS parameter fitting (design.md §5.2, §9).
+            try db.create(table: "srs_reviews") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("note_id", .text).notNull()
+                t.column("reviewed_at", .integer).notNull()
+                t.column("grade", .integer).notNull()
+                t.column("interval_days", .double)
+            }
+            // High-water mark for knowledge extraction (Phase 4).
+            try db.alter(table: "activities") { t in
+                t.add(column: "extracted", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 }

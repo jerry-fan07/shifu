@@ -12,6 +12,7 @@ usage: shifu <command>
   pause [dur]    pause capture: 30m, 1h (default), 2h, tomorrow
   resume         resume capture
   work on|off    toggle Work Mode (focus contract with glow nudges)
+  review         spaced-repetition session over due vault notes
 """
 
 func openDatabase() throws -> ShifuDatabase {
@@ -132,6 +133,43 @@ func commandResume() throws {
     print("resumed")
 }
 
+func commandReview() throws {
+    let vault = VaultStore(database: try openDatabase())
+    let due = try vault.due()
+    guard !due.isEmpty else {
+        print("nothing due — come back tomorrow")
+        return
+    }
+    print("\(due.count) due · grade with 1=again 2=hard 3=good 4=easy · q quits\n")
+    var done = 0
+    for note in due {
+        guard let qa = note.questionAnswer else { continue }
+        print("— \(note.topic)")
+        print("Q: \(qa.question)")
+        print("  [enter to reveal] ", terminator: "")
+        guard readLine() != nil else { break }
+        print("A: \(qa.answer)")
+        var graded = false
+        while !graded {
+            print("  grade [1-4, q]: ", terminator: "")
+            guard let input = readLine()?.trimmingCharacters(in: .whitespaces) else { return }
+            if input == "q" {
+                print("\nreviewed \(done)/\(due.count)")
+                return
+            }
+            if let raw = Int(input), let grade = FSRS.Grade(rawValue: raw) {
+                let updated = try vault.review(note, grade: grade)
+                if let days = updated.srs?.intervalDays {
+                    print("  next: \(days == 0 ? "today" : "in \(Int(days))d")\n")
+                }
+                done += 1
+                graded = true
+            }
+        }
+    }
+    print("done — \(done) reviewed 🎉")
+}
+
 let args = CommandLine.arguments.dropFirst()
 switch args.first {
 case "log":
@@ -143,6 +181,8 @@ case "pause":
     try commandPause(args.dropFirst().first ?? "1h")
 case "resume":
     try commandResume()
+case "review":
+    try commandReview()
 case "work":
     switch args.dropFirst().first {
     case "on":

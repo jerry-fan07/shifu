@@ -38,6 +38,13 @@ struct ShifuApp: App {
 
             Divider()
 
+            if !store.dueNotes.isEmpty {
+                Button("Review · \(store.dueNotes.count) due") {
+                    openWindow(id: "review")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+
             Button("Open Dashboard") {
                 openWindow(id: "dashboard")
                 NSApp.activate(ignoringOtherApps: true)
@@ -61,5 +68,12 @@ struct ShifuApp: App {
                 }
         }
         .defaultSize(width: 720, height: 640)
+
+        Window("Review", id: "review") {
+            ReviewSessionView()
+                .environmentObject(store)
+        }
+        .defaultSize(width: 440, height: 360)
+        .windowResizability(.contentSize)
     }
 }

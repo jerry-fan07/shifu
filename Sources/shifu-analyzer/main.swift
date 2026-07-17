@@ -67,6 +67,18 @@ if let backend {
         // LLM problems never block the ledger (§10); blocks stay queued.
         print("llm (\(backend.name)) failed, blocks stay queued: \(error)")
     }
+
+    // Knowledge extraction over learning/novel-work blocks (§5.1).
+    do {
+        let vault = VaultStore(database: database)
+        let candidates = try await KnowledgeExtractor.run(
+            database: database, vault: vault, backend: backend, from: from, to: nowMs)
+        if candidates > 0 {
+            print("vault: \(candidates) new inbox candidates")
+        }
+    } catch {
+        print("extraction failed (blocks stay unprocessed next run): \(error)")
+    }
 }
 
 // Daily digest at/after the configured hour (default 18:00, §4.3).

@@ -13,7 +13,11 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var todayTotals: [ShifuCore.Category: Int64] = [:]
     @Published private(set) var pausedUntil: Date?
     @Published private(set) var workModeOn = false
+    @Published private(set) var inboxNotes: [Note] = []
+    @Published private(set) var dueNotes: [Note] = []
     @Published private(set) var lastError: String?
+
+    private var vault: VaultStore { VaultStore(database: try? db()) }
 
     var isPaused: Bool { pausedUntil.map { $0 > Date() } ?? false }
 
@@ -36,6 +40,8 @@ final class LedgerStore: ObservableObject {
             pausedUntil = nil
         }
         workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
+        inboxNotes = (try? vault.inbox()) ?? []
+        dueNotes = (try? vault.due()) ?? []
         do {
             let start = Calendar.current.startOfDay(for: Date())
             todayTotals = try LedgerBuilder.totals(
@@ -72,6 +78,23 @@ final class LedgerStore: ObservableObject {
 
     func resume() {
         try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
+        refresh()
+    }
+
+    // MARK: - Vault (triage + review)
+
+    func keep(_ note: Note) {
+        try? vault.keep(note)
+        refresh()
+    }
+
+    func discard(_ note: Note) {
+        try? vault.discard(note)
+        refresh()
+    }
+
+    func review(_ note: Note, grade: FSRS.Grade) {
+        _ = try? vault.review(note, grade: grade)
         refresh()
     }
 
