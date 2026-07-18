@@ -33,6 +33,7 @@ Read [design.md](design.md) for the spec and [implementation.md](implementation.
 7. **LLM prompts are token-budgeted.** Every prompt sent through `LLMBackend.complete` must fit
    the backend's `contextWindowTokens` (on-device Foundation Models is only 4k, prompt + response
    combined). Size batches with `LLMTokens.estimate`, never by item count alone.
+8. Variables must be named with greater than 1 character.
 
 ## Minimalism rule
 
