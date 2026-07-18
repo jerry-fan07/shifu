@@ -1,13 +1,168 @@
 import ShifuCore
 import SwiftUI
 
-/// *Vault* tab (implementation.md Phase 4 item 2): inbox triage with
-/// single-keystroke keep/discard, plus a glance at the kept collection.
+/// *Vault* tab (design.md §5.3): today's compiled work log, the most recent
+/// tasks (renameable, assignable to projects), and projects with time spent.
 struct VaultTabView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var newProjectName = ""
+
+    var body: some View {
+        List {
+            Section("Today") {
+                if store.todayLogs.isEmpty {
+                    Text("No work logged yet today — the analyzer compiles logs hourly.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.todayLogs) { entry in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.taskName).bold()
+                            Text(entry.summary)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                        Text(LedgerStore.hours(entry.durationMs))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            Section("Recent tasks") {
+                if store.recentTasks.isEmpty {
+                    Text("Tasks appear once the analyzer has grouped some activity.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.recentTasks) { overview in
+                    TaskRowView(overview: overview)
+                }
+            }
+
+            Section("Projects") {
+                ForEach(store.projectSummaries) { summary in
+                    HStack {
+                        Text(summary.project.name)
+                        Spacer()
+                        Text("\(summary.taskCount) tasks")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(LedgerStore.hours(summary.totalMs))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    TextField("New project", text: $newProjectName)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addProject)
+                    Button("Add", action: addProject)
+                        .disabled(newProjectName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .listStyle(.inset)
+        .onAppear { store.refresh() }
+    }
+
+    private func addProject() {
+        let name = newProjectName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        store.createProject(named: name)
+        newProjectName = ""
+    }
+}
+
+/// One task row: inline rename, latest log line, project assignment.
+private struct TaskRowView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let overview: TaskStore.Overview
+    @State private var name = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                TextField("Task name", text: $name)
+                    .textFieldStyle(.plain)
+                    .bold()
+                    .onSubmit {
+                        if let taskID = overview.task.id { store.renameTask(taskID, to: name) }
+                    }
+                Spacer()
+                Text(LedgerStore.hours(overview.totalMs))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                projectMenu
+            }
+            if let summary = overview.latestSummary {
+                Text(summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
+        .onAppear { name = overview.task.name }
+        .onChange(of: overview.task.name) { _, updated in name = updated }
+    }
+
+    private var projectMenu: some View {
+        Menu(overview.projectName ?? "No project") {
+            Button("No project") {
+                if let taskID = overview.task.id { store.assignTask(taskID, toProject: nil) }
+            }
+            ForEach(store.projectSummaries) { summary in
+                Button(summary.project.name) {
+                    if let taskID = overview.task.id {
+                        store.assignTask(taskID, toProject: summary.project.id)
+                    }
+                }
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+/// *Cards* tab — the spaced-repetition screen (design.md §5.2): pick a deck
+/// (everything, a project, or a task), start a session, and triage the inbox.
+struct CardsTabView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Picker("Deck", selection: $store.reviewDeck) {
+                    Text("All notes").tag(ReviewDeck.all)
+                    ForEach(store.projectSummaries) { summary in
+                        if let projectID = summary.project.id {
+                            Text("Project · \(summary.project.name)")
+                                .tag(ReviewDeck.project(id: projectID, name: summary.project.name))
+                        }
+                    }
+                    ForEach(store.recentTasks) { overview in
+                        Text("Task · \(overview.task.name)")
+                            .tag(ReviewDeck.task(key: overview.task.key, name: overview.task.name))
+                    }
+                }
+                .frame(maxWidth: 340)
+                Spacer()
+                Button("Review · \(store.deckDueNotes.count) due") {
+                    openWindow(id: "review")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.deckDueNotes.isEmpty)
+            }
+
+            Divider()
+
             if store.inboxNotes.isEmpty {
                 ContentUnavailableView(
                     "Inbox empty", systemImage: "tray",
@@ -33,15 +188,9 @@ struct VaultTabView: View {
                 }
                 .listStyle(.inset)
             }
-
-            Divider()
-            HStack {
-                Text("\(store.dueNotes.count) due for review")
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
         }
         .padding(20)
+        .onAppear { store.refresh() }
         // Single-keystroke triage of the top card (§5.1).
         .background {
             Group {
@@ -56,6 +205,7 @@ struct VaultTabView: View {
 }
 
 /// Minimal card session (design.md §5.2): question, reveal, grade 1–4.
+/// Draws from the deck selected on the Cards tab.
 struct ReviewSessionView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var revealed = false
@@ -63,7 +213,12 @@ struct ReviewSessionView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            if let note = store.dueNotes.first, let qa = note.questionAnswer {
+            if store.reviewDeck != .all {
+                Text("Deck: \(store.reviewDeck.label)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            if let note = store.deckDueNotes.first, let qa = note.questionAnswer {
                 Text(note.topic)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -88,7 +243,7 @@ struct ReviewSessionView: View {
                         .buttonStyle(.borderedProminent)
                 }
                 Spacer(minLength: 0)
-                Text("\(store.dueNotes.count) left")
+                Text("\(store.deckDueNotes.count) left")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
@@ -106,7 +261,7 @@ struct ReviewSessionView: View {
 
     private func gradeButton(_ label: String, _ grade: FSRS.Grade, _ key: Character) -> some View {
         Button(label) {
-            if let note = store.dueNotes.first {
+            if let note = store.deckDueNotes.first {
                 store.review(note, grade: grade)
                 reviewedCount += 1
                 revealed = false

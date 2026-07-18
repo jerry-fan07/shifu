@@ -81,6 +81,13 @@ if let backend {
     }
 }
 
+// Tasks & work logs (§5.3): group the window's activities into ongoing tasks
+// and compile per-day logs. Runs after the LLM pass so topics exist.
+let taskSummary = try TaskGrouper.run(database: database, from: from, to: nowMs)
+if taskSummary.tasksTouched > 0 {
+    print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+}
+
 // Radar: mine patterns weekly (§6.1), or on demand with --radar.
 let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
 if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {

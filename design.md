@@ -222,7 +222,17 @@ A: `SCScreenshotManager` (macOS 14+).
 
 - Scheduler: **FSRS** (modern, better-calibrated than SM-2; a Swift implementation is small). SRS state lives in the note's frontmatter so the folder stays self-contained.
 - Review UI: a minimal SwiftUI card session launched from the menu bar ("Review · 7 due"), plus a `shifu review` CLI for terminal users. Grade with 1–4 / arrow keys.
+- **Decks** (dashboard *Cards* tab): the session pulls from a selectable deck — all notes, one project, or one task (§5.3). Notes match a task by grouping key (topic slug, with containment fallback for topic keys).
 - Target session length: < 5 minutes/day. The digest nags gently if the due queue exceeds a threshold.
+
+### 5.3 Tasks, projects & work logs (vault-features.md)
+
+The vault is a work database, not just flashcards:
+
+- **Tasks**: the analyzer groups activities into ongoing tasks by a stable key — the classified topic when there is one, else domain, else app (`TaskGrouper`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names).
+- **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
+- **Projects**: user-created groups of tasks with time totals — direct goals (a learning goal, a work effort). Assigning a task to a project also scopes its notes into the project's review deck (§5.2).
+- **Vault tab** shows today's compiled log, the most recent tasks with their latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
 
 ---
 
@@ -264,7 +274,7 @@ actions:    [Draft the automation with Claude Code] [Dismiss] [Snooze 30d]
 Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generous whitespace, system fonts and colors, no badges or gamification, no settings page longer than one screen. Three surfaces total:
 
 - **Menu bar item** (the only always-visible surface): status glyph (watching / paused / excluded app), Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Dashboard, Quit & Stop Capture.
-- **Dashboard window**: three tabs — *Time* (stacked day/week bars, topic drill-down), *Vault* (inbox triage + browse), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **Dashboard window**: four tabs — *Time* (stacked day/week bars, topic drill-down), *Vault* (today's work log, tasks, projects — §5.3), *Cards* (deck picker + inbox triage — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
 - **Review session**: minimal card interface (see §5.2).
 - **Onboarding**: a 4-screen flow that (1) explains exactly what is and isn't captured, (2) requests Screen Recording + Accessibility permissions with live previews of what Shifu sees, (3) sets exclusions (pre-checked: password managers, banking category, private browsing), (4) picks analysis backend (local-only default).
 
@@ -299,7 +309,7 @@ This section is load-bearing; a screen watcher lives or dies on trust.
   logs/               # daemon logs, size-capped
 ```
 
-Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization).
+Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `projects` / `task_logs` (§5.3), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization).
 
 ---
 
@@ -353,6 +363,8 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
+- LLM-written narrative work logs (§5.3 ships deterministic "where — what"
+  summaries; prose session logs only earn the tokens if those prove too thin).
 
 ---
 

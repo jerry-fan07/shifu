@@ -42,7 +42,9 @@ let package = Package(
         // Menu bar app + dashboard (SwiftUI).
         .executableTarget(
             name: "ShifuApp",
-            dependencies: ["ShifuCore"]
+            dependencies: ["ShifuCore"],
+            // Bundled into Shifu.app by scripts/install-app.sh, not a SwiftPM resource.
+            exclude: ["AppIcon.icns"]
         ),
         .testTarget(
             name: "ShifuCoreTests",

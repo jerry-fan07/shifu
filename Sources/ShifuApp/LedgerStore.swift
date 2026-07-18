@@ -16,6 +16,10 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var inboxNotes: [Note] = []
     @Published private(set) var dueNotes: [Note] = []
     @Published private(set) var suggestions: [Suggestion] = []
+    @Published private(set) var recentTasks: [TaskStore.Overview] = []
+    @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
+    @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
+    @Published var reviewDeck: ReviewDeck = .all
     @Published private(set) var lastError: String?
 
     private var vault: VaultStore { VaultStore(database: try? db()) }
@@ -44,6 +48,13 @@ final class LedgerStore: ObservableObject {
         inboxNotes = (try? vault.inbox()) ?? []
         dueNotes = (try? vault.due()) ?? []
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
+        if let database = try? db() {
+            let dayStart = Int64(
+                Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
+            recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
+            todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
+            projectSummaries = (try? TaskStore.projects(database: database)) ?? []
+        }
         do {
             let start = Calendar.current.startOfDay(for: Date())
             todayTotals = try LedgerBuilder.totals(
@@ -100,6 +111,50 @@ final class LedgerStore: ObservableObject {
         refresh()
     }
 
+    // MARK: - Tasks & projects (design.md §5.3)
+
+    func renameTask(_ taskID: Int64, to name: String) {
+        if let database = try? db() {
+            try? TaskStore.rename(taskID: taskID, to: name, database: database)
+        }
+        refresh()
+    }
+
+    func assignTask(_ taskID: Int64, toProject projectID: Int64?) {
+        if let database = try? db() {
+            try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
+        }
+        refresh()
+    }
+
+    func createProject(named name: String) {
+        if let database = try? db() {
+            _ = try? TaskStore.createProject(named: name, database: database)
+        }
+        refresh()
+    }
+
+    // MARK: - Review decks (design.md §5.2)
+
+    /// Due notes in the selected deck; the review session draws from this.
+    var deckDueNotes: [Note] { due(in: reviewDeck) }
+
+    func due(in deck: ReviewDeck) -> [Note] {
+        switch deck {
+        case .all:
+            return dueNotes
+        case .task(let key, _):
+            return dueNotes.filter { TaskStore.matches(note: $0, taskKey: key) }
+        case .project(let projectID, _):
+            let keys = (try? db()).flatMap {
+                try? TaskStore.taskKeys(projectID: projectID, database: $0)
+            } ?? []
+            return dueNotes.filter { note in
+                keys.contains { TaskStore.matches(note: note, taskKey: $0) }
+            }
+        }
+    }
+
     // MARK: - Radar
 
     func dismiss(_ suggestion: Suggestion) {
@@ -136,5 +191,21 @@ final class LedgerStore: ObservableObject {
     static func hours(_ ms: Int64) -> String {
         let hrs = Double(ms) / 3_600_000
         return hrs >= 1 ? String(format: "%.1f h", hrs) : "\(ms / 60_000) min"
+    }
+}
+
+/// What the review session pulls cards from (design.md §5.2): everything, one
+/// project's tasks, or a single task.
+enum ReviewDeck: Hashable {
+    case all
+    case project(id: Int64, name: String)
+    case task(key: String, name: String)
+
+    var label: String {
+        switch self {
+        case .all: return "All notes"
+        case .project(_, let name): return name
+        case .task(_, let name): return name
+        }
     }
 }
