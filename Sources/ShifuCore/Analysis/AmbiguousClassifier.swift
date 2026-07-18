@@ -8,6 +8,7 @@ public enum AmbiguousClassifier {
     public static let confidenceFloor = 0.6
     public static let batchLimit = 20
     public static let textSampleBytes = 1_200
+    public static let responseTokenReserve = 2_000
 
     public struct BlockSample: Sendable {
         public var id: Int64
@@ -59,6 +60,25 @@ public enum AmbiguousClassifier {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Splits samples into batches whose rendered prompt fits the token
+    /// budget, so small-window backends (Foundation Models: 4k total) never
+    /// see an oversized prompt. An over-budget lone sample still gets its own
+    /// batch — its text is already capped by pendingSamples.
+    static func batches(_ samples: [BlockSample], promptTokenBudget: Int) -> [[BlockSample]] {
+        var result: [[BlockSample]] = []
+        var current: [BlockSample] = []
+        for sample in samples {
+            current.append(sample)
+            if current.count > 1, LLMTokens.estimate(prompt(for: current)) > promptTokenBudget {
+                current.removeLast()
+                result.append(current)
+                current = [sample]
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
     }
 
     /// Parses the model's JSON (tolerating surrounding prose / code fences).
@@ -127,25 +147,33 @@ public enum AmbiguousClassifier {
         let samples = try pendingSamples(database: database, from: from, to: to)
         guard !samples.isEmpty else { return 0 }
 
-        let response = try await backend.complete(prompt: prompt(for: samples), maxTokens: 2_000)
-        let sampleIDs = Set(samples.map(\.id))
-        let confident = parseVerdicts(response).filter {
-            sampleIDs.contains($0.id) && $0.confidence >= confidenceFloor
-        }
-        guard !confident.isEmpty else { return 0 }
-
-        return try await database.queue.write { db in
-            var updated = 0
-            for verdict in confident {
-                try db.execute(sql: """
-                    UPDATE activities
-                    SET category = ?, topic = ?, confidence = ?, source = 'llm', ambiguous = 0
-                    WHERE id = ? AND source != 'user'
-                    """, arguments: [verdict.category.rawValue, verdict.topic,
-                                     verdict.confidence, verdict.id])
-                updated += db.changesCount
+        let promptBudget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        var updated = 0
+        // Verdicts apply per batch: a mid-run failure keeps earlier updates
+        // and leaves the rest ambiguous for the next run.
+        for batch in batches(samples, promptTokenBudget: promptBudget) {
+            let response = try await backend.complete(
+                prompt: prompt(for: batch), maxTokens: responseTokenReserve)
+            let batchIDs = Set(batch.map(\.id))
+            let confident = parseVerdicts(response).filter {
+                batchIDs.contains($0.id) && $0.confidence >= confidenceFloor
             }
-            return updated
+            guard !confident.isEmpty else { continue }
+
+            updated += try await database.queue.write { db in
+                var applied = 0
+                for verdict in confident {
+                    try db.execute(sql: """
+                        UPDATE activities
+                        SET category = ?, topic = ?, confidence = ?, source = 'llm', ambiguous = 0
+                        WHERE id = ? AND source != 'user'
+                        """, arguments: [verdict.category.rawValue, verdict.topic,
+                                         verdict.confidence, verdict.id])
+                    applied += db.changesCount
+                }
+                return applied
+            }
         }
+        return updated
     }
 }

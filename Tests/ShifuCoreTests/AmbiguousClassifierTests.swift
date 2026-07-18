@@ -9,6 +9,28 @@ private struct MockBackend: LLMBackend {
     func complete(prompt: String, maxTokens: Int) async throws -> String { response }
 }
 
+/// Answers every block mentioned in the prompt and records each call, so
+/// tests can assert how run() chunks work across a small context window.
+private final class RecordingBackend: LLMBackend, @unchecked Sendable {
+    let name = "recording"
+    let contextWindowTokens: Int
+    private let lock = NSLock()
+    private(set) var prompts: [String] = []
+
+    init(contextWindowTokens: Int) { self.contextWindowTokens = contextWindowTokens }
+
+    func complete(prompt: String, maxTokens: Int) async throws -> String {
+        lock.withLock { prompts.append(prompt) }
+        let ids = prompt.split(separator: "\n").compactMap { line in
+            line.hasPrefix("id=") ? Int64(line.dropFirst(3).prefix(while: \.isNumber)) : nil
+        }
+        let objects = ids.map {
+            #"{"id": \#($0), "category": "learning", "confidence": 0.9, "topic": "t"}"#
+        }
+        return "[\(objects.joined(separator: ","))]"
+    }
+}
+
 @Suite struct AmbiguousClassifierTests {
     @Test func parsesCleanJSON() {
         let verdicts = AmbiguousClassifier.parseVerdicts(
@@ -46,6 +68,57 @@ private struct MockBackend: LLMBackend {
         #expect(prompt.contains("youtube.com"))
         #expect(prompt.contains("work, learning, entertainment"))
         #expect(!prompt.contains("private"))
+    }
+
+    @Test func batchesFitTokenBudgetAndPreserveAllSamples() {
+        let samples = (1...12).map { id in
+            AmbiguousClassifier.BlockSample(
+                id: Int64(id), appBundle: "com.app.\(id)", domain: nil, titles: ["title \(id)"],
+                textSample: String(repeating: "screen text ", count: 50))
+        }
+        let budget = 700
+        let batches = AmbiguousClassifier.batches(samples, promptTokenBudget: budget)
+        #expect(batches.count > 1)
+        #expect(batches.flatMap { $0 }.map(\.id) == samples.map(\.id))
+        for batch in batches {
+            #expect(LLMTokens.estimate(AmbiguousClassifier.prompt(for: batch)) <= budget)
+        }
+    }
+
+    @Test func oversizedLoneSampleStillGetsABatch() {
+        let sample = AmbiguousClassifier.BlockSample(
+            id: 1, appBundle: "com.big", domain: nil, titles: [],
+            textSample: String(repeating: "x", count: 5_000))
+        let batches = AmbiguousClassifier.batches([sample], promptTokenBudget: 100)
+        #expect(batches.count == 1 && batches[0].count == 1 && batches[0][0].id == 1)
+    }
+
+    @Test func runSplitsAcrossSmallContextWindow() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try await db.queue.write { sqlite in
+            for index in 0..<10 {
+                var activity = Activity(
+                    startedAt: Int64(index) * 1_000_000, endedAt: Int64(index) * 1_000_000 + 600_000,
+                    appBundle: "com.app.\(index)", category: .unclassified, ambiguous: true)
+                try activity.insert(sqlite)
+                try sqlite.execute(sql: """
+                    INSERT INTO observations
+                        (started_at, last_seen, app_bundle, window_title, capture_kind, text, session_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [Int64(index) * 1_000_000, Int64(index) * 1_000_000, "com.app.\(index)",
+                                     "window \(index)", "ax",
+                                     String(repeating: "dense ocr text ", count: 40), activity.id])
+            }
+        }
+        // Window small enough that 10 fat samples cannot fit one prompt.
+        let backend = RecordingBackend(contextWindowTokens: 2_600)
+        let updated = try await AmbiguousClassifier.run(
+            database: db, backend: backend, from: 0, to: 100_000_000)
+        #expect(backend.prompts.count > 1)
+        #expect(updated == 10)
+        for prompt in backend.prompts {
+            #expect(LLMTokens.estimate(prompt) <= 2_600 - AmbiguousClassifier.responseTokenReserve)
+        }
     }
 
     @Test func runAppliesConfidentVerdictsOnly() async throws {

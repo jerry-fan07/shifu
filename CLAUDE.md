@@ -30,6 +30,9 @@ Read [design.md](design.md) for the spec and [implementation.md](implementation.
 4. **Pixels are never persisted** — screenshots live in memory only for the OCR call (§3.2).
 5. **Pause tears down observers**, it doesn't just gate writes (§8).
 6. Perf budgets (§3.4) are CI: <0.5% avg CPU, <80 MB RSS for the daemon.
+7. **LLM prompts are token-budgeted.** Every prompt sent through `LLMBackend.complete` must fit
+   the backend's `contextWindowTokens` (on-device Foundation Models is only 4k, prompt + response
+   combined). Size batches with `LLMTokens.estimate`, never by item count alone.
 
 ## Minimalism rule
 

@@ -6,7 +6,22 @@ import Foundation
 /// when none is available. MLX bundled model deferred (design.md §12).
 public protocol LLMBackend: Sendable {
     var name: String { get }
+    /// Total context window (prompt + response) in tokens. Batched prompts
+    /// must be chunked to fit it — see LLMTokens.estimate.
+    var contextWindowTokens: Int { get }
     func complete(prompt: String, maxTokens: Int) async throws -> String
+}
+
+extension LLMBackend {
+    public var contextWindowTokens: Int { 200_000 }
+}
+
+public enum LLMTokens {
+    /// Conservative prompt-size estimate: ≈3 UTF-8 bytes per token, so dense
+    /// OCR text can't overflow a real tokenizer's count.
+    public static func estimate(_ text: String) -> Int {
+        text.utf8.count / 3 + 1
+    }
 }
 
 public enum LLMError: Error, CustomStringConvertible {

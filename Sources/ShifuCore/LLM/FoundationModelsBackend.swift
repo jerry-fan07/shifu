@@ -7,6 +7,9 @@ import FoundationModels
 /// Zero bundle cost; available on macOS 26+ with Apple Intelligence enabled.
 public struct FoundationModelsBackend: LLMBackend {
     public let name = "foundation-models"
+    /// The system model's hard limit; prompts near it fail with
+    /// exceededContextWindowSize, so callers must batch beneath it.
+    public let contextWindowTokens = 4_096
 
     public init() {}
 
