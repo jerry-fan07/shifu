@@ -16,9 +16,10 @@ fi
 APP="$APP_ROOT/Shifu.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN_DIR/ShifuApp" "$APP/Contents/MacOS/Shifu"
 cp -R "$BIN_DIR/GRDB.framework" "$APP/Contents/Frameworks/"
+cp "Sources/ShifuApp/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 # The build product resolves GRDB via @loader_path (framework next to the
 # binary); inside a bundle it lives in Contents/Frameworks instead.
 if ! otool -l "$APP/Contents/MacOS/Shifu" | grep -q '@executable_path/../Frameworks'; then
@@ -37,6 +38,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
 PLIST

@@ -205,6 +205,37 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v6") { db in
+            // Tasks & projects (design.md §5.3): activities group into tasks,
+            // tasks group into user-created projects, per-day work logs.
+            try db.create(table: "projects") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("name", .text).notNull().unique()
+                table.column("created_at", .integer).notNull()
+            }
+            try db.create(table: "tasks") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("key", .text).notNull().unique()   // TaskGrouper.key
+                table.column("name", .text).notNull()           // user-renameable
+                table.column("project_id", .integer).references("projects", onDelete: .setNull)
+                table.column("created_at", .integer).notNull()
+                table.column("last_active_at", .integer).notNull()
+            }
+            try db.create(index: "idx_tasks_last_active", on: "tasks", columns: ["last_active_at"])
+            try db.create(table: "task_logs") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("task_id", .integer).notNull().references("tasks", onDelete: .cascade)
+                table.column("day_start", .integer).notNull()   // local-midnight unix ms
+                table.column("duration_ms", .integer).notNull()
+                table.column("summary", .text).notNull()
+                table.uniqueKey(["task_id", "day_start"])
+            }
+            try db.alter(table: "activities") { table in
+                table.add(column: "task_id", .integer)
+            }
+            try db.create(index: "idx_activities_task", on: "activities", columns: ["task_id"])
+        }
+
         return migrator
     }
 }
