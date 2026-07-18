@@ -27,6 +27,18 @@ cp "$BIN_DIR/shifud" "$BIN_DIR/shifu-analyzer" "$BIN_DIR/shifu" "$SHIFU_HOME/bin
 rm -rf "$SHIFU_HOME/bin/GRDB.framework"
 cp -R "$BIN_DIR/GRDB.framework" "$SHIFU_HOME/bin/"
 
+# TCC keys Accessibility/Screen Recording grants to the code signature. The default
+# linker ad-hoc signature changes every build, orphaning the grants on each reinstall;
+# a certificate-based signature keeps them valid across rebuilds.
+IDENTITY="${SHIFU_CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/[0-9]+\)/ {print $2; exit}')}"
+if [ -n "$IDENTITY" ]; then
+    codesign --force --sign "$IDENTITY" "$SHIFU_HOME/bin/GRDB.framework"
+    codesign --force --sign "$IDENTITY" --identifier com.shifu.shifud "$SHIFU_HOME/bin/shifud"
+    codesign --force --sign "$IDENTITY" "$SHIFU_HOME/bin/shifu-analyzer" "$SHIFU_HOME/bin/shifu"
+else
+    echo "WARNING: no codesigning identity found — TCC grants will break on every rebuild"
+fi
+
 mkdir -p "$(dirname "$AGENT_PLIST")"
 sed -e "s|__BIN__|$SHIFU_HOME/bin/shifud|" -e "s|__HOME__|$SHIFU_HOME|" \
     scripts/$LABEL.plist.template > "$AGENT_PLIST"

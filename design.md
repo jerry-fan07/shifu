@@ -341,9 +341,11 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
 - Direct Claude Code handoff for automation suggestions (§6.2).
 - ~~SQLCipher at rest~~ — shipped after v1 via DuckDuckGo's GRDB 7.4.1 +
   SQLCipher 4.7.0 xcframework (`shifu encrypt`, key in the login Keychain,
-  `SHIFU_DB_KEY` override for tests). Remaining follow-up: code-sign the
-  binaries with a shared team ID so the Keychain item is shared without
-  per-binary prompts.
+  `SHIFU_DB_KEY` override for tests). Follow-up done: `install-daemon.sh`
+  code-signs the binaries with a stable identity — required anyway because TCC
+  keys Accessibility/Screen Recording grants to the code signature, and the
+  ad-hoc linker signature orphaned them on every rebuild (toggles stayed ON in
+  System Settings while capture degraded to metadata-only).
 - **Bundled MLX local model** (deferred from Phase 3): Apple Foundation Models
   covers the on-device path on macOS 26+; a ~2 GB bundled model only earns its
   place if dogfooding shows meaningful demand on older systems.

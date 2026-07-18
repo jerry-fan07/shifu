@@ -30,6 +30,20 @@ Then grant permissions in **System Settings → Privacy & Security** to
 - **Accessibility** — window titles + visible text (the cheap capture path)
 - **Screen Recording** — screenshot→OCR fallback for apps with no accessible text
 
+The install script code-signs the binaries with your first codesigning identity
+(override with `SHIFU_CODESIGN_IDENTITY`). This matters: macOS keys TCC grants
+to the code signature, and the default ad-hoc linker signature changes on every
+build — after a reinstall the toggles still show ON but reference the old
+binary, and shifud silently degrades to metadata-only capture
+(`logs/shifud.log` shows "permission missing" warnings). A certificate-based
+signature keeps grants valid across rebuilds. If grants were made against an
+unsigned build, remove the stale entries (**–**), re-add `~/Shifu/bin/shifud`,
+and restart the daemon:
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/com.shifu.shifud"
+```
+
 Run the menu bar app for the dashboard, review sessions, and onboarding:
 
 ```sh
@@ -68,8 +82,9 @@ shifu encrypt           migrate the database to SQLCipher (key in Keychain)
 - Raw text expires after 14 days; the ledger and confirmed notes persist.
 - **Encryption at rest (opt-in)**: `shifu encrypt` migrates the database to
   SQLCipher (via DuckDuckGo's GRDB+SQLCipher build); the key lives in your
-  login Keychain. Stop the daemon during migration. Until the binaries are
-  code-signed, each one prompts once for Keychain access.
+  login Keychain. Stop the daemon during migration. Each binary prompts once
+  for Keychain access; because `install-daemon.sh` signs with a stable
+  identity, that approval survives rebuilds.
 
 ## Data layout
 
