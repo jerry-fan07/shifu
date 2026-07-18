@@ -350,7 +350,8 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   covers the on-device path on macOS 26+; a ~2 GB bundled model only earns its
   place if dogfooding shows meaningful demand on older systems.
 - Signed + notarized DMG packaging (needs Developer ID certs; `install-daemon.sh`
-  covers the from-source path until then).
+  + `install-app.sh` cover the from-source path until then — the latter bundles
+  ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
 
 ---
