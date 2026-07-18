@@ -44,11 +44,15 @@ and restart the daemon:
 launchctl kickstart -k "gui/$(id -u)/com.shifu.shifud"
 ```
 
-Run the menu bar app for the dashboard, review sessions, and onboarding:
+Install the menu bar app (dashboard, review sessions, onboarding) as a
+standalone `Shifu.app`:
 
 ```sh
-swift run ShifuApp
+./scripts/install-app.sh          # bundles + signs → /Applications/Shifu.app
 ```
+
+Add it in **System Settings → General → Login Items** to start at login.
+During development, `swift run ShifuApp` runs it unbundled.
 
 ## CLI
 
