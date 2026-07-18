@@ -44,7 +44,17 @@ sed -e "s|__BIN__|$SHIFU_HOME/bin/shifud|" -e "s|__HOME__|$SHIFU_HOME|" \
     scripts/$LABEL.plist.template > "$AGENT_PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+# bootout is async — give the old registration a moment to clear
+for _ in $(seq 1 50); do
+    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.1
+done
+# macOS 13+ may auto-load the rewritten plist before we get here; launchctl
+# reports "already loaded" as error 5, so restart in place instead of failing.
+if ! launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null; then
+    launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null \
+        || launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+fi
 
 echo "installed and started $LABEL"
 echo "grant permissions in System Settings → Privacy & Security:"

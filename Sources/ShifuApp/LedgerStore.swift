@@ -20,6 +20,8 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
     @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
     @Published var reviewDeck: ReviewDeck = .all
+    @Published var vaultQuery = ""
+    @Published private(set) var vaultHits: [VaultSearch.Hit] = []
     @Published private(set) var lastError: String?
 
     private var vault: VaultStore { VaultStore(database: try? db()) }
@@ -109,6 +111,29 @@ final class LedgerStore: ObservableObject {
     func review(_ note: Note, grade: FSRS.Grade) {
         _ = try? vault.review(note, grade: grade)
         refresh()
+    }
+
+    // MARK: - Vault search (vault-features.md §4)
+
+    func searchVault() {
+        guard let database = try? db(),
+              !vaultQuery.trimmingCharacters(in: .whitespaces).isEmpty else {
+            vaultHits = []
+            return
+        }
+        vaultHits = (try? VaultSearch.search(vaultQuery, database: database)) ?? []
+    }
+
+    /// The note file behind a search hit, split for display. Nil if the file
+    /// vanished since indexing (next reconcile cleans the row up).
+    func noteDocument(for hit: VaultSearch.Hit) -> FrontMatter.Document? {
+        let file = ShifuPaths.vault.appendingPathComponent(hit.path)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return FrontMatter.parse(text)
+    }
+
+    func noteFileURL(for hit: VaultSearch.Hit) -> URL {
+        ShifuPaths.vault.appendingPathComponent(hit.path)
     }
 
     // MARK: - Tasks & projects (design.md §5.3)

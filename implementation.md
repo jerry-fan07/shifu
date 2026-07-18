@@ -134,3 +134,5 @@ Order of work:
 | 6 Hardening | all | 1–1.5 weeks |
 
 Phases 4 and 5 are independent of each other and can swap order if vault dogfooding data is more valuable early.
+
+The vault second-brain phases (V1–V4: search index, work notes, semantic clustering, projects) are planned separately in [vault-implementation.md](vault-implementation.md), companion to [vault-features.md](vault-features.md).

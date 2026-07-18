@@ -236,6 +236,29 @@ public struct ShifuDatabase: Sendable {
             try db.create(index: "idx_activities_task", on: "activities", columns: ["task_id"])
         }
 
+        migrator.registerMigration("v7") { db in
+            // Vault search index (vault-features.md §4). The Markdown tree is
+            // the source of truth; these tables are disposable and fully
+            // rebuildable from the files (`shifu vault reindex`).
+            try db.create(table: "vault_index") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("note_id", .text).notNull().unique()
+                table.column("path", .text).notNull()       // relative to vault root
+                table.column("kind", .text).notNull()       // FrontMatter.Kind
+                table.column("task_id", .integer)
+                table.column("project_id", .integer)
+                table.column("captured", .integer)          // unix ms
+                table.column("content_hash", .integer).notNull()
+                table.column("mtime", .integer).notNull()   // unix ms, for reconcile
+            }
+            try db.create(index: "idx_vault_index_kind", on: "vault_index", columns: ["kind"])
+            try db.create(index: "idx_vault_index_task", on: "vault_index", columns: ["task_id"])
+            try db.create(index: "idx_vault_index_project", on: "vault_index", columns: ["project_id"])
+            // Full-text side, rowid tied to vault_index.id. Plain FTS5 (not
+            // external-content): the duplicated text is disposable by design.
+            try db.execute(sql: "CREATE VIRTUAL TABLE vault_fts USING fts5(title, body)")
+        }
+
         return migrator
     }
 }

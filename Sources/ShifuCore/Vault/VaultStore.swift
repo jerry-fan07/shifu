@@ -35,6 +35,11 @@ public struct VaultStore: Sendable {
         try FileManager.default.createDirectory(
             at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try note.serialize().write(to: target, atomically: true, encoding: .utf8)
+        // Write-through to the search index (vault-features.md §4); reconcile
+        // in the analyzer covers external edits.
+        if let database {
+            try VaultIndexer.indexFile(at: target, root: root, database: database)
+        }
         return target
     }
 
@@ -89,6 +94,9 @@ public struct VaultStore: Sendable {
     public func discard(_ note: Note) throws {
         if let file = existingURL(id: note.id) {
             try FileManager.default.removeItem(at: file)
+        }
+        if let database {
+            try VaultIndexer.remove(noteID: note.id, database: database)
         }
     }
 

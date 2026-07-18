@@ -88,6 +88,18 @@ if taskSummary.tasksTouched > 0 {
     print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
 }
 
+// Vault search index reconcile (vault-features.md §4): write-through hooks
+// cover Shifu's own writes; this catches external edits (Obsidian) and runs
+// after task grouping so task_key → task/project resolution is current.
+do {
+    let indexSummary = try VaultIndexer.reconcile(root: ShifuPaths.vault, database: database)
+    if indexSummary.indexed > 0 || indexSummary.removed > 0 {
+        print("vault index: \(indexSummary.indexed) updated, \(indexSummary.removed) removed")
+    }
+} catch {
+    print("vault index reconcile failed (retries next run): \(error)")
+}
+
 // Radar: mine patterns weekly (§6.1), or on demand with --radar.
 let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
 if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {

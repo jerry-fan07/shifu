@@ -22,9 +22,11 @@ invariants:
 	./scripts/check-no-network.sh
 
 # Perf harness: runs shifud against a synthetic event feed and asserts
-# CPU/RSS budgets (design.md §3.4). Grows with each phase.
+# CPU/RSS budgets (design.md §3.4), plus vault index/search budgets
+# (vault-features.md §V8). Grows with each phase.
 perf:
 	./scripts/perf-harness.sh
+	./scripts/perf-vault.sh
 
 clean:
 	swift package clean

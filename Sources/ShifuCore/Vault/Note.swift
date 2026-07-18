@@ -13,6 +13,7 @@ public struct Note: Equatable, Sendable {
     public var sourceApp: String?
     public var sourceURL: String?
     public var topic: String
+    public var taskKey: String?    // grouping key of the source activity's task (§5.3)
     public var confidence: Double?
     public var state: State
     public var seenCount: Int
@@ -21,14 +22,16 @@ public struct Note: Equatable, Sendable {
 
     public init(
         id: String = Note.ulid(), captured: Date = Date(), sourceApp: String? = nil,
-        sourceURL: String? = nil, topic: String, confidence: Double? = nil,
-        state: State = .inbox, seenCount: Int = 1, srs: FSRS.State? = nil, body: String
+        sourceURL: String? = nil, topic: String, taskKey: String? = nil,
+        confidence: Double? = nil, state: State = .inbox, seenCount: Int = 1,
+        srs: FSRS.State? = nil, body: String
     ) {
         self.id = id
         self.captured = captured
         self.sourceApp = sourceApp
         self.sourceURL = sourceURL
         self.topic = topic
+        self.taskKey = taskKey
         self.confidence = confidence
         self.state = state
         self.seenCount = seenCount
@@ -63,6 +66,7 @@ public struct Note: Equatable, Sendable {
         if let sourceApp { front.append("source_app: \(sourceApp)") }
         if let sourceURL { front.append("source_url: \(sourceURL)") }
         front.append("topic: \(topic)")
+        if let taskKey { front.append("task_key: \(taskKey)") }
         if let confidence { front.append("confidence: \(String(format: "%.2f", confidence))") }
         front.append("state: \(state.rawValue)")
         if seenCount > 1 { front.append("seen_count: \(seenCount)") }
@@ -78,23 +82,13 @@ public struct Note: Equatable, Sendable {
         return front.joined(separator: "\n") + "\n\n" + body + "\n"
     }
 
-    /// Parses a note file. Nil when there's no valid frontmatter block.
+    /// Parses a knowledge-note file. Nil when there's no valid frontmatter
+    /// block, or when the file is another vault kind (work/project notes,
+    /// vault-features.md §2 — they must never enter inbox/review queries).
     public static func parse(_ text: String) -> Note? {
-        let lines = text.components(separatedBy: "\n")
-        guard lines.first == "---",
-              let closing = lines.dropFirst().firstIndex(of: "---") else { return nil }
-
-        var fields: [String: String] = [:]
-        for line in lines[1..<closing] {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
-            let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            fields[key] = value
-        }
+        guard let doc = FrontMatter.parse(text), doc.kind == .knowledge else { return nil }
+        let fields = doc.fields
         guard let id = fields["id"], let topic = fields["topic"] else { return nil }
-
-        let body = lines[(closing + 1)...].joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return Note(
             id: id,
@@ -102,11 +96,12 @@ public struct Note: Equatable, Sendable {
             sourceApp: fields["source_app"],
             sourceURL: fields["source_url"],
             topic: topic,
+            taskKey: fields["task_key"],
             confidence: fields["confidence"].flatMap(Double.init),
             state: fields["state"].flatMap(State.init(rawValue:)) ?? .kept,
             seenCount: fields["seen_count"].flatMap(Int.init) ?? 1,
             srs: fields["srs"].flatMap(parseSRS),
-            body: body
+            body: doc.body
         )
     }
 

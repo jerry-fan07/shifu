@@ -15,6 +15,9 @@ usage: shifu <command>
   review         spaced-repetition session over due vault notes
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
+  vault search <query> [--task <name>] [--project <name>] [--kind <kind>] [--since <7d>]
+                 full-text search over the vault
+  vault reindex  rebuild the vault search index from the Markdown files
   encrypt        encrypt the database with SQLCipher (key in Keychain)
 """
 
@@ -219,6 +222,137 @@ func commandForget(_ arguments: [String]) throws {
     }
 }
 
+struct VaultSearchOptions {
+    var query: [String] = []
+    var kind: FrontMatter.Kind?
+    var taskID: Int64?
+    var projectID: Int64?
+    var since: Date?
+}
+
+/// Parses `vault search` flags; prints a hint and exits on a bad flag value.
+func parseVaultSearchOptions(_ arguments: [String], db: ShifuDatabase) throws -> VaultSearchOptions {
+    var options = VaultSearchOptions()
+    var rest = arguments.makeIterator()
+    while let arg = rest.next() {
+        switch arg {
+        case "--kind":
+            guard let value = rest.next().flatMap(FrontMatter.Kind.init(rawValue:)) else {
+                print("--kind takes knowledge, work, or project")
+                exit(1)
+            }
+            options.kind = value
+        case "--task":
+            guard let name = rest.next(), let id = try db.queue.read({ sqlite in
+                try Int64.fetchOne(sqlite, sql:
+                    "SELECT id FROM tasks WHERE name = ? COLLATE NOCASE OR key = ?",
+                    arguments: [name, name])
+            }) else {
+                print("no task named that — see the Vault tab for names")
+                exit(1)
+            }
+            options.taskID = id
+        case "--project":
+            guard let name = rest.next(), let id = try db.queue.read({ sqlite in
+                try Int64.fetchOne(sqlite, sql:
+                    "SELECT id FROM projects WHERE name = ? COLLATE NOCASE",
+                    arguments: [name])
+            }) else {
+                print("no project named that")
+                exit(1)
+            }
+            options.projectID = id
+        case "--since":
+            guard let spec = rest.next(), let interval = parseForgetRangeSpec(spec) else {
+                print("--since takes a range like 2h, 7d")
+                exit(1)
+            }
+            options.since = Date().addingTimeInterval(-interval)
+        default:
+            options.query.append(arg)
+        }
+    }
+    return options
+}
+
+func commandVaultSearch(_ arguments: [String], db: ShifuDatabase) throws {
+    let options = try parseVaultSearchOptions(arguments, db: db)
+    guard !options.query.isEmpty else {
+        print("usage: shifu vault search <query> [--task] [--project] [--kind] [--since]")
+        exit(1)
+    }
+    let hits = try VaultSearch.search(
+        options.query.joined(separator: " "), kind: options.kind, taskID: options.taskID,
+        projectID: options.projectID, since: options.since, database: db)
+    guard !hits.isEmpty else {
+        print("no matches")
+        return
+    }
+    for (rank, hit) in hits.enumerated() {
+        print("\(rank + 1). \(hit.title)")
+        print("   \(hit.snippet.replacingOccurrences(of: "\n", with: " "))")
+        print("   \(ShifuPaths.vault.appendingPathComponent(hit.path).path)")
+    }
+}
+
+func commandVault(_ arguments: [String]) throws {
+    let db = try openDatabase()
+    switch arguments.first {
+    case "reindex":
+        let summary = try VaultIndexer.reconcile(root: ShifuPaths.vault, database: db)
+        print("reindexed: \(summary.indexed) updated, \(summary.removed) removed, "
+            + "\(summary.unchanged) unchanged")
+    case "search":
+        try commandVaultSearch(Array(arguments.dropFirst()), db: db)
+    case "bench":
+        // Perf-harness hook (vault-features.md §V8), not user-facing: build a
+        // synthetic vault under SHIFU_HOME, then time a no-change reconcile
+        // and one search. scripts/perf-vault.sh parses and asserts budgets.
+        let count = arguments.dropFirst().first.flatMap(Int.init) ?? 10_000
+        try commandVaultBench(count: count, db: db)
+    default:
+        print("usage: shifu vault search <query> … | reindex")
+    }
+}
+
+func commandVaultBench(count: Int, db: ShifuDatabase) throws {
+    let words = ["capture", "daemon", "sqlite", "swift", "vision", "ocr", "window",
+                 "focus", "battery", "schedule", "index", "vault", "review", "fsrs",
+                 "pattern", "digest", "session", "topic", "ledger", "radar"]
+    try FileManager.default.createDirectory(at: ShifuPaths.vault, withIntermediateDirectories: true)
+    var generator = SystemRandomNumberGenerator()
+    for serial in 0..<count {
+        let topic = "\(words[serial % words.count]) note \(serial)"
+        var body = (0..<40).map { _ in words.randomElement(using: &generator) ?? "note" }
+            .joined(separator: " ")
+        if serial % 1_000 == 0 { body += " zanzibar" }   // rare term to search for
+        let note = Note(topic: topic, state: .kept, body: body)
+        let file = ShifuPaths.vault.appendingPathComponent("bench/\(note.id.lowercased()).md")
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try note.serialize().write(to: file, atomically: true, encoding: .utf8)
+    }
+
+    func measureMs(_ block: () throws -> Void) rethrows -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        try block()
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    let initialMs = try measureMs { try VaultIndexer.reconcile(root: ShifuPaths.vault, database: db) }
+    let reconcileMs = try measureMs {
+        let summary = try VaultIndexer.reconcile(root: ShifuPaths.vault, database: db)
+        precondition(summary.indexed == 0 && summary.removed == 0, "bench vault changed underfoot")
+    }
+    var hitCount = 0
+    let searchMs = try measureMs {
+        hitCount = try VaultSearch.search("zanzibar", limit: 50, database: db).count
+    }
+    print("vault bench: \(count) notes, initial \(Int(initialMs)) ms, "
+        + "reconcile \(Int(reconcileMs)) ms, search \(String(format: "%.1f", searchMs)) ms "
+        + "(\(hitCount) hits)")
+}
+
 func commandEncrypt() throws {
     guard FileManager.default.fileExists(atPath: ShifuPaths.database.path) else {
         print("no database yet — it will be created encrypted once a key exists.")
@@ -269,27 +403,21 @@ do {
 }
 
 func run() throws {
-switch args.first {
-case "log":
-    let days = args.dropFirst().first.flatMap(Int.init) ?? 1
-    try commandLog(days: days)
-case "status":
-    try commandStatus()
-case "pause":
-    try commandPause(args.dropFirst().first ?? "1h")
-case "resume":
-    try commandResume()
-case "review":
-    try commandReview()
-case "forget":
-    try commandForget(Array(args.dropFirst()))
-case "encrypt":
-    try commandEncrypt()
-case "work":
-    try commandWork(args.dropFirst().first)
-case "--version":
-    print("shifu \(Shifu.version)")
-default:
-    print(usage)
-}
+    let commands: [String: () throws -> Void] = [
+        "log": { try commandLog(days: args.dropFirst().first.flatMap(Int.init) ?? 1) },
+        "status": commandStatus,
+        "pause": { try commandPause(args.dropFirst().first ?? "1h") },
+        "resume": commandResume,
+        "review": commandReview,
+        "forget": { try commandForget(Array(args.dropFirst())) },
+        "vault": { try commandVault(Array(args.dropFirst())) },
+        "encrypt": commandEncrypt,
+        "work": { try commandWork(args.dropFirst().first) },
+        "--version": { print("shifu \(Shifu.version)") }
+    ]
+    guard let name = args.first, let command = commands[name] else {
+        print(usage)
+        return
+    }
+    try command()
 }
