@@ -8,6 +8,12 @@ public enum KnowledgeExtractor {
     public static let batchLimit = 8
     public static let confidenceFloor = 0.5
 
+    private struct BlockContext {
+        var text: String
+        var url: String?
+        var taskKey: String?
+    }
+
     struct Candidate {
         var topic: String
         var note: String
@@ -51,7 +57,9 @@ public enum KnowledgeExtractor {
         }
     }
 
-    static func note(from candidate: Candidate, activity: Activity, sourceURL: String?) -> Note {
+    static func note(
+        from candidate: Candidate, activity: Activity, sourceURL: String?, taskKey: String?
+    ) -> Note {
         var body = candidate.note
         if let question = candidate.question, let answer = candidate.answer {
             body += "\n\nQ: \(question)\nA: \(answer)"
@@ -61,10 +69,35 @@ public enum KnowledgeExtractor {
             sourceApp: activity.appBundle.split(separator: ".").last.map(String.init),
             sourceURL: sourceURL,
             topic: candidate.topic,
+            taskKey: taskKey,
             confidence: candidate.confidence,
             state: .inbox,
             body: body
         )
+    }
+
+    /// The block's redacted text sample, first URL, and task key. TaskGrouper
+    /// runs before extraction (vault-features.md §3), so the source activity's
+    /// task key exists to stamp into new notes (§2.3).
+    private static func blockContext(
+        for activityID: Int64, database: ShifuDatabase
+    ) async throws -> BlockContext {
+        try await database.queue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT text, url FROM observations
+                WHERE session_id = ? AND text IS NOT NULL LIMIT 4
+                """, arguments: [activityID])
+            let text = rows.compactMap { $0["text"] as String? }
+                .joined(separator: "\n").prefix(2_500)
+            let taskKey = try String.fetchOne(db, sql: """
+                SELECT t.key FROM tasks t
+                JOIN activities a ON a.task_id = t.id WHERE a.id = ?
+                """, arguments: [activityID])
+            return BlockContext(
+                text: String(text),
+                url: rows.compactMap { $0["url"] as String? }.first,
+                taskKey: taskKey)
+        }
     }
 
     /// Runs extraction over unprocessed learning/novel-work blocks in the
@@ -91,30 +124,23 @@ public enum KnowledgeExtractor {
         var written = 0
         for activity in targets {
             guard let activityID = activity.id else { continue }
-            let (text, url) = try await database.queue.read { db -> (String, String?) in
-                let rows = try Row.fetchAll(db, sql: """
-                    SELECT text, url FROM observations
-                    WHERE session_id = ? AND text IS NOT NULL LIMIT 4
-                    """, arguments: [activityID])
-                let text = rows.compactMap { $0["text"] as String? }
-                    .joined(separator: "\n").prefix(2_500)
-                let url = rows.compactMap { $0["url"] as String? }.first
-                return (String(text), url)
-            }
+            let context = try await blockContext(for: activityID, database: database)
 
             // Mark processed regardless of outcome so we never re-bill a block.
             try await database.queue.write { db in
                 try db.execute(sql: "UPDATE activities SET extracted = 1 WHERE id = ?",
                                arguments: [activityID])
             }
-            guard text.count >= 200 else { continue }   // not enough signal
+            guard context.text.count >= 200 else { continue }   // not enough signal
 
             let response = try await backend.complete(
-                prompt: prompt(blockText: text, app: activity.appBundle, url: url),
+                prompt: prompt(blockText: context.text, app: activity.appBundle,
+                               url: context.url),
                 maxTokens: 1_000)
             for candidate in parseCandidates(response)
             where candidate.confidence >= confidenceFloor {
-                let note = note(from: candidate, activity: activity, sourceURL: url)
+                let note = note(from: candidate, activity: activity,
+                                sourceURL: context.url, taskKey: context.taskKey)
                 if try !vault.mergeIfDuplicate(of: note) {
                     try vault.save(note)
                     written += 1

@@ -23,6 +23,8 @@ final class CaptureEngine {
     private let ocr = OCRCapture()
     private var lastDHashByKey: [String: UInt64] = [:]
     private var ocrInFlight = false
+    /// Chromium PIDs already asked to build their web-content AX tree.
+    private var webAXEnabledPIDs: Set<pid_t> = []
 
     private(set) var lastCaptureAt: Date = .distantPast
 
@@ -70,6 +72,13 @@ final class CaptureEngine {
             if let url, exclusions.isExcluded(url: url) {
                 record(.init(timestamp: now, appBundle: bundle, captureKind: .excluded))
                 return
+            }
+            // Chromium keeps web content out of the AX tree until asked;
+            // without this rung 2 sees only browser chrome and every capture
+            // pays the OCR cost.
+            if Browsers.isChromium(bundle),
+               webAXEnabledPIDs.insert(app.processIdentifier).inserted {
+                AXHelper.enableWebAccessibility(pid: app.processIdentifier)
             }
         }
 

@@ -46,6 +46,9 @@ struct OnboardingView: View {
             window title, visible text — and turns it into a time ledger, a knowledge \
             vault, and automation suggestions.
 
+            Raw captured text is deleted after 14 days; the distilled work notes in \
+            your vault persist beyond that window.
+
             What it never does:
             • never records keystrokes
             • never saves screenshots — pixels live in memory only for OCR

@@ -148,10 +148,13 @@ public enum TaskStore {
             appBundle: note.sourceApp ?? "")
     }
 
-    /// Whether a note belongs to a task's deck: exact key match, or
-    /// containment between topic slugs (extractor and classifier word the
-    /// same subject slightly differently).
+    /// Whether a note belongs to a task's deck. Notes stamped with an explicit
+    /// `task_key` at extraction time (vault-features.md §2.3) match exactly;
+    /// the slug heuristic below survives only for pre-existing notes: exact
+    /// key match, or containment between topic slugs (extractor and
+    /// classifier word the same subject slightly differently).
     public static func matches(note: Note, taskKey: String) -> Bool {
+        if let stamped = note.taskKey { return stamped == taskKey }
         let noteKey = Self.noteKey(note)
         if noteKey == taskKey { return true }
         guard noteKey.hasPrefix("topic:"), taskKey.hasPrefix("topic:") else { return false }

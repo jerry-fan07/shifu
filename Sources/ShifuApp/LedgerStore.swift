@@ -29,6 +29,8 @@ final class LedgerStore: ObservableObject {
     var isPaused: Bool { pausedUntil.map { $0 > Date() } ?? false }
 
     private var database: ShifuDatabase?
+    private var analyzerProcess: Process?
+    private var lastAnalyzerRun = Date.distantPast
 
     private func db() throws -> ShifuDatabase {
         if let database { return database }
@@ -65,6 +67,32 @@ final class LedgerStore: ObservableObject {
                 to: Int64(Date().timeIntervalSince1970 * 1_000)
             )
             lastError = nil
+        } catch {
+            lastError = "\(error)"
+        }
+    }
+
+    /// Kicks shifu-analyzer on demand so the summary covers up to right now,
+    /// then refreshes once it exits. Throttled so reopening the menu doesn't
+    /// stack runs; concurrent with shifud's hourly run is fine (idempotent).
+    func runAnalysis() {
+        if let existing = analyzerProcess, existing.isRunning { return }
+        guard Date().timeIntervalSince(lastAnalyzerRun) > 60 else { return }
+        let analyzerURL = ShifuPaths.home
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("shifu-analyzer")
+        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else { return }
+        let process = Process()
+        process.executableURL = analyzerURL
+        process.arguments = ["--force"]  // user-initiated: don't skip on battery
+        process.qualityOfService = .utility
+        process.terminationHandler = { _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+        do {
+            try process.run()
+            analyzerProcess = process
+            lastAnalyzerRun = Date()
         } catch {
             lastError = "\(error)"
         }
@@ -134,6 +162,14 @@ final class LedgerStore: ObservableObject {
 
     func noteFileURL(for hit: VaultSearch.Hit) -> URL {
         ShifuPaths.vault.appendingPathComponent(hit.path)
+    }
+
+    /// The task's most recent work note (vault-features.md §2.1) as a search
+    /// hit, so the Vault tab's rows open in the same note reader.
+    func latestWorkNote(taskID: Int64, title: String) -> VaultSearch.Hit? {
+        guard let database = try? db() else { return nil }
+        return (try? VaultSearch.latest(
+            kind: .work, taskID: taskID, title: title, database: database)) ?? nil
     }
 
     // MARK: - Tasks & projects (design.md §5.3)

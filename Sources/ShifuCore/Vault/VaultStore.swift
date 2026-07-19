@@ -69,6 +69,69 @@ public struct VaultStore: Sendable {
         }
     }
 
+    // MARK: - Work notes (vault-features.md §2.1)
+
+    /// `work/YYYY/MM/DD-<task-slug>.md`. The slug comes from the task *key*
+    /// (stable across renames), so file identity survives display renames.
+    public func workNoteURL(day: String, taskKey: String) -> URL {
+        let parts = day.split(separator: "-").map(String.init)
+        let year = parts.isEmpty ? "0000" : parts[0]
+        let month = parts.count > 1 ? parts[1] : "00"
+        let dayNum = parts.count > 2 ? parts[2] : "00"
+        let suffix = taskKey.split(separator: ":", maxSplits: 1)
+            .last.map(String.init) ?? taskKey
+        let slug = TaskGrouper.slug(suffix)
+        return root
+            .appendingPathComponent("work", isDirectory: true)
+            .appendingPathComponent(year, isDirectory: true)
+            .appendingPathComponent(month, isDirectory: true)
+            .appendingPathComponent("\(dayNum)-\(slug.prefix(40)).md")
+    }
+
+    public func workNote(day: String, taskKey: String) -> WorkNote? {
+        let file = workNoteURL(day: day, taskKey: taskKey)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return WorkNote.parse(text)
+    }
+
+    @discardableResult
+    public func saveWork(_ note: WorkNote) throws -> URL {
+        let target = workNoteURL(day: note.day, taskKey: note.taskKey)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try note.serialize().write(to: target, atomically: true, encoding: .utf8)
+        if let database {
+            try VaultIndexer.indexFile(at: target, root: root, database: database)
+        }
+        return target
+    }
+
+    /// Removes one work-note file and its index rows immediately (deletion
+    /// must not wait for the next reconcile — vault-features.md §V7).
+    public func deleteWork(at url: URL, noteID: String) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        if let database {
+            try VaultIndexer.remove(noteID: noteID, database: database)
+        }
+    }
+
+    /// All work-note files for one local day, wherever their task slug landed.
+    public func workNoteFiles(day: String) -> [URL] {
+        let parts = day.split(separator: "-").map(String.init)
+        guard parts.count == 3 else { return [] }
+        let dir = root
+            .appendingPathComponent("work", isDirectory: true)
+            .appendingPathComponent(parts[0], isDirectory: true)
+            .appendingPathComponent(parts[1], isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter {
+            $0.pathExtension == "md" && $0.lastPathComponent.hasPrefix("\(parts[2])-")
+        }
+    }
+
     func existingURL(id: String) -> URL? {
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: nil) else { return nil }

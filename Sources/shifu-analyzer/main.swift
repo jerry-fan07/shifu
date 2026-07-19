@@ -67,10 +67,22 @@ if let backend {
         // LLM problems never block the ledger (§10); blocks stay queued.
         print("llm (\(backend.name)) failed, blocks stay queued: \(error)")
     }
+}
 
-    // Knowledge extraction over learning/novel-work blocks (§5.1).
+// Tasks & work logs (§5.3): group the window's activities into ongoing tasks
+// and compile per-day logs. Runs after the LLM pass so topics exist, and
+// *before* extraction so `activities.task_id` exists when notes are born
+// (vault-features.md §3).
+let taskSummary = try TaskGrouper.run(database: database, from: from, to: nowMs)
+if taskSummary.tasksTouched > 0 {
+    print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+}
+
+let vault = VaultStore(database: database)
+
+// Knowledge extraction over learning/novel-work blocks (§5.1).
+if let backend {
     do {
-        let vault = VaultStore(database: database)
         let candidates = try await KnowledgeExtractor.run(
             database: database, vault: vault, backend: backend, from: from, to: nowMs)
         if candidates > 0 {
@@ -81,11 +93,18 @@ if let backend {
     }
 }
 
-// Tasks & work logs (§5.3): group the window's activities into ongoing tasks
-// and compile per-day logs. Runs after the LLM pass so topics exist.
-let taskSummary = try TaskGrouper.run(database: database, from: from, to: nowMs)
-if taskSummary.tasksTouched > 0 {
-    print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+// Work notes (vault-features.md §2.1): deterministic parts always compile;
+// narratives need a backend and regenerate only when a day's activities
+// changed (content-hash gate).
+do {
+    let workSummary = try await WorkNoteCompiler.run(
+        database: database, vault: vault, backend: backend, from: from, to: nowMs)
+    if workSummary.notesWritten > 0 {
+        print("work notes: \(workSummary.notesWritten) compiled, "
+            + "\(workSummary.narrativesGenerated) narratives")
+    }
+} catch {
+    print("work notes failed (retries next run): \(error)")
 }
 
 // Vault search index reconcile (vault-features.md §4): write-through hooks

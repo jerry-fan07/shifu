@@ -59,19 +59,27 @@ struct VaultTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.todayLogs) { entry in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.taskName).bold()
-                            Text(entry.summary)
-                                .font(.callout)
+                    // Opens the task's latest work note (vault-features.md §2.1).
+                    Button {
+                        selectedHit = store.latestWorkNote(
+                            taskID: entry.taskID, title: entry.taskName)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.taskName).bold()
+                                Text(entry.summary)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
+                            Text(LedgerStore.hours(entry.durationMs))
+                                .monospacedDigit()
                                 .foregroundStyle(.secondary)
-                                .lineLimit(2)
                         }
-                        Spacer()
-                        Text(LedgerStore.hours(entry.durationMs))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .padding(.vertical, 2)
                 }
             }
@@ -82,7 +90,12 @@ struct VaultTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.recentTasks) { overview in
-                    TaskRowView(overview: overview)
+                    TaskRowView(overview: overview) {
+                        if let taskID = overview.task.id {
+                            selectedHit = store.latestWorkNote(
+                                taskID: taskID, title: overview.task.name)
+                        }
+                    }
                 }
             }
 
@@ -167,10 +180,12 @@ private struct NoteReaderView: View {
     }
 }
 
-/// One task row: inline rename, latest log line, project assignment.
+/// One task row: inline rename, latest log line, project assignment, and a
+/// button opening the task's latest work note.
 private struct TaskRowView: View {
     @EnvironmentObject private var store: LedgerStore
     let overview: TaskStore.Overview
+    var openNote: () -> Void
     @State private var name = ""
 
     var body: some View {
@@ -183,6 +198,11 @@ private struct TaskRowView: View {
                         if let taskID = overview.task.id { store.renameTask(taskID, to: name) }
                     }
                 Spacer()
+                Button(action: openNote) {
+                    Image(systemName: "doc.text")
+                }
+                .buttonStyle(.borderless)
+                .help("Open the latest work note")
                 Text(LedgerStore.hours(overview.totalMs))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)

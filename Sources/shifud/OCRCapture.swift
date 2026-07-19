@@ -13,7 +13,8 @@ final class OCRCapture {
         let dhash: UInt64
     }
 
-    static let maxCaptureWidth = 1_280
+    static let maxCaptureWidth = 2_560
+    static let maxCaptureScale: CGFloat = 2.0
 
     /// Screenshots the frontmost window of `pid` and OCRs it.
     /// Returns nil when no capturable window exists.
@@ -29,11 +30,13 @@ final class OCRCapture {
         guard let window = candidates.first else { return nil }
 
         let config = SCStreamConfiguration()
-        let scale = min(1.0, CGFloat(Self.maxCaptureWidth) / window.frame.width)
+        // Capture at up to Retina (2x) pixel density, capped at maxCaptureWidth:
+        // window.frame is in points, and OCR needs text at near-native pixel size.
+        let scale = min(Self.maxCaptureScale, CGFloat(Self.maxCaptureWidth) / window.frame.width)
         config.width = Int(window.frame.width * scale)
         config.height = Int(window.frame.height * scale)
         config.showsCursor = false
-        config.captureResolution = .nominal
+        config.captureResolution = .automatic
 
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let image = try await SCScreenshotManager.captureImage(
@@ -46,10 +49,14 @@ final class OCRCapture {
     }
 
     /// On-device OCR, fast recognition level (Neural Engine/GPU, not CPU).
+    /// At 2x capture density, .fast + language correction reads UI text nearly
+    /// perfectly in ~200 ms; .accurate costs ~750 ms/burst (over the §3.4
+    /// 300 ms budget) for marginal gains — resolution, not level, was the
+    /// accuracy bottleneck.
     static func recognizeText(in image: CGImage) throws -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .fast
-        request.usesLanguageCorrection = false
+        request.usesLanguageCorrection = true
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         try handler.perform([request])
         let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }

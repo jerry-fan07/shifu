@@ -117,7 +117,7 @@ For each trigger, Shifu walks down this ladder and stops at the first rung that 
 
 1. **Metadata only** (~free): app bundle ID, window title, browser URL, timestamp. For a large fraction of triggers (app switches within known apps) this is sufficient — no content capture at all.
 2. **Accessibility text extraction** (cheap): read visible text from the focused window's AX tree (`AXStaticText`, `AXTextArea` values, capped at ~8 KB). Works for most native apps and browsers; costs microseconds-to-milliseconds and zero GPU.
-3. **Screenshot → on-device OCR** (fallback): only when the AX tree is empty/blocked (games, Electron apps with poor AX, video conferencing, images/PDF viewers). Single-window capture via **ScreenCaptureKit** (`SCScreenshotManager`, one frame — not a stream), downscaled to ≤1280 px wide, fed to **Vision `VNRecognizeTextRequest`** (runs on the Neural Engine/GPU, `fast` recognition level). The bitmap is discarded immediately after OCR; **pixels are never persisted** in the default configuration.
+3. **Screenshot → on-device OCR** (fallback): only when the AX tree is empty/blocked (games, Electron apps with poor AX, video conferencing, images/PDF viewers). Single-window capture via **ScreenCaptureKit** (`SCScreenshotManager`, one frame — not a stream), captured at up to 2× (Retina) pixel density capped at ≤2560 px wide, fed to **Vision `VNRecognizeTextRequest`** (runs on the Neural Engine/GPU, `fast` recognition level with language correction). Capture density is the accuracy lever: `fast` at 1× produced unusable text on Retina UI, while at 2× it is near-perfect in ~200 ms; `accurate` adds ~550 ms/burst for marginal gains and would break the §3.4 burst budget. The bitmap is discarded immediately after OCR; **pixels are never persisted** in the default configuration.
 4. **Skip**: if the frontmost app is on the exclusion list (§8), record only `app: excluded, duration` and capture nothing.
 
 ### 3.3 Deduplication and change detection
@@ -363,8 +363,11 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
-- LLM-written narrative work logs (§5.3 ships deterministic "where — what"
-  summaries; prose session logs only earn the tokens if those prove too thin).
+- ~~LLM-written narrative work logs~~ — shipped in vault phase V2
+  (vault-features.md §2.1): per-(task, day) work notes whose `## Sessions`
+  prose regenerates only when the day's activities change (content-hash gate
+  keyed on spans + text samples, not row ids — LedgerBuilder rebuilds recreate
+  row ids every run).
 
 ---
 

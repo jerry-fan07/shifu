@@ -10,7 +10,10 @@ struct ShifuApp: App {
     var body: some Scene {
         MenuBarExtra("Shifu", systemImage: store.isPaused ? "eye.slash" : "eye") {
             Text(store.todaySummaryLine)
-                .onAppear { store.refresh() }   // menu open = refresh
+                .onAppear {
+                    store.refresh()       // menu open = refresh
+                    store.runAnalysis()   // …and fold in the latest captures
+                }
 
             Divider()
 

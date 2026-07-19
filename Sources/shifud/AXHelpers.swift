@@ -25,6 +25,20 @@ enum AXHelper {
         return attribute(app, kAXFocusedWindowAttribute)
     }
 
+    /// Asks a Chromium-based browser to build its web-content accessibility
+    /// tree; without this its AX windows expose only browser chrome, so text
+    /// extraction yields nothing and capture falls to the OCR rung.
+    /// `AXManualAccessibility` is the side-effect-free Electron/Chromium
+    /// attribute; `AXEnhancedUserInterface` is the VoiceOver-era switch stock
+    /// Chrome honors. Setting an unsupported attribute is a harmless no-op.
+    /// The tree builds asynchronously, so the first capture after enabling may
+    /// still be thin.
+    static func enableWebAccessibility(pid: pid_t) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+
     /// Roles whose values are visible text worth capturing. Secure fields are
     /// deliberately absent — their values are never read.
     private static let textRoles: Set<String> = [

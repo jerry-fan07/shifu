@@ -8,6 +8,9 @@ import ShifuCore
 let usage = """
 usage: shifu <command>
   log [days]     observations (default: today)
+  log export [days]
+                 write full logs, including captured text, to
+                 ~/Shifu/logs/log-<date>.md (one file per day)
   status         daemon pause state and today's counts
   pause [dur]    pause capture: 30m, 1h (default), 2h, tomorrow
   resume         resume capture
@@ -76,6 +79,68 @@ func commandLog(days: Int) throws {
         print(line)
     }
     print("\n\(observations.count) observations")
+}
+
+func commandLogExport(days: Int) throws {
+    let db = try openDatabase()
+    let since = days <= 1
+        ? startOfToday()
+        : startOfToday() - Int64(days - 1) * 86_400_000
+    let observations = try db.queue.read { sqlite in
+        try Observation
+            .filter(Column("last_seen") >= since)
+            .order(Column("started_at"))
+            .fetchAll(sqlite)
+    }
+    guard !observations.isEmpty else {
+        print("no observations since \(formatClock(since)) — nothing to export")
+        return
+    }
+
+    let dayFormatter = DateFormatter()
+    dayFormatter.dateFormat = "yyyy-MM-dd"
+    let byDay = Dictionary(grouping: observations) { obs in
+        dayFormatter.string(from: Date(timeIntervalSince1970: Double(obs.startedAt) / 1_000))
+    }
+
+    try FileManager.default.createDirectory(
+        at: ShifuPaths.logs, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+
+    for (day, dayObservations) in byDay.sorted(by: { $0.key < $1.key }) {
+        var doc = "# Shifu log — \(day)\n"
+        for obs in dayObservations {
+            let duration = formatDuration(obs.lastSeen - obs.startedAt)
+            doc += "\n## \(formatClock(obs.startedAt)) — \(obs.appBundle)\n"
+            doc += "- kind: \(obs.captureKind.rawValue) · duration: \(duration)\n"
+            if let title = obs.windowTitle, !title.isEmpty {
+                doc += "- title: \(title)\n"
+            }
+            if let url = obs.url {
+                doc += "- url: \(url)\n"
+            }
+            if let text = obs.text, !text.isEmpty {
+                doc += "\n\(fencedBlock(text))\n"
+            }
+        }
+        let file = ShifuPaths.logs.appendingPathComponent("log-\(day).md")
+        try doc.write(to: file, atomically: true, encoding: .utf8)
+        print("wrote \(file.path) (\(dayObservations.count) observations)")
+    }
+}
+
+/// Wrap text in a code fence longer than any backtick run it contains,
+/// so captured content can never break out of the block.
+func fencedBlock(_ text: String) -> String {
+    var longestRun = 0
+    var currentRun = 0
+    for character in text {
+        currentRun = character == "`" ? currentRun + 1 : 0
+        longestRun = max(longestRun, currentRun)
+    }
+    let fence = String(repeating: "`", count: max(3, longestRun + 1))
+    return "\(fence)text\n\(text)\n\(fence)"
 }
 
 func commandStatus() throws {
@@ -213,9 +278,11 @@ func commandForget(_ arguments: [String]) throws {
             print("usage: shifu forget last <2h|30m|1d>")
             exit(1)
         }
+        let database = try openDatabase()
         let counts = try DeletionTools.forgetRange(
-            database: try openDatabase(),
-            from: Date().addingTimeInterval(-interval), to: Date())
+            database: database,
+            from: Date().addingTimeInterval(-interval), to: Date(),
+            vault: VaultStore(database: database))
         print("forgot last \(spec): \(counts.observations) observations, \(counts.activities) activities")
     default:
         print("usage: shifu forget last <2h|1d> | app <bundle-id> | all --yes")
@@ -404,7 +471,14 @@ do {
 
 func run() throws {
     let commands: [String: () throws -> Void] = [
-        "log": { try commandLog(days: args.dropFirst().first.flatMap(Int.init) ?? 1) },
+        "log": {
+            let rest = args.dropFirst()
+            if rest.first == "export" {
+                try commandLogExport(days: rest.dropFirst().first.flatMap(Int.init) ?? 1)
+            } else {
+                try commandLog(days: rest.first.flatMap(Int.init) ?? 1)
+            }
+        },
         "status": commandStatus,
         "pause": { try commandPause(args.dropFirst().first ?? "1h") },
         "resume": commandResume,

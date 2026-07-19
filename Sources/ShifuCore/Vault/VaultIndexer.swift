@@ -130,9 +130,13 @@ public enum VaultIndexer {
     ) throws -> String? {
         guard let doc = FrontMatter.parse(text), let noteID = doc.fields["id"] else { return nil }
 
+        // Work notes carry `day:` instead of `captured:` (vault-features.md
+        // §2.1); local midnight of that day serves as the captured time so
+        // date filters and result dates work across kinds.
         let captured = doc.fields["captured"]
             .flatMap { Note.iso.date(from: $0) }
             .map { Int64($0.timeIntervalSince1970 * 1_000) }
+            ?? doc.fields["day"].flatMap(dayMs)
         // task_key resolves against the tasks table at index time, so a later
         // project assignment is picked up by the next reconcile without
         // rewriting files (vault-features.md §4).
@@ -183,6 +187,18 @@ public enum VaultIndexer {
         if let topic = doc.fields["topic"] { return topic }
         let firstLine = doc.body.split(separator: "\n").first.map(String.init) ?? ""
         return firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "# ").union(.whitespaces))
+    }
+
+    /// "YYYY-MM-DD" → local midnight in unix ms. DateFormatter is documented
+    /// thread-safe on macOS 10.9+; config is never mutated.
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static func dayMs(_ day: String) -> Int64? {
+        dayFormatter.date(from: day).map { Int64($0.timeIntervalSince1970 * 1_000) }
     }
 
     static func relativePath(of url: URL, root: URL) -> String {

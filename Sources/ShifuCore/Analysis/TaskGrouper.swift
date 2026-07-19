@@ -102,7 +102,8 @@ public enum TaskGrouper {
         let res = try fetchAndGroupItems(database: database, from: from, to: to)
         guard !res.items.isEmpty else { return Summary(tasksTouched: 0, logsWritten: 0) }
 
-        let days = affectedDays(of: res.items, calendar: calendar)
+        let days = affectedDays(of: res.items.map { ($0.startedAt, $0.endedAt) },
+                                calendar: calendar)
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
 
         return try database.queue.write { db in
@@ -141,15 +142,16 @@ public enum TaskGrouper {
         }
     }
 
-    /// Local days ([start, end) in unix ms) covered by the items' spans.
-    private static func affectedDays(
-        of items: [Item], calendar: Calendar
+    /// Local days ([start, end) in unix ms) covered by the given spans.
+    /// Shared with WorkNoteCompiler and DeletionTools (vault-features.md §2.1).
+    static func affectedDays(
+        of spans: [(start: Int64, end: Int64)], calendar: Calendar
     ) -> [(start: Int64, end: Int64)] {
         var starts: Set<Int64> = []
         var days: [(Int64, Int64)] = []
-        for item in items {
-            var day = calendar.startOfDay(for: Date(timeIntervalSince1970: Double(item.startedAt) / 1_000))
-            let end = Date(timeIntervalSince1970: Double(item.endedAt) / 1_000)
+        for span in spans {
+            var day = calendar.startOfDay(for: Date(timeIntervalSince1970: Double(span.start) / 1_000))
+            let end = Date(timeIntervalSince1970: Double(span.end) / 1_000)
             while day < end {
                 let next = calendar.date(byAdding: .day, value: 1, to: day) ?? day.addingTimeInterval(86_400)
                 let startMs = Int64(day.timeIntervalSince1970 * 1_000)
@@ -164,7 +166,9 @@ public enum TaskGrouper {
 
     /// Recomputes one day's logs from all task-assigned activities that touch
     /// it (not just the window's), so partial windows can't undercount a day.
-    private static func rebuildLogs(_ db: Database, dayStart: Int64, dayEnd: Int64) throws -> Int {
+    /// Also called by DeletionTools so a forgotten range leaves no stale logs.
+    @discardableResult
+    static func rebuildLogs(_ db: Database, dayStart: Int64, dayEnd: Int64) throws -> Int {
         try db.execute(sql: "DELETE FROM task_logs WHERE day_start = ?", arguments: [dayStart])
         let rows = try Row.fetchAll(db, sql: """
             SELECT task_id, started_at, ended_at, app_bundle, domain, topic

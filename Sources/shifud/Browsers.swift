@@ -19,6 +19,23 @@ enum Browsers {
         bundleIDs.contains(bundleID)
     }
 
+    /// Chromium-based browsers ship with the web-content accessibility tree
+    /// disabled until an assistive client requests it, so their AX windows
+    /// expose only browser chrome (toolbar, URL) — see AXHelper.enableWebAccessibility.
+    static let chromiumBundleIDs: Set<String> = [
+        "com.google.Chrome",
+        "com.brave.Browser",
+        "company.thebrowser.Browser",   // Arc
+        "com.microsoft.edgemac",
+        "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera",
+        "org.chromium.Chromium"
+    ]
+
+    static func isChromium(_ bundleID: String) -> Bool {
+        chromiumBundleIDs.contains(bundleID)
+    }
+
     /// Title-based heuristic; browsers put a marker in private-window titles.
     private static let privateMarkers = [
         "Private Browsing", "(Incognito)", "(Private)", "InPrivate"

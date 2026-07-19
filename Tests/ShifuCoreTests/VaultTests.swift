@@ -163,7 +163,7 @@ import Testing
                                 appBundle: "com.apple.Safari", category: .learning)
         let note = KnowledgeExtractor.note(
             from: .init(topic: "t", note: "fact", question: "q?", answer: "a", confidence: 0.8),
-            activity: activity, sourceURL: "https://x.test/doc")
+            activity: activity, sourceURL: "https://x.test/doc", taskKey: nil)
         #expect(note.state == .inbox)
         #expect(note.questionAnswer?.question == "q?")
         #expect(note.sourceURL == "https://x.test/doc")

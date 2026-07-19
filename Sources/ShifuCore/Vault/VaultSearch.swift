@@ -13,6 +13,16 @@ public enum VaultSearch {
         public var captured: Date?
 
         public var id: String { noteID }
+
+        public init(noteID: String, path: String, kind: FrontMatter.Kind,
+                    title: String, snippet: String, captured: Date?) {
+            self.noteID = noteID
+            self.path = path
+            self.kind = kind
+            self.title = title
+            self.snippet = snippet
+            self.captured = captured
+        }
     }
 
     /// A user query becomes a conjunction of quoted FTS5 tokens, the last one
@@ -26,6 +36,29 @@ public enum VaultSearch {
         var quoted = tokens.map { "\"\($0)\"" }
         quoted[quoted.count - 1] += "*"
         return quoted.joined(separator: " ")
+    }
+
+    /// The task's most recent note of one kind — the Vault tab's "open the
+    /// latest work note" query (vault-features.md §2.1). The caller supplies
+    /// the display title (typically the task name); snippet stays empty.
+    public static func latest(
+        kind: FrontMatter.Kind, taskID: Int64, title: String, database: ShifuDatabase
+    ) throws -> Hit? {
+        try database.queue.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT note_id, path, captured FROM vault_index
+                WHERE kind = ? AND task_id = ?
+                ORDER BY captured DESC LIMIT 1
+                """, arguments: [kind.rawValue, taskID]
+            ).map { row in
+                Hit(
+                    noteID: row["note_id"], path: row["path"], kind: kind,
+                    title: title, snippet: "",
+                    captured: (row["captured"] as Int64?).map {
+                        Date(timeIntervalSince1970: Double($0) / 1_000)
+                    })
+            }
+        }
     }
 
     public static func search(
