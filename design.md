@@ -363,6 +363,17 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
+- **Semantic task clustering, assignment half (vault V3)** — the day-one
+  NLEmbedding spike (2026-07-19, 103 contentful signatures from the dogfood
+  DB) showed separation too weak for *silent* centroid assignment: same-task
+  pairwise cosine mean 0.78 vs cross-task 0.66, precision ≈0.38 at the
+  planned 0.75 threshold (cross-task p90 = 0.805). Bare bundle-id signatures
+  are degenerate (unrelated apps score ≈0.97). Auto-assignment waits for a
+  better on-device embedder. The merge-*suggestion* half looks viable:
+  at ≥0.9 precision ≈0.8 even against lexical labels, and the top-scoring
+  "false" pairs were in fact true fragmentations (same GitHub page under two
+  keys) — with the overlapping-sources filter and user confirmation it fails
+  safe. Decide V3 scope (suggestions-only vs wait) before building.
 - ~~LLM-written narrative work logs~~ — shipped in vault phase V2
   (vault-features.md §2.1): per-(task, day) work notes whose `## Sessions`
   prose regenerates only when the day's activities change (content-hash gate
