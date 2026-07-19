@@ -164,6 +164,13 @@ deferral) and revisit after V3.
 **Goal:** one effort = one task, even when topic slugs differ; merges are
 always user-confirmed (§V5).
 
+> **Shipped 2026-07-19 as suggestions-only.** The day-one spike (design.md
+> §12) killed the assignment half: NLEmbedding separation on real signatures
+> is too weak for silent centroid assignment (precision ≈0.38 at 0.75), so
+> item 3 is deferred and lexical grouping stays. Items 1–2 and 5–7 shipped
+> (no `tasks.centroid` cache — centroids are recomputed in the weekly pass;
+> V4's project suggestions can do the same). `TaskGrouper` is untouched.
+
 Order of work:
 
 1. **`Embedder` abstraction** (new, `ShifuCore/Analysis/Embedder.swift`):
