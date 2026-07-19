@@ -90,6 +90,56 @@ public enum TaskStore {
         }
     }
 
+    // MARK: - Merge (vault-features.md §5.2 — always user-confirmed)
+
+    /// Folds one task into another: activities repoint to the survivor (which
+    /// keeps its user-chosen name), the absorbed task dies (its task_logs
+    /// cascade away), and the affected days' logs and work notes recompile —
+    /// the absorbed task's note files are removed and its content re-lands
+    /// under the survivor. Historical rows outside the affected days are
+    /// untouched.
+    public static func merge(
+        survivorID: Int64, absorbedID: Int64, database: ShifuDatabase,
+        vault: VaultStore? = nil, calendar: Calendar = .current
+    ) throws {
+        guard survivorID != absorbedID else { return }
+        let spans: [(start: Int64, end: Int64)] = try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT started_at, ended_at FROM activities WHERE task_id = ?
+                """, arguments: [absorbedID]
+            ).map { ($0["started_at"], $0["ended_at"]) }
+        }
+        let days = TaskGrouper.affectedDays(of: spans, calendar: calendar)
+
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE activities SET task_id = ? WHERE task_id = ?",
+                           arguments: [survivorID, absorbedID])
+            try db.execute(sql: """
+                UPDATE tasks SET last_active_at = MAX(last_active_at,
+                    COALESCE((SELECT last_active_at FROM tasks WHERE id = ?), 0))
+                WHERE id = ?
+                """, arguments: [absorbedID, survivorID])
+            try db.execute(sql: "DELETE FROM tasks WHERE id = ?", arguments: [absorbedID])
+            // The accepted pair is recorded; other open suggestions naming the
+            // dead task are meaningless now and go away.
+            try db.execute(sql: """
+                UPDATE task_merge_suggestions SET status = 'merged'
+                WHERE (task_a = ? AND task_b = ?) OR (task_a = ? AND task_b = ?)
+                """, arguments: [survivorID, absorbedID, absorbedID, survivorID])
+            try db.execute(sql: """
+                DELETE FROM task_merge_suggestions
+                WHERE status = 'new' AND (task_a = ? OR task_b = ?)
+                """, arguments: [absorbedID, absorbedID])
+            for day in days {
+                try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
+            }
+        }
+        if let vault {
+            try WorkNoteCompiler.recompile(
+                days: days, database: database, vault: vault, calendar: calendar)
+        }
+    }
+
     // MARK: - Projects
 
     /// Creates a project (or returns the existing one with the same name).

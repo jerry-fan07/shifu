@@ -78,6 +78,11 @@ if taskSummary.tasksTouched > 0 {
     print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
 }
 
+// Durable block signatures (vault-features.md §5.1): re-derived each run
+// while the source titles still exist, they outlive observation retention
+// and feed the weekly merge-suggestion centroids.
+try TaskMerges.writeSignatures(database: database, from: from, to: nowMs)
+
 let vault = VaultStore(database: database)
 
 // Knowledge extraction over learning/novel-work blocks (§5.1).
@@ -141,6 +146,17 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
             if described > 0 { print("radar: described \(described) suggestions") }
         } catch {
             print("radar describer failed (retries next run): \(error)")
+        }
+    }
+
+    // Task merge suggestions (vault-features.md §5.2), same weekly cadence.
+    // No embedder ⇒ no-op; suggestions are always user-confirmed in the UI.
+    if let embedder = SentenceEmbedder() {
+        do {
+            let suggested = try TaskMerges.suggest(database: database, embedder: embedder)
+            if suggested > 0 { print("tasks: \(suggested) merge suggestions") }
+        } catch {
+            print("merge suggester failed (retries next week): \(error)")
         }
     }
 }

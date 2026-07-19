@@ -259,6 +259,28 @@ public struct ShifuDatabase: Sendable {
             try db.execute(sql: "CREATE VIRTUAL TABLE vault_fts USING fts5(title, body)")
         }
 
+        migrator.registerMigration("v8") { db in
+            // Durable one-line block signature (topic + title sample + domain,
+            // vault-features.md §5.1). Window titles die with the 14-day
+            // observation retention; the signature is the redacted, durable
+            // input that lets task centroids be recomputed forever after.
+            try db.alter(table: "activities") { table in
+                table.add(column: "signature", .text)
+            }
+            // User-confirmed task merge suggestions (§5.2). No FK cascade:
+            // rows outlive their tasks as an audit trail; the unique ordered
+            // pair is what keeps dismissed pairs dismissed.
+            try db.create(table: "task_merge_suggestions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("task_a", .integer).notNull()
+                table.column("task_b", .integer).notNull()
+                table.column("cosine", .double).notNull()
+                table.column("status", .text).notNull().defaults(to: "new")
+                table.column("created_at", .integer).notNull()
+                table.uniqueKey(["task_a", "task_b"])
+            }
+        }
+
         return migrator
     }
 }

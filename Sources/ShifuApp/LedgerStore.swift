@@ -17,6 +17,7 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var dueNotes: [Note] = []
     @Published private(set) var suggestions: [Suggestion] = []
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
+    @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
     @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
     @Published var reviewDeck: ReviewDeck = .all
@@ -56,6 +57,7 @@ final class LedgerStore: ObservableObject {
             let dayStart = Int64(
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
+            mergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             projectSummaries = (try? TaskStore.projects(database: database)) ?? []
         }
@@ -191,6 +193,22 @@ final class LedgerStore: ObservableObject {
     func createProject(named name: String) {
         if let database = try? db() {
             _ = try? TaskStore.createProject(named: name, database: database)
+        }
+        refresh()
+    }
+
+    // MARK: - Merge suggestions (vault-features.md §5.2 — user-confirmed)
+
+    func acceptMerge(_ suggestion: TaskMerges.Pending) {
+        if let database = try? db() {
+            try? TaskMerges.merge(suggestion, database: database, vault: vault)
+        }
+        refresh()
+    }
+
+    func dismissMerge(_ suggestion: TaskMerges.Pending) {
+        if let database = try? db() {
+            try? TaskMerges.dismiss(suggestionID: suggestion.id, database: database)
         }
         refresh()
     }

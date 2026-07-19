@@ -85,6 +85,20 @@ struct VaultTabView: View {
             }
 
             Section("Recent tasks") {
+                // Merge suggestions inline above the tasks they concern
+                // (vault-features.md §5.2): one click merges, never automatic.
+                ForEach(store.mergeSuggestions) { suggestion in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: "arrow.triangle.merge")
+                            .foregroundStyle(.secondary)
+                        Text("**\(suggestion.nameA)** and **\(suggestion.nameB)** look like one task")
+                            .font(.callout)
+                        Spacer()
+                        Button("Merge") { store.acceptMerge(suggestion) }
+                        Button("Dismiss") { store.dismissMerge(suggestion) }
+                    }
+                    .padding(.vertical, 2)
+                }
                 if store.recentTasks.isEmpty {
                     Text("Tasks appear once the analyzer has grouped some activity.")
                         .foregroundStyle(.secondary)
