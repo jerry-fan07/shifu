@@ -147,6 +147,66 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         #expect(rows[1].category == .unclassified)
         #expect(rows[1].ambiguous == true)
     }
+
+    /// A block that never clears the confidence floor is retried at most
+    /// `maxAttempts` times, then dropped — bounding LLM re-billing on an
+    /// unchanged window (design.md §12).
+    @Test func lowConfidenceBlockStopsAfterMaxAttempts() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try await db.queue.write { sqlite in
+            var activity = Activity(startedAt: 0, endedAt: 600_000, appBundle: "com.random.app",
+                                    category: .unclassified, ambiguous: true)
+            try activity.insert(sqlite)
+        }
+        // Always answers below the 0.6 floor, and counts every call.
+        final class WeakBackend: LLMBackend, @unchecked Sendable {
+            let name = "weak"
+            private let lock = NSLock()
+            private(set) var calls = 0
+            func complete(prompt: String, maxTokens: Int) async throws -> String {
+                lock.withLock { calls += 1 }
+                return #"[{"id": 1, "category": "work", "confidence": 0.2, "topic": "?"}]"#
+            }
+        }
+        let backend = WeakBackend()
+        for _ in 0..<(AmbiguousClassifier.maxAttempts + 2) {
+            _ = try await AmbiguousClassifier.run(database: db, backend: backend, from: 0, to: 1_000_000)
+        }
+        // Called exactly maxAttempts times, then the block is skipped.
+        #expect(backend.calls == AmbiguousClassifier.maxAttempts)
+        let attempts = try await db.queue.read {
+            try Int.fetchOne($0, sql: "SELECT llm_attempts FROM activities")
+        }
+        #expect(attempts == AmbiguousClassifier.maxAttempts)
+    }
+
+    /// The retry counter survives LedgerBuilder's rebuild (span-keyed carry),
+    /// so an unchanged window doesn't reset the cooldown and re-bill.
+    @Test func attemptCounterSurvivesRebuild() async throws {
+        let db = try ShifuDatabase.inMemory()
+        let base: Int64 = 1_760_000_000_000
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO observations
+                    (started_at, last_seen, app_bundle, window_title, capture_kind, text)
+                VALUES (?, ?, 'com.random.app', 'thing', 'ax', ?)
+                """, arguments: [base, base + 600_000, String(repeating: "weak signal ", count: 30)])
+        }
+        let classifier = try RulesClassifier(database: db)
+        try LedgerBuilder.rebuild(database: db, classifier: classifier, from: base, to: base + 700_000)
+
+        // Simulate two exhausted attempts on the block.
+        try await db.queue.write {
+            try $0.execute(sql: "UPDATE activities SET llm_attempts = 2")
+        }
+        // Rebuild the same window over unchanged observations.
+        try LedgerBuilder.rebuild(database: db, classifier: classifier, from: base, to: base + 700_000)
+
+        let attempts = try await db.queue.read {
+            try Int.fetchOne($0, sql: "SELECT llm_attempts FROM activities")
+        }
+        #expect(attempts == 2)
+    }
 }
 
 @Suite struct DigestGeneratorTests {

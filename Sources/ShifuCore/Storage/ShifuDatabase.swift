@@ -300,6 +300,18 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v10") { db in
+            // Bounds LLM re-billing on blocks that never clear the confidence
+            // floor (design.md §4.2, §12): AmbiguousClassifier skips a block
+            // once it has been attempted this many times, until the block's
+            // text changes (a changed span resets the count via the rebuild
+            // carry). Without this, an unchanged window re-bills the same
+            // low-confidence blocks every run.
+            try db.alter(table: "activities") { table in
+                table.add(column: "llm_attempts", .integer).notNull().defaults(to: 0)
+            }
+        }
+
         return migrator
     }
 }

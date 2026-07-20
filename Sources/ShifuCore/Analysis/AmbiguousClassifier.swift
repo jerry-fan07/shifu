@@ -9,6 +9,11 @@ public enum AmbiguousClassifier {
     public static let batchLimit = 20
     public static let textSampleBytes = 1_200
     public static let responseTokenReserve = 2_000
+    /// Give a stubborn block a few tries at a confident verdict, then stop
+    /// re-billing it until its text changes (design.md §4.2, §12). The count
+    /// survives the analyzer's idempotent rebuild via LedgerBuilder's carry;
+    /// a changed span resets it to zero, so genuinely new evidence retries.
+    public static let maxAttempts = 3
 
     public struct BlockSample: Sendable {
         public var id: Int64
@@ -109,8 +114,10 @@ public enum AmbiguousClassifier {
     ) throws -> [BlockSample] {
         try database.queue.read { db in
             let activities = try Activity
-                .filter(sql: "ambiguous = 1 AND source != 'llm' AND ended_at > ? AND started_at < ?",
-                        arguments: [from, to])
+                .filter(sql: """
+                    ambiguous = 1 AND source != 'llm' AND llm_attempts < ?
+                    AND ended_at > ? AND started_at < ?
+                    """, arguments: [maxAttempts, from, to])
                 .order(sql: "started_at DESC")
                 .limit(limit)
                 .fetchAll(db)
@@ -158,7 +165,7 @@ public enum AmbiguousClassifier {
             let confident = parseVerdicts(response).filter {
                 batchIDs.contains($0.id) && $0.confidence >= confidenceFloor
             }
-            guard !confident.isEmpty else { continue }
+            let confidentIDs = Set(confident.map(\.id))
 
             updated += try await database.queue.write { db in
                 var applied = 0
@@ -170,6 +177,14 @@ public enum AmbiguousClassifier {
                         """, arguments: [verdict.category.rawValue, verdict.topic,
                                          verdict.confidence, verdict.id])
                     applied += db.changesCount
+                }
+                // Blocks we asked about but couldn't confidently label spend an
+                // attempt, so an unchanged low-confidence block is retried at
+                // most `maxAttempts` times rather than every run (§12).
+                for id in batchIDs.subtracting(confidentIDs) {
+                    try db.execute(
+                        sql: "UPDATE activities SET llm_attempts = llm_attempts + 1 WHERE id = ?",
+                        arguments: [id])
                 }
                 return applied
             }

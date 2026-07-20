@@ -19,14 +19,16 @@ public enum LedgerBuilder {
         var appBundle: String
     }
 
-    /// Derived state that must outlive a rebuild: LLM verdicts and the
-    /// extraction ledger. Everything else is recomputed from rules.
+    /// Derived state that must outlive a rebuild: LLM verdicts, the extraction
+    /// ledger, and the ambiguous-retry counter. Everything else is recomputed
+    /// from rules.
     private struct CarriedState {
         var category: Category?
         var topic: String?
         var confidence: Double?
         var llmLabeled: Bool
         var extracted: Bool
+        var llmAttempts: Int
     }
 
     /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
@@ -84,10 +86,10 @@ public enum LedgerBuilder {
     ) throws -> [SpanKey: CarriedState] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, category, topic,
-                   confidence, source, extracted
+                   confidence, source, extracted, llm_attempts
             FROM activities
             WHERE ended_at > ? AND started_at < ?
-              AND (source = 'llm' OR extracted = 1)
+              AND (source = 'llm' OR extracted = 1 OR llm_attempts > 0)
             """, arguments: [from, to])
         var carried: [SpanKey: CarriedState] = [:]
         for row in rows {
@@ -100,7 +102,8 @@ public enum LedgerBuilder {
                 topic: row["topic"],
                 confidence: row["confidence"],
                 llmLabeled: source == "llm",
-                extracted: row["extracted"]
+                extracted: row["extracted"],
+                llmAttempts: row["llm_attempts"]
             )
         }
         return carried
@@ -128,9 +131,13 @@ public enum LedgerBuilder {
         }
         try activity.insert(db)
         guard let sessionID = activity.id else { return }
-        if prior?.extracted == true {
-            try db.execute(sql: "UPDATE activities SET extracted = 1 WHERE id = ?",
-                           arguments: [sessionID])
+        // Restore the extraction ledger and the retry counter onto the
+        // span-identical row so neither the LLM classifier nor the extractor
+        // re-bills a block the rebuild just recreated.
+        if let prior, prior.extracted || prior.llmAttempts > 0 {
+            try db.execute(
+                sql: "UPDATE activities SET extracted = ?, llm_attempts = ? WHERE id = ?",
+                arguments: [prior.extracted, prior.llmAttempts, sessionID])
         }
         if !observationIDs.isEmpty {
             let placeholders = databaseQuestionMarks(count: observationIDs.count)
