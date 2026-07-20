@@ -146,6 +146,116 @@ public enum TaskMerges {
         }
     }
 
+    // MARK: - Task → project suggestions (vault-features.md §5.3)
+
+    public static let projectThresholdKey = "projects.suggest_threshold"
+    static let defaultProjectThreshold = 0.85
+
+    public struct PendingProject: Identifiable, Sendable {
+        public var id: Int64
+        public var taskID: Int64
+        public var taskName: String
+        public var projectID: Int64
+        public var projectName: String
+        public var cosine: Double
+    }
+
+    /// In the same weekly pass: an unassigned active task whose centroid
+    /// clears the threshold against a project centroid (mean of member task
+    /// centroids) becomes a one-tap "Add to X?" suggestion. task_id is
+    /// unique, so a dismissed task stays quiet.
+    @discardableResult
+    public static func suggestProjects(
+        database: ShifuDatabase, embedder: any Embedder, now: Date = Date()
+    ) throws -> Int {
+        let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
+            - Int64(activeWindowDays) * 86_400_000
+        let taskCentroids = centroids(
+            of: try activeTaskData(database: database, cutoff: cutoff), embedder: embedder)
+        guard !taskCentroids.isEmpty else { return 0 }
+
+        let assignments: [Int64: Int64?] = try database.queue.read { db in
+            var out: [Int64: Int64?] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT id, project_id FROM tasks") {
+                out[row["id"]] = row["project_id"] as Int64?
+            }
+            return out
+        }
+        var projectVectors: [Int64: [[Float]]] = [:]
+        for (taskID, centroid) in taskCentroids {
+            if let projectID = assignments[taskID] ?? nil {
+                projectVectors[projectID, default: []].append(centroid)
+            }
+        }
+        let projectCentroids = projectVectors.compactMapValues(EmbedMath.centroid)
+        guard !projectCentroids.isEmpty else { return 0 }
+
+        let raw = (try? Settings.get(projectThresholdKey, database: database)) ?? nil
+        let threshold = Float(raw.flatMap(Double.init) ?? defaultProjectThreshold)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+
+        return try database.queue.write { db in
+            var inserted = 0
+            for (taskID, centroid) in taskCentroids
+            where (assignments[taskID] ?? nil) == nil {
+                let best = projectCentroids
+                    .map { ($0.key, EmbedMath.cosine(centroid, $0.value)) }
+                    .max { $0.1 < $1.1 }
+                guard let best, best.1 >= threshold else { continue }
+                try db.execute(sql: """
+                    INSERT OR IGNORE INTO project_suggestions
+                        (task_id, project_id, cosine, status, created_at)
+                    VALUES (?, ?, ?, 'new', ?)
+                    """, arguments: [taskID, best.0, Double(best.1), nowMs])
+                inserted += db.changesCount
+            }
+            return inserted
+        }
+    }
+
+    public static func pendingProjects(database: ShifuDatabase) throws -> [PendingProject] {
+        try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT s.id, s.task_id, t.name AS task_name,
+                       s.project_id, p.name AS project_name, s.cosine
+                FROM project_suggestions s
+                JOIN tasks t ON t.id = s.task_id
+                JOIN projects p ON p.id = s.project_id
+                WHERE s.status = 'new' AND t.project_id IS NULL
+                ORDER BY s.cosine DESC
+                """
+            ).map { row in
+                PendingProject(id: row["id"], taskID: row["task_id"],
+                               taskName: row["task_name"], projectID: row["project_id"],
+                               projectName: row["project_name"], cosine: row["cosine"])
+            }
+        }
+    }
+
+    public static func dismissProject(suggestionID: Int64, database: ShifuDatabase) throws {
+        try database.queue.write { db in
+            try db.execute(
+                sql: "UPDATE project_suggestions SET status = 'dismissed' WHERE id = ?",
+                arguments: [suggestionID])
+        }
+    }
+
+    /// Accepts: assign via the existing path, then recompile the project note
+    /// (deterministic parts; a status paragraph waits for the weekly pass).
+    public static func acceptProject(
+        _ suggestion: PendingProject, database: ShifuDatabase, vault: VaultStore
+    ) throws {
+        try TaskStore.assign(taskID: suggestion.taskID, projectID: suggestion.projectID,
+                             database: database)
+        try database.queue.write { db in
+            try db.execute(
+                sql: "UPDATE project_suggestions SET status = 'accepted' WHERE id = ?",
+                arguments: [suggestion.id])
+        }
+        try ProjectNoteCompiler.compileDeterministic(
+            projectID: suggestion.projectID, database: database, vault: vault)
+    }
+
     // MARK: - UI queries & actions
 
     /// Open suggestions with live task names, strongest first. Rows whose

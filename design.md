@@ -227,6 +227,11 @@ A: `SCScreenshotManager` (macOS 14+).
 
 ### 5.3 Tasks, projects & work logs (vault-features.md)
 
+> Vault second-brain phases V1–V4 shipped per vault-implementation.md: FTS5
+> search index, per-(task, day) work notes, user-confirmed merge suggestions
+> (assignment deferred — §12), project notes, and hybrid bm25 ∪ cosine
+> search. Deferred follow-ons stay logged in vault-features.md §10.
+
 The vault is a work database, not just flashcards:
 
 - **Tasks**: the analyzer groups activities into ongoing tasks by a stable key — the classified topic when there is one, else domain, else app (`TaskGrouper`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names).

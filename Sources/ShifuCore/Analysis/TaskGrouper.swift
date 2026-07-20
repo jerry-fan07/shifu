@@ -30,7 +30,7 @@ public enum TaskGrouper {
         topic ?? domain ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
     }
 
-    static func slug(_ text: String) -> String {
+    public static func slug(_ text: String) -> String {
         text.lowercased()
             .map { $0.isLetter || $0.isNumber ? $0 : "-" }
             .reduce(into: "") { acc, ch in

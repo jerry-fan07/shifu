@@ -21,10 +21,13 @@ OUTPUT=$(SHIFU_HOME="$SCRATCH" "$BIN" vault bench "$NOTE_COUNT")
 echo "$OUTPUT"
 
 RECONCILE_MS=$(echo "$OUTPUT" | sed -n 's/.*reconcile \([0-9]*\) ms.*/\1/p')
-SEARCH_MS=$(echo "$OUTPUT" | sed -n 's/.*search \([0-9.]*\) ms.*/\1/p' | cut -d. -f1)
-HITS=$(echo "$OUTPUT" | sed -n 's/.*(\([0-9]*\) hits).*/\1/p')
+SEARCH_MS=$(echo "$OUTPUT" | sed -n 's/.* search \([0-9.]*\) ms.*/\1/p' | cut -d. -f1)
+HITS=$(echo "$OUTPUT" | sed -n 's/.* search [0-9.]* ms (\([0-9]*\) hits).*/\1/p')
+HYBRID_MS=$(echo "$OUTPUT" | sed -n 's/.*hybrid \([0-9.]*\) ms.*/\1/p' | cut -d. -f1)
+HYBRID_HITS=$(echo "$OUTPUT" | sed -n 's/.*hybrid [0-9.]* ms (\([0-9]*\) hits).*/\1/p')
 
-if [ -z "$RECONCILE_MS" ] || [ -z "$SEARCH_MS" ] || [ -z "$HITS" ]; then
+if [ -z "$RECONCILE_MS" ] || [ -z "$SEARCH_MS" ] || [ -z "$HITS" ] \
+    || [ -z "$HYBRID_MS" ] || [ -z "$HYBRID_HITS" ]; then
     echo "perf-vault: FAIL — could not parse bench output"
     exit 1
 fi
@@ -32,12 +35,20 @@ if [ "$HITS" -eq 0 ]; then
     echo "perf-vault: FAIL — search returned no hits; the index is broken"
     exit 1
 fi
+if [ "$HYBRID_HITS" -eq 0 ]; then
+    echo "perf-vault: FAIL — hybrid search returned no hits"
+    exit 1
+fi
 if [ "$SEARCH_MS" -ge "$SEARCH_BUDGET_MS" ]; then
     echo "perf-vault: FAIL — search ${SEARCH_MS} ms over ${SEARCH_BUDGET_MS} ms budget"
+    exit 1
+fi
+if [ "$HYBRID_MS" -ge "$SEARCH_BUDGET_MS" ]; then
+    echo "perf-vault: FAIL — hybrid ${HYBRID_MS} ms over ${SEARCH_BUDGET_MS} ms budget"
     exit 1
 fi
 if [ "$RECONCILE_MS" -ge "$RECONCILE_BUDGET_MS" ]; then
     echo "perf-vault: FAIL — reconcile ${RECONCILE_MS} ms over ${RECONCILE_BUDGET_MS} ms budget"
     exit 1
 fi
-echo "perf-vault: PASS (search ${SEARCH_MS} ms < ${SEARCH_BUDGET_MS} ms, reconcile ${RECONCILE_MS} ms < ${RECONCILE_BUDGET_MS} ms, ${HITS} hits)"
+echo "perf-vault: PASS (search ${SEARCH_MS} ms, hybrid ${HYBRID_MS} ms < ${SEARCH_BUDGET_MS} ms, reconcile ${RECONCILE_MS} ms < ${RECONCILE_BUDGET_MS} ms, ${HITS}/${HYBRID_HITS} hits)"

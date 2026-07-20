@@ -52,4 +52,15 @@ public enum EmbedMath {
         }
         return normalize(sum)
     }
+
+    // MARK: - BLOB codec (vault_vectors, little-endian Float32)
+
+    public static func blob(from vector: [Float]) -> Data {
+        vector.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    public static func vector(from blob: Data) -> [Float] {
+        guard blob.count % MemoryLayout<Float>.stride == 0 else { return [] }
+        return blob.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    }
 }

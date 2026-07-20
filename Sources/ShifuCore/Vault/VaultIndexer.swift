@@ -70,8 +70,12 @@ public enum VaultIndexer {
     /// Brings the index in line with the tree: new/changed files re-indexed
     /// (mtime short-circuit, then hash short-circuit), vanished files removed.
     /// O(files) stat, O(changed) parse — cheap enough for every analyzer run.
+    /// With an embedder, changed notes are re-embedded and notes indexed
+    /// without one (write-through has no embedder) are backfilled.
     @discardableResult
-    public static func reconcile(root: URL, database: ShifuDatabase) throws -> Summary {
+    public static func reconcile(
+        root: URL, database: ShifuDatabase, embedder: (any Embedder)? = nil
+    ) throws -> Summary {
         let files = markdownFiles(under: root)
 
         struct IndexRow { var noteID: String; var hash: Int64; var mtime: Int64 }
@@ -105,7 +109,8 @@ public enum VaultIndexer {
                     continue
                 }
                 if let noteID = try upsert(
-                    text: text, relativePath: file.path, mtime: file.mtime, db: db) {
+                    text: text, relativePath: file.path, mtime: file.mtime, db: db,
+                    embedder: embedder) {
                     seenNoteIDs.insert(noteID)
                     summary.indexed += 1
                 }
@@ -116,7 +121,34 @@ public enum VaultIndexer {
             try delete(noteIDs: stale, db: db)
             summary.removed = stale.count
         }
+        if embedder != nil {
+            try backfillVectors(root: root, database: database, embedder: embedder)
+        }
         return summary
+    }
+
+    /// Embeds indexed notes that have no vector yet — notes written through
+    /// VaultStore.save (no embedder on that path) pick theirs up on the next
+    /// analyzer reconcile.
+    private static func backfillVectors(
+        root: URL, database: ShifuDatabase, embedder: (any Embedder)?
+    ) throws {
+        let missing: [(noteID: String, path: String)] = try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT vi.note_id, vi.path FROM vault_index vi
+                LEFT JOIN vault_vectors vv ON vv.note_id = vi.note_id
+                WHERE vv.note_id IS NULL
+                """).map { ($0["note_id"], $0["path"]) }
+        }
+        guard !missing.isEmpty else { return }
+        try database.queue.write { db in
+            for entry in missing {
+                let file = root.appendingPathComponent(entry.path)
+                guard let text = try? String(contentsOf: file, encoding: .utf8),
+                      let doc = FrontMatter.parse(text) else { continue }
+                try embedVector(noteID: entry.noteID, doc: doc, db: db, embedder: embedder)
+            }
+        }
     }
 
     // MARK: - Row plumbing
@@ -126,7 +158,8 @@ public enum VaultIndexer {
     /// stray Markdown in the folder is ignored, never an error.
     @discardableResult
     static func upsert(
-        text: String, relativePath: String, mtime: Int64, db: Database
+        text: String, relativePath: String, mtime: Int64, db: Database,
+        embedder: (any Embedder)? = nil
     ) throws -> String? {
         guard let doc = FrontMatter.parse(text), let noteID = doc.fields["id"] else { return nil }
 
@@ -168,7 +201,23 @@ public enum VaultIndexer {
         try db.execute(
             sql: "INSERT INTO vault_fts (rowid, title, body) VALUES (?, ?, ?)",
             arguments: [rowID, title(of: doc), doc.body])
+        try embedVector(noteID: noteID, doc: doc, db: db, embedder: embedder)
         return noteID
+    }
+
+    /// Title + the body's first ~500 chars → unit vector (vault-features.md
+    /// §4). No embedder (or a nil embedding) leaves the vector row absent —
+    /// hybrid search silently degrades to bm25-only for that note.
+    static func embedVector(
+        noteID: String, doc: FrontMatter.Document, db: Database, embedder: (any Embedder)?
+    ) throws {
+        guard let embedder else { return }
+        let text = "\(title(of: doc)) \(doc.body.prefix(500))"
+        guard let vector = embedder.embed(text) else { return }
+        try db.execute(sql: """
+            INSERT INTO vault_vectors (note_id, embedding) VALUES (?, ?)
+            ON CONFLICT(note_id) DO UPDATE SET embedding = excluded.embedding
+            """, arguments: [noteID, EmbedMath.blob(from: vector)])
     }
 
     private static func delete(noteIDs: [String], db: Database) throws {
@@ -178,6 +227,8 @@ public enum VaultIndexer {
                 try db.execute(sql: "DELETE FROM vault_fts WHERE rowid = ?", arguments: [rowID])
                 try db.execute(sql: "DELETE FROM vault_index WHERE id = ?", arguments: [rowID])
             }
+            try db.execute(sql: "DELETE FROM vault_vectors WHERE note_id = ?",
+                           arguments: [noteID])
         }
     }
 

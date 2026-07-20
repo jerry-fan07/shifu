@@ -281,6 +281,25 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v9") { db in
+            // Task → project suggestions (vault-features.md §5.3). task_id is
+            // unique: at most one open/remembered suggestion per task.
+            try db.create(table: "project_suggestions") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("task_id", .integer).notNull().unique()
+                table.column("project_id", .integer).notNull()
+                table.column("cosine", .double).notNull()
+                table.column("status", .text).notNull().defaults(to: "new")
+                table.column("created_at", .integer).notNull()
+            }
+            // Per-note sentence embeddings for hybrid search (§4). Disposable
+            // like the rest of the index: rebuilt from the files on reindex.
+            try db.create(table: "vault_vectors") { table in
+                table.primaryKey("note_id", .text)
+                table.column("embedding", .blob).notNull()
+            }
+        }
+
         return migrator
     }
 }

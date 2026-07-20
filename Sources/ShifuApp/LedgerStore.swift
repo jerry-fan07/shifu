@@ -18,6 +18,11 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var suggestions: [Suggestion] = []
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
     @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
+    @Published private(set) var projectSuggestions: [TaskMerges.PendingProject] = []
+
+    /// Created once; nil when the OS has no sentence model (search stays
+    /// bm25-only, silently — vault-features.md §4).
+    private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
     @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
     @Published var reviewDeck: ReviewDeck = .all
@@ -58,6 +63,7 @@ final class LedgerStore: ObservableObject {
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
             mergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
+            projectSuggestions = (try? TaskMerges.pendingProjects(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             projectSummaries = (try? TaskStore.projects(database: database)) ?? []
         }
@@ -151,7 +157,8 @@ final class LedgerStore: ObservableObject {
             vaultHits = []
             return
         }
-        vaultHits = (try? VaultSearch.search(vaultQuery, database: database)) ?? []
+        vaultHits = (try? VaultSearch.search(
+            vaultQuery, database: database, embedder: embedder)) ?? []
     }
 
     /// The note file behind a search hit, split for display. Nil if the file
@@ -211,6 +218,35 @@ final class LedgerStore: ObservableObject {
             try? TaskMerges.dismiss(suggestionID: suggestion.id, database: database)
         }
         refresh()
+    }
+
+    // MARK: - Project suggestions (vault-features.md §5.3 — one-tap)
+
+    func acceptProjectSuggestion(_ suggestion: TaskMerges.PendingProject) {
+        if let database = try? db() {
+            try? TaskMerges.acceptProject(suggestion, database: database, vault: vault)
+        }
+        refresh()
+    }
+
+    func dismissProjectSuggestion(_ suggestion: TaskMerges.PendingProject) {
+        if let database = try? db() {
+            try? TaskMerges.dismissProject(suggestionID: suggestion.id, database: database)
+        }
+        refresh()
+    }
+
+    /// The project's compiled note as a hit for the shared note reader.
+    func projectNoteHit(projectName: String) -> VaultSearch.Hit? {
+        let slug = TaskGrouper.slug(projectName)
+        let vault = self.vault
+        guard let text = try? String(
+            contentsOf: vault.projectNoteURL(slug: slug), encoding: .utf8),
+              let doc = FrontMatter.parse(text), let noteID = doc.fields["id"]
+        else { return nil }
+        return VaultSearch.Hit(
+            noteID: noteID, path: "projects/\(slug.prefix(60)).md", kind: .project,
+            title: projectName, snippet: "", captured: nil)
     }
 
     // MARK: - Review decks (design.md §5.2)

@@ -132,6 +132,48 @@ public struct VaultStore: Sendable {
         }
     }
 
+    // MARK: - Project notes (vault-features.md §2.2)
+
+    public struct ProjectNoteFile: Sendable {
+        public var id: String
+        public var contentHash: Int64
+        public var status: String?
+    }
+
+    public func projectNoteURL(slug: String) -> URL {
+        root.appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent("\(slug.prefix(60)).md")
+    }
+
+    /// The existing compiled note's carry-over state (id, hash, status
+    /// paragraph) — enough for ProjectNoteCompiler's idempotent rewrite.
+    public func projectNote(slug: String) -> ProjectNoteFile? {
+        guard let text = try? String(contentsOf: projectNoteURL(slug: slug), encoding: .utf8),
+              let doc = FrontMatter.parse(text), doc.kind == .project,
+              let id = doc.fields["id"] else { return nil }
+        var status: String?
+        if let range = doc.body.range(of: "\n## Status\n") {
+            status = String(doc.body[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ProjectNoteFile(
+            id: id,
+            contentHash: doc.fields["content_hash"].flatMap(Int64.init) ?? 0,
+            status: status)
+    }
+
+    @discardableResult
+    public func saveProject(slug: String, text: String) throws -> URL {
+        let target = projectNoteURL(slug: slug)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: target, atomically: true, encoding: .utf8)
+        if let database {
+            try VaultIndexer.indexFile(at: target, root: root, database: database)
+        }
+        return target
+    }
+
     func existingURL(id: String) -> URL? {
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: nil) else { return nil }

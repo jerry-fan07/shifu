@@ -114,17 +114,37 @@ struct VaultTabView: View {
             }
 
             Section("Projects") {
-                ForEach(store.projectSummaries) { summary in
-                    HStack {
-                        Text(summary.project.name)
+                // One-tap task → project suggestions (vault-features.md §5.3).
+                ForEach(store.projectSuggestions) { suggestion in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: "folder.badge.plus")
+                            .foregroundStyle(.secondary)
+                        Text("Add **\(suggestion.taskName)** to *\(suggestion.projectName)*?")
+                            .font(.callout)
                         Spacer()
-                        Text("\(summary.taskCount) tasks")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(LedgerStore.hours(summary.totalMs))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        Button("Add") { store.acceptProjectSuggestion(suggestion) }
+                        Button("Dismiss") { store.dismissProjectSuggestion(suggestion) }
                     }
+                    .padding(.vertical, 2)
+                }
+                ForEach(store.projectSummaries) { summary in
+                    // Row opens the compiled project note (vault-features.md §2.2).
+                    Button {
+                        selectedHit = store.projectNoteHit(projectName: summary.project.name)
+                    } label: {
+                        HStack {
+                            Text(summary.project.name)
+                            Spacer()
+                            Text("\(summary.taskCount) tasks")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(LedgerStore.hours(summary.totalMs))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
                 HStack {
                     TextField("New project", text: $newProjectName)

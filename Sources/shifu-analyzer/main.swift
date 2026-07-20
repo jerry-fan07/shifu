@@ -115,8 +115,12 @@ do {
 // Vault search index reconcile (vault-features.md §4): write-through hooks
 // cover Shifu's own writes; this catches external edits (Obsidian) and runs
 // after task grouping so task_key → task/project resolution is current.
+// The embedder keeps vault_vectors in step for hybrid search (V4);
+// nil (no OS model) leaves search bm25-only.
+let embedder = SentenceEmbedder()
 do {
-    let indexSummary = try VaultIndexer.reconcile(root: ShifuPaths.vault, database: database)
+    let indexSummary = try VaultIndexer.reconcile(
+        root: ShifuPaths.vault, database: database, embedder: embedder)
     if indexSummary.indexed > 0 || indexSummary.removed > 0 {
         print("vault index: \(indexSummary.indexed) updated, \(indexSummary.removed) removed")
     }
@@ -149,15 +153,30 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
         }
     }
 
-    // Task merge suggestions (vault-features.md §5.2), same weekly cadence.
-    // No embedder ⇒ no-op; suggestions are always user-confirmed in the UI.
-    if let embedder = SentenceEmbedder() {
+    // Task merge + project suggestions (vault-features.md §5.2–5.3), same
+    // weekly cadence. No embedder ⇒ no-op; all actions are user-confirmed.
+    if let embedder {
         do {
             let suggested = try TaskMerges.suggest(database: database, embedder: embedder)
             if suggested > 0 { print("tasks: \(suggested) merge suggestions") }
+            let projectSuggested = try TaskMerges.suggestProjects(
+                database: database, embedder: embedder)
+            if projectSuggested > 0 {
+                print("projects: \(projectSuggested) assignment suggestions")
+            }
         } catch {
-            print("merge suggester failed (retries next week): \(error)")
+            print("suggesters failed (retry next week): \(error)")
         }
+    }
+
+    // Project notes (vault-features.md §2.2): weekly recompile; the LLM
+    // status paragraph is hash-gated like work-note narratives.
+    do {
+        let compiled = try await ProjectNoteCompiler.run(
+            database: database, vault: vault, backend: backend)
+        if compiled > 0 { print("projects: \(compiled) notes compiled") }
+    } catch {
+        print("project notes failed (retries next week): \(error)")
     }
 }
 
