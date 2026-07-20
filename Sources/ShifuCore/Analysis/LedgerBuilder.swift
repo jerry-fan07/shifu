@@ -10,7 +10,28 @@ public enum LedgerBuilder {
         public var observationsProcessed: Int
     }
 
-    /// Rebuilds all activities overlapping [from, to). Returns what was done.
+    /// Span identity of one activity: the sessionizer reproduces unchanged
+    /// blocks byte-identically, so this is what "same block as last run" means
+    /// (same notion as WorkNoteCompiler.HashEntry).
+    private struct SpanKey: Hashable {
+        var startedAt: Int64
+        var endedAt: Int64
+        var appBundle: String
+    }
+
+    /// Derived state that must outlive a rebuild: LLM verdicts and the
+    /// extraction ledger. Everything else is recomputed from rules.
+    private struct CarriedState {
+        var category: Category?
+        var topic: String?
+        var confidence: Double?
+        var llmLabeled: Bool
+        var extracted: Bool
+    }
+
+    /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
+    /// reproduced unchanged keep their LLM labels and `extracted` flag, so
+    /// re-runs never re-bill the LLM tiers. Returns what was done.
     @discardableResult
     public static func rebuild(
         database: ShifuDatabase,
@@ -26,7 +47,7 @@ public enum LedgerBuilder {
         }
         let blocks = Sessionizer.sessionize(observations)
 
-        var activities: [(Activity, [Int64])] = blocks.map { block in
+        let activities: [(Activity, [Int64])] = blocks.map { block in
             let result = classifier.classify(block: block)
             let activity = Activity(
                 startedAt: block.startedAt,
@@ -41,25 +62,83 @@ public enum LedgerBuilder {
         }
 
         try database.queue.write { db in
+            // Derived state costs LLM tokens to recreate; snapshot it before
+            // the delete and restore it onto span-identical re-inserted rows.
+            let carried = try carriedDerivedState(db, from: from, to: to)
+
             // Replace anything overlapping the window (spanning blocks included).
             try db.execute(
                 sql: "DELETE FROM activities WHERE ended_at > ? AND started_at < ?",
                 arguments: [from, to]
             )
-            for index in activities.indices {
-                try activities[index].0.insert(db)
-                guard let sessionID = activities[index].0.id else { continue }
-                let ids = activities[index].1
-                if !ids.isEmpty {
-                    let placeholders = databaseQuestionMarks(count: ids.count)
-                    try db.execute(
-                        sql: "UPDATE observations SET session_id = ? WHERE id IN (\(placeholders))",
-                        arguments: StatementArguments([sessionID] + ids)
-                    )
-                }
+            for (activity, observationIDs) in activities {
+                try insert(activity, observationIDs: observationIDs, carried: carried, in: db)
             }
         }
         return Summary(blocksWritten: activities.count, observationsProcessed: observations.count)
+    }
+
+    /// The window's LLM verdicts and extraction flags, keyed by span identity.
+    private static func carriedDerivedState(
+        _ db: Database, from: Int64, to: Int64
+    ) throws -> [SpanKey: CarriedState] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT started_at, ended_at, app_bundle, category, topic,
+                   confidence, source, extracted
+            FROM activities
+            WHERE ended_at > ? AND started_at < ?
+              AND (source = 'llm' OR extracted = 1)
+            """, arguments: [from, to])
+        var carried: [SpanKey: CarriedState] = [:]
+        for row in rows {
+            let key = SpanKey(startedAt: row["started_at"], endedAt: row["ended_at"],
+                              appBundle: row["app_bundle"])
+            let source: String = row["source"]
+            let categoryRaw: String = row["category"]
+            carried[key] = CarriedState(
+                category: Category(rawValue: categoryRaw),
+                topic: row["topic"],
+                confidence: row["confidence"],
+                llmLabeled: source == "llm",
+                extracted: row["extracted"]
+            )
+        }
+        return carried
+    }
+
+    /// Inserts one freshly classified block, restoring any carried derived
+    /// state, and links its observations to the new row.
+    private static func insert(
+        _ fresh: Activity, observationIDs: [Int64],
+        carried: [SpanKey: CarriedState], in db: Database
+    ) throws {
+        var activity = fresh
+        let key = SpanKey(startedAt: activity.startedAt, endedAt: activity.endedAt,
+                          appBundle: activity.appBundle)
+        let prior = carried[key]
+        // An LLM verdict survives only while the rules tier is still
+        // ambiguous — a new concrete/user rule outranks it (§4.2).
+        if let prior, prior.llmLabeled, activity.ambiguous,
+           let priorCategory = prior.category {
+            activity.category = priorCategory
+            activity.topic = prior.topic
+            activity.confidence = prior.confidence
+            activity.source = "llm"
+            activity.ambiguous = false
+        }
+        try activity.insert(db)
+        guard let sessionID = activity.id else { return }
+        if prior?.extracted == true {
+            try db.execute(sql: "UPDATE activities SET extracted = 1 WHERE id = ?",
+                           arguments: [sessionID])
+        }
+        if !observationIDs.isEmpty {
+            let placeholders = databaseQuestionMarks(count: observationIDs.count)
+            try db.execute(
+                sql: "UPDATE observations SET session_id = ? WHERE id IN (\(placeholders))",
+                arguments: StatementArguments([sessionID] + observationIDs)
+            )
+        }
     }
 
     /// Category totals (ms) for activities overlapping [from, to) — dashboard fuel.
