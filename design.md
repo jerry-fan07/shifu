@@ -368,6 +368,17 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
+- **Cap LLM re-attempts on low-confidence ambiguous blocks.** `LedgerBuilder`
+  now carries confident LLM verdicts and the `extracted` flag across the
+  idempotent rebuild (no re-billing of processed blocks). But a block whose
+  verdict came back below `AmbiguousClassifier.confidenceFloor` (0.6) stays
+  `ambiguous=1, source≠'llm'` with no "attempted" marker, so it is re-billed
+  every run — fine when new observations add evidence, wasteful on an
+  unchanged window (dogfooding: ~227 such blocks re-queried each pass). Fix
+  is a per-block attempt count / cooldown (e.g. an `llm_attempts` column, skip
+  after N tries until the block's text changes), mirroring how `extracted`
+  gates KnowledgeExtractor. Deferred: needs a schema column and a re-try
+  policy decision, out of scope for the carry fix.
 - **Semantic task clustering, assignment half (vault V3)** — the day-one
   NLEmbedding spike (2026-07-19, 103 contentful signatures from the dogfood
   DB) showed separation too weak for *silent* centroid assignment: same-task
