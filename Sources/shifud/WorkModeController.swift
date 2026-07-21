@@ -9,8 +9,8 @@ import ShifuCore
 /// never nagged. Sessions are logged for adherence stats.
 @MainActor
 final class WorkModeController {
-    static let gracePeriod: TimeInterval = 180      // 3 min off-task before first glow
-    static let pulseSpacing: TimeInterval = 240     // ≥4 min between glows
+    static let gracePeriod: TimeInterval = 10      // 3 min off-task before first glow
+    static let pulseSpacing: TimeInterval = 10     // ≥4 min between glows
 
     private let database: ShifuDatabase
     private let classifier: RulesClassifier
