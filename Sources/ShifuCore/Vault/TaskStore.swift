@@ -4,15 +4,25 @@ import GRDB
 /// Read/write API over tasks, projects, and work logs (design.md §5.3) —
 /// the queries the Vault tab and review decks are built from.
 public enum TaskStore {
+    /// One row of the Vault tab's task list: a task plus the joined facts the
+    /// UI shows beside it.
     public struct Overview: Identifiable, Sendable {
         public var task: WorkTask
+        /// Nil when the task hasn't been assigned to a project.
         public var projectName: String?
+        /// Time spent inside the filter's window — lifetime under the default
+        /// (`since: 0`) filter, clipped to `since` otherwise, so the number
+        /// beside a row always matches the range the user picked.
         public var totalMs: Int64
+        /// The most recent day log's summary line — the "very brief
+        /// explanation" of what this task has been. Nil before the analyzer
+        /// has compiled a log for it.
         public var latestSummary: String?
 
         public var id: Int64 { task.id ?? 0 }
     }
 
+    /// A project with its rolled-up task count and time.
     public struct ProjectSummary: Identifiable, Sendable {
         public var project: Project
         public var taskCount: Int
@@ -21,7 +31,10 @@ public enum TaskStore {
         public var id: Int64 { project.id ?? 0 }
     }
 
+    /// One task's work on one day — a `task_logs` row joined to its task name.
     public struct DayLogEntry: Identifiable, Sendable {
+        /// The `task_logs` row id. Regenerated whenever the day is rebuilt,
+        /// so it is a list identity, not a durable handle.
         public var id: Int64
         public var taskID: Int64
         public var taskName: String
@@ -31,20 +44,87 @@ public enum TaskStore {
 
     // MARK: - Tasks
 
-    /// Most recently active tasks with their project, lifetime time spent,
-    /// and the latest day-log line (the "very brief explanation").
-    public static func recentTasks(database: ShifuDatabase, limit: Int = 12) throws -> [Overview] {
-        try database.queue.read { db in
+    /// Which project's tasks a `TaskFilter` admits.
+    public enum ProjectScope: Sendable, Hashable {
+        case any
+        case project(id: Int64)
+        /// Tasks the user hasn't filed anywhere yet.
+        case unassigned
+    }
+
+    /// Recency (when it was worked) or time (how much) — the two ways a task
+    /// list is worth reading.
+    public enum Sort: Sendable, Hashable {
+        case mostRecent
+        case mostTime
+    }
+
+    /// How the Vault tab's Task log narrows and orders its task list
+    /// (design.md §5.3). The default is the whole roster, most recently
+    /// worked first — the list as it reads with no filter applied.
+    public struct TaskFilter: Sendable, Hashable {
+        /// Unix ms cutoff: a task appears only if it was worked at or after
+        /// this instant. 0 means all time, which is also what makes the
+        /// clipped `totalMs` below collapse to the lifetime total.
+        public var since: Int64
+        public var projectScope: ProjectScope
+        public var sort: Sort
+        public var limit: Int
+
+        public init(since: Int64 = 0, projectScope: ProjectScope = .any,
+                    sort: Sort = .mostRecent, limit: Int = 12) {
+            self.since = since
+            self.projectScope = projectScope
+            self.sort = sort
+            self.limit = limit
+        }
+    }
+
+    /// Tasks matching `filter`, with their project, time spent inside the
+    /// filter's window, and the latest day-log line (the "very brief
+    /// explanation").
+    ///
+    /// `t.last_active_at` is the max `ended_at` across a task's activities, so
+    /// filtering on it is exactly "worked since" (the window always ends now)
+    /// and it rides `idx_tasks_last_active`. Sorting by it is likewise exact.
+    public static func recentTasks(
+        database: ShifuDatabase, filter: TaskFilter = TaskFilter()
+    ) throws -> [Overview] {
+        // `since` fills the two clip bounds and the recency cutoff.
+        var arguments: [any DatabaseValueConvertible] = [
+            filter.since, filter.since, filter.since
+        ]
+        let projectClause: String
+        switch filter.projectScope {
+        case .any:
+            projectClause = ""
+        case .project(let projectID):
+            projectClause = "AND t.project_id = ?"
+            arguments.append(projectID)
+        case .unassigned:
+            projectClause = "AND t.project_id IS NULL"
+        }
+        arguments.append(filter.limit)
+        // total_ms is an output alias, which SQLite allows ORDER BY to name.
+        let order = switch filter.sort {
+        case .mostRecent: "t.last_active_at DESC"
+        case .mostTime: "total_ms DESC, t.last_active_at DESC"
+        }
+
+        return try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
                        p.name AS project_name,
-                       COALESCE((SELECT SUM(a.ended_at - a.started_at)
-                                 FROM activities a WHERE a.task_id = t.id), 0) AS total_ms,
+                       COALESCE((SELECT SUM(a.ended_at - MAX(a.started_at, ?))
+                                 FROM activities a
+                                 WHERE a.task_id = t.id AND a.ended_at > ?), 0) AS total_ms,
                        (SELECT l.summary FROM task_logs l WHERE l.task_id = t.id
                         ORDER BY l.day_start DESC LIMIT 1) AS latest_summary
                 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-                ORDER BY t.last_active_at DESC LIMIT ?
-                """, arguments: [limit]
+                WHERE t.last_active_at >= ? \(projectClause)
+                ORDER BY \(order) LIMIT ?
+                """,
+                arguments: StatementArguments(arguments)
             ).map { row in
                 Overview(
                     task: WorkTask(
@@ -58,14 +138,21 @@ public enum TaskStore {
         }
     }
 
-    /// Compiled work log for one local day, biggest tasks first.
+    /// Compiled work log for one local day, most recently worked task first
+    /// (ties broken by time spent), so the newest work reads from the top.
+    ///
+    /// Recency comes from `tasks.last_active_at`, which is the max `ended_at`
+    /// across *all* of a task's activities — so the ordering is exactly
+    /// recency-of-work when `dayStart` is the current day (the only way the
+    /// UI calls this). For an older day it degrades to "task touched most
+    /// recently since", not "worked last that day".
     public static func logs(dayStart: Int64, database: ShifuDatabase) throws -> [DayLogEntry] {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT l.id, l.task_id, t.name, l.summary, l.duration_ms
                 FROM task_logs l JOIN tasks t ON t.id = l.task_id
                 WHERE l.day_start = ?
-                ORDER BY l.duration_ms DESC
+                ORDER BY t.last_active_at DESC, l.duration_ms DESC
                 """, arguments: [dayStart]
             ).map { row in
                 DayLogEntry(id: row["id"], taskID: row["task_id"], taskName: row["name"],
@@ -211,5 +298,143 @@ public enum TaskStore {
         let noteSlug = noteKey.dropFirst(6)
         let taskSlug = taskKey.dropFirst(6)
         return noteSlug.contains(taskSlug) || taskSlug.contains(noteSlug)
+    }
+}
+
+// MARK: - Task detail page (design.md §5.3)
+
+extension TaskStore {
+    public struct DayRow: Identifiable, Sendable {
+        public var dayStart: Int64          // local-midnight unix ms
+        public var durationMs: Int64
+        public var summary: String
+
+        public var id: Int64 { dayStart }
+    }
+
+    public struct SourceShare: Identifiable, Sendable {
+        public var source: String           // domain, or app-bundle tail
+        public var ms: Int64
+
+        public var id: String { source }
+    }
+
+    public struct NoteLink: Identifiable, Sendable {
+        public var noteID: String
+        public var path: String             // relative to the vault root
+        public var title: String
+        public var captured: Int64?
+
+        public var id: String { noteID }
+    }
+
+    public struct ActivityLine: Identifiable, Sendable {
+        public var id: Int64
+        public var startedAt: Int64
+        public var endedAt: Int64
+        public var source: String
+        public var topic: String?
+        public var category: String
+    }
+
+    /// Everything the task detail page shows: the task and its LLM gist,
+    /// day-by-day history, where the time went, the knowledge notes captured
+    /// under it, and the most recent activity blocks.
+    public struct Detail: Sendable {
+        public var task: WorkTask
+        public var gist: String?
+        public var projectName: String?
+        public var totalMs: Int64
+        public var days: [DayRow]
+        public var sources: [SourceShare]
+        public var notes: [NoteLink]
+        public var recent: [ActivityLine]
+    }
+
+    /// One read for the whole page. Nil when the task doesn't exist.
+    public static func detail(
+        taskID: Int64, database: ShifuDatabase, recentLimit: Int = 40
+    ) throws -> Detail? {
+        try database.queue.read { db in
+            guard let head = try Row.fetchOne(db, sql: """
+                SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
+                       t.gist, p.name AS project_name
+                FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                WHERE t.id = ?
+                """, arguments: [taskID]) else { return nil }
+
+            let days = try Row.fetchAll(db, sql: """
+                SELECT day_start, duration_ms, summary FROM task_logs
+                WHERE task_id = ? ORDER BY day_start DESC
+                """, arguments: [taskID]
+            ).map { row in
+                DayRow(dayStart: row["day_start"], durationMs: row["duration_ms"],
+                       summary: row["summary"])
+            }
+
+            let activity = try activitySummary(db, taskID: taskID, recentLimit: recentLimit)
+
+            let notes = try Row.fetchAll(db, sql: """
+                SELECT i.note_id, i.path, i.captured, f.title
+                FROM vault_index i JOIN vault_fts f ON f.rowid = i.id
+                WHERE i.kind = 'knowledge' AND i.task_id = ?
+                ORDER BY i.captured DESC LIMIT 50
+                """, arguments: [taskID]
+            ).map { row in
+                NoteLink(noteID: row["note_id"], path: row["path"],
+                         title: row["title"], captured: row["captured"])
+            }
+
+            return Detail(
+                task: WorkTask(
+                    id: head["id"], key: head["key"], name: head["name"],
+                    projectID: head["project_id"], createdAt: head["created_at"],
+                    lastActiveAt: head["last_active_at"]),
+                gist: head["gist"],
+                projectName: head["project_name"],
+                totalMs: activity.totalMs,
+                days: days,
+                sources: activity.sources,
+                notes: notes,
+                recent: activity.recent)
+        }
+    }
+
+    private struct ActivityRollup {
+        var totalMs: Int64 = 0
+        var sources: [SourceShare] = []
+        var recent: [ActivityLine] = []
+    }
+
+    /// One pass over the task's activities: lifetime total, per-source time
+    /// (biggest first), and the newest `recentLimit` lines.
+    private static func activitySummary(
+        _ db: Database, taskID: Int64, recentLimit: Int
+    ) throws -> ActivityRollup {
+        var rollup = ActivityRollup()
+        var shares: [String: Int64] = [:]
+        var order: [String] = []
+        for row in try Row.fetchAll(db, sql: """
+            SELECT id, started_at, ended_at, app_bundle, domain, topic, category
+            FROM activities WHERE task_id = ? ORDER BY started_at DESC
+            """, arguments: [taskID]) {
+            let started: Int64 = row["started_at"]
+            let ended: Int64 = row["ended_at"]
+            let bundle: String = row["app_bundle"]
+            let source = (row["domain"] as String?)
+                ?? (bundle.split(separator: ".").last.map(String.init) ?? bundle)
+            rollup.totalMs += ended - started
+            if shares[source] == nil { order.append(source) }
+            shares[source, default: 0] += ended - started
+            if rollup.recent.count < recentLimit {
+                rollup.recent.append(ActivityLine(
+                    id: row["id"], startedAt: started, endedAt: ended,
+                    source: source, topic: row["topic"], category: row["category"]))
+            }
+        }
+        rollup.sources = order
+            .map { SourceShare(source: $0, ms: shares[$0] ?? 0) }
+            .sorted { $0.ms > $1.ms }
+        return rollup
     }
 }
