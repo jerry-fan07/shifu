@@ -3,6 +3,9 @@ import Foundation
 /// One knowledge note: plain Markdown with YAML frontmatter (design.md §5.1).
 /// The vault stays readable and portable without Shifu — Obsidian-compatible.
 public struct Note: Equatable, Sendable {
+    /// Triage state. Nothing enters the review queue unconfirmed (design.md
+    /// §5.1) — the LLM proposes, the user disposes. A discarded note is
+    /// deleted rather than given a third state.
     public enum State: String, Sendable {
         case inbox      // candidate awaiting keep/discard triage
         case kept       // confirmed; in the review queue if it has a Q/A

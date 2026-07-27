@@ -9,19 +9,46 @@ public enum CaptureKind: String, Codable, Sendable {
     case excluded   // app/domain on the exclusion list; no content captured
 }
 
-/// One raw screen observation (design.md §3.5).
+/// One raw screen observation (design.md §3.5) — the daemon's only output and
+/// the input to everything downstream.
+///
+/// A row is not one capture trigger. Consecutive near-duplicate captures of
+/// the same window collapse into one row whose `lastSeen` keeps advancing, so
+/// an unbroken stretch on one page is a single observation — but only while
+/// captures keep arriving inside `ObservationRecorder.dedupeTTLMs` (120 s) of
+/// each other. The 60 s heartbeat comfortably clears that during active use;
+/// once the user goes idle the heartbeat suspends (`Daemon.idleThreshold`,
+/// 300 s), so returning after a break starts a *new* row rather than
+/// stretching the old one across time nobody worked through.
+/// `ObservationRecorder` owns that logic and is the only writer.
 public struct Observation: Codable, Sendable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "observations"
 
     public var id: Int64?
-    public var startedAt: Int64        // unix ms
-    public var lastSeen: Int64         // unix ms
+    /// Unix ms of the first capture folded into this row.
+    public var startedAt: Int64
+    /// Unix ms of the most recent capture folded into this row. Equal to
+    /// `startedAt` for a row that was never refreshed; `lastSeen - startedAt`
+    /// is the observation's duration.
+    public var lastSeen: Int64
+    /// Bundle identifier, or `unknown.<pid>` for a process without one.
     public var appBundle: String
+    /// Nil when Accessibility is unavailable or the app exposes no title.
     public var windowTitle: String?
+    /// Browsers only, and only after the exclusion check passed.
     public var url: String?
+    /// Which capture-ladder rung produced this row (design.md §3.2).
     public var captureKind: CaptureKind
+    /// Extracted text: already redacted and capped at
+    /// `ObservationRecorder.maxTextBytes`. Always nil for `.excluded`, and
+    /// nulled in place once the row passes the retention window (`Retention`).
     public var text: String?
+    /// SimHash of `text`, for near-duplicate detection. Stored as `Int64` via
+    /// `Int64(bitPattern:)` because SQLite integers are signed.
     public var textSimhash: Int64?
+    /// The `activities.id` this observation was folded into, set by
+    /// `LedgerBuilder`. Nil until the analyzer has processed it, and reassigned
+    /// on every idempotent rebuild.
     public var sessionId: Int64?
 
     enum CodingKeys: String, CodingKey {

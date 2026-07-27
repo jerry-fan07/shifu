@@ -5,6 +5,12 @@ import GRDB
 /// domains → categories. Instant, covers most blocks; `*`-marked ambiguous
 /// entries always escalate to the LLM tier (Phase 3).
 public struct RulesClassifier: Sendable {
+    /// One mapping entry: a category, plus whether it should still escalate.
+    ///
+    /// `ambiguous: true` is the `*` marking from design.md §4.2 — the category
+    /// is a usable default, but the mapping alone can't be trusted, so the LLM
+    /// tier is asked to look at the actual content. `youtube.com` is the
+    /// archetype: entertainment by default, but plausibly a lecture.
     public struct Rule: Sendable {
         public var category: Category
         public var ambiguous: Bool
@@ -15,10 +21,19 @@ public struct RulesClassifier: Sendable {
         }
     }
 
+    /// A classification verdict for one block.
+    ///
+    /// `ambiguous` is not "the classifier is unsure" — it is a routing flag
+    /// meaning *the LLM tier should revisit this block*. `AmbiguousClassifier`
+    /// selects on exactly this, so setting it true on a common mapping puts
+    /// every matching block into the LLM's billable queue.
     public struct Result: Equatable, Sendable {
         public var category: Category
         public var ambiguous: Bool
-        public var source: String   // "rules" | "user"
+        /// `"user"` when a row from the `rules` table matched, `"rules"` for a
+        /// built-in seed. Stored as `activities.source`, where it also takes
+        /// the value `"llm"` once tier 2 has relabeled the block.
+        public var source: String
     }
 
     // MARK: - Seed defaults (user-overridable via the `rules` table)

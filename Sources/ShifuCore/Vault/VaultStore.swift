@@ -134,6 +134,10 @@ public struct VaultStore: Sendable {
 
     // MARK: - Project notes (vault-features.md §2.2)
 
+    /// Carry-over state read off an existing compiled project note, so a
+    /// recompile can keep the file's identity and skip regenerating unchanged
+    /// prose. `status` is the LLM paragraph, reused verbatim when
+    /// `contentHash` still matches.
     public struct ProjectNoteFile: Sendable {
         public var id: String
         public var contentHash: Int64

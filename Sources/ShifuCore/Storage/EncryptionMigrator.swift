@@ -5,6 +5,8 @@ import GRDB
 /// Uses `sqlcipher_export` into a sibling file, verifies, then swaps —
 /// the plaintext original is securely removed on success.
 public enum EncryptionMigrator {
+    /// Migration failures. All three leave the original database untouched —
+    /// the plaintext file is only removed after the encrypted copy verifies.
     public enum MigrationError: Error, CustomStringConvertible {
         case alreadyEncrypted
         case noDatabase

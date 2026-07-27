@@ -4,11 +4,16 @@ import GRDB
 /// Full-text search over the vault index (vault-features.md §4): bm25-ranked,
 /// filterable by kind/task/project/date. Hybrid semantic ranking is V4.
 public enum VaultSearch {
+    /// One search result. Points at a file rather than carrying its content —
+    /// the Markdown tree is the source of truth, so readers re-read from
+    /// `path`. A hit can outlive its file if it was deleted since indexing;
+    /// callers handle a nil read, and the next reconcile drops the row.
     public struct Hit: Identifiable, Sendable {
         public var noteID: String
         public var path: String          // relative to the vault root
         public var kind: FrontMatter.Kind
         public var title: String
+        /// Match context for display, may span lines. Not valid Markdown.
         public var snippet: String
         public var captured: Date?
 

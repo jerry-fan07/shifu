@@ -12,8 +12,13 @@ public enum TaskMerges {
     static let defaultMergeThreshold = 0.9
     static let activeWindowDays = 30
 
+    /// An unresolved "these look like one task" suggestion, awaiting the user.
+    /// Accepting merges B into A; dismissing keeps the ordered pair dismissed
+    /// permanently via the unique key on `task_merge_suggestions`.
     public struct Pending: Identifiable, Sendable {
         public var id: Int64
+        /// The survivor: accepting the merge repoints B's rows here and keeps
+        /// this task's name.
         public var taskA: Int64
         public var nameA: String
         public var taskB: Int64
@@ -151,6 +156,9 @@ public enum TaskMerges {
     public static let projectThresholdKey = "projects.suggest_threshold"
     static let defaultProjectThreshold = 0.85
 
+    /// An unresolved "add this task to that project?" suggestion. `task_id` is
+    /// unique in `project_suggestions`, so a task has at most one open
+    /// suggestion and a dismissed task stays quiet.
     public struct PendingProject: Identifiable, Sendable {
         public var id: Int64
         public var taskID: Int64

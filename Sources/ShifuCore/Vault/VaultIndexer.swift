@@ -7,6 +7,9 @@ import GRDB
 /// up external edits (Obsidian, any editor) and deletions. Losing the index
 /// loses nothing — `reconcile` rebuilds it from the files.
 public enum VaultIndexer {
+    /// What one `reconcile` did. `unchanged` files were skipped on a content
+    /// hash match; a healthy steady state is all-unchanged, which is what the
+    /// §V8 perf budget measures.
     public struct Summary: Equatable, Sendable {
         public var indexed: Int
         public var removed: Int
