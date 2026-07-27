@@ -4,6 +4,7 @@ import GRDB
 /// Deletion tooling (design.md §8, implementation.md Phase 6): the user can
 /// inspect, export, and delete everything.
 public enum DeletionTools {
+    /// Rows actually deleted, for the confirmation line the CLI prints back.
     public struct Counts: Equatable, Sendable {
         public var observations: Int
         public var activities: Int
