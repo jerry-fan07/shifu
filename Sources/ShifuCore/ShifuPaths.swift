@@ -27,3 +27,28 @@ public enum ShifuPaths {
         )
     }
 }
+
+/// Identity of a control file, not merely its existence.
+///
+/// Control files are toggled by creating and deleting them, and the directory
+/// watchers that observe them are edge-triggered while their handlers sample
+/// state *when they run*. An off→on that completes between two handler runs is
+/// therefore invisible to a `fileExists` check — the file is already back.
+/// Comparing identity instead catches it: the new file has a different inode
+/// and birth time, so a genuinely new session is distinguishable from no change.
+///
+/// Both fields are needed. Inodes are recycled, so a fresh file can land on the
+/// number the old one just freed; birth times disambiguate those.
+public struct ControlFileToken: Equatable, Sendable {
+    public let inode: UInt64
+    public let createdAt: Int64   // nanoseconds since the epoch
+
+    /// nil when the file doesn't exist — i.e. the control file is "off".
+    public init?(at url: URL) {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return nil }
+        inode = UInt64(info.st_ino)
+        createdAt = Int64(info.st_birthtimespec.tv_sec) * 1_000_000_000
+            + Int64(info.st_birthtimespec.tv_nsec)
+    }
+}
