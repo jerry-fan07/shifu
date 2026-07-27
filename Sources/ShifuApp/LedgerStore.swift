@@ -16,7 +16,13 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var inboxNotes: [Note] = []
     @Published private(set) var dueNotes: [Note] = []
     @Published private(set) var suggestions: [Suggestion] = []
+    /// The unfiltered task roster. The Cards tab's deck picker reads this, so
+    /// narrowing the Vault tab's list must never touch it — hence the separate
+    /// `filteredTasks` below.
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
+    /// The Task log's list, narrowed by `taskFilter`.
+    @Published private(set) var filteredTasks: [TaskStore.Overview] = []
+    @Published var taskFilter = TaskListFilter()
     @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
     @Published private(set) var projectSuggestions: [TaskMerges.PendingProject] = []
 
@@ -25,6 +31,7 @@ final class LedgerStore: ObservableObject {
     private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
     @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
+    @Published private(set) var themes: [ThemeStore.Overview] = []
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
@@ -62,10 +69,12 @@ final class LedgerStore: ObservableObject {
             let dayStart = Int64(
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
+            loadTasks()
             mergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
             projectSuggestions = (try? TaskMerges.pendingProjects(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             projectSummaries = (try? TaskStore.projects(database: database)) ?? []
+            themes = (try? ThemeStore.overviews(database: database)) ?? []
         }
         do {
             let start = Calendar.current.startOfDay(for: Date())
@@ -106,16 +115,13 @@ final class LedgerStore: ObservableObject {
         }
     }
 
-    func activities(from: Date, to: Date) -> [Activity] {
-        (try? db().queue.read { sqlite in
-            try Activity
-                .filter(sql: "ended_at > ? AND started_at < ?", arguments: [
-                    Int64(from.timeIntervalSince1970 * 1_000),
-                    Int64(to.timeIntervalSince1970 * 1_000)
-                ])
-                .order(sql: "started_at")
-                .fetchAll(sqlite)
-        }) ?? []
+    /// Time-tab rows with task/theme names resolved for the breakdown lenses.
+    func labeledActivities(from: Date, to: Date) -> [LedgerBuilder.LabeledActivity] {
+        guard let database = try? db() else { return [] }
+        return (try? LedgerBuilder.labeledActivities(
+            database: database,
+            from: Int64(from.timeIntervalSince1970 * 1_000),
+            to: Int64(to.timeIntervalSince1970 * 1_000))) ?? []
     }
 
     // MARK: - Pause (same control file as the CLI)
@@ -182,6 +188,53 @@ final class LedgerStore: ObservableObject {
     }
 
     // MARK: - Tasks & projects (design.md §5.3)
+
+    /// Re-runs just the Task log's list. Cheap enough to call on every filter
+    /// change — `refresh()` would re-read the whole dashboard for nothing.
+    /// `since` is recomputed here rather than stored, so a window left open
+    /// past midnight rolls over with the day.
+    func loadTasks() {
+        guard let database = try? db() else { return }
+        filteredTasks = (try? TaskStore.recentTasks(
+            database: database, filter: taskFilter.core(limit: 50))) ?? []
+    }
+
+    /// Everything the task detail page shows, in one read.
+    func taskDetail(_ taskID: Int64) -> TaskStore.Detail? {
+        guard let database = try? db() else { return nil }
+        return (try? TaskStore.detail(taskID: taskID, database: database)) ?? nil
+    }
+
+    /// The compiled work note for one (task, local day) — the detail page
+    /// expands each history day into its narrative inline.
+    func workNote(dayStart: Int64, taskKey: String) -> WorkNote? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let day = formatter.string(from: Date(timeIntervalSince1970: Double(dayStart) / 1_000))
+        return vault.workNote(day: day, taskKey: taskKey)
+    }
+
+    // MARK: - Themes (design.md §5.3, the high-level mode)
+
+    func themeDetail(_ themeID: Int64) -> ThemeStore.Detail? {
+        guard let database = try? db() else { return nil }
+        return (try? ThemeStore.detail(themeID: themeID, database: database)) ?? nil
+    }
+
+    func renameTheme(_ themeID: Int64, to name: String) {
+        if let database = try? db() {
+            try? ThemeStore.rename(themeID: themeID, to: name, database: database)
+        }
+        refresh()
+    }
+
+    func createProjectAndAssign(_ taskID: Int64, projectName: String) {
+        guard let database = try? db(),
+              let project = try? TaskStore.createProject(named: projectName, database: database),
+              let projectID = project.id else { return }
+        try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
+        refresh()
+    }
 
     func renameTask(_ taskID: Int64, to name: String) {
         if let database = try? db() {
@@ -306,6 +359,55 @@ final class LedgerStore: ObservableObject {
     static func hours(_ ms: Int64) -> String {
         let hrs = Double(ms) / 3_600_000
         return hrs >= 1 ? String(format: "%.1f h", hrs) : "\(ms / 60_000) min"
+    }
+}
+
+/// How far back the Task log's list reaches. Held as a range rather than a
+/// timestamp so the cutoff is recomputed per query (see `LedgerStore.loadTasks`).
+enum TaskRange: String, CaseIterable, Identifiable, Hashable {
+    case today = "Today"
+    case week = "Last 7 days"
+    case month = "Last 30 days"
+    case all = "All time"
+
+    var id: String { rawValue }
+
+    /// Unix ms cutoff, 0 for all time. Day-aligned for `today` so it means
+    /// "since midnight", not "in the last 24 hours".
+    func since(now: Date = Date(), calendar: Calendar = .current) -> Int64 {
+        let start: Date
+        switch self {
+        case .today: start = calendar.startOfDay(for: now)
+        case .week: start = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        case .month: start = calendar.date(byAdding: .day, value: -30, to: now) ?? now
+        case .all: return 0
+        }
+        return Int64(start.timeIntervalSince1970 * 1_000)
+    }
+}
+
+/// The Task log's filter bar (design.md §5.3): how far back, how to order,
+/// which project. Session state — deliberately not persisted, so reopening
+/// the window always shows the unfiltered list.
+struct TaskListFilter: Equatable {
+    var range: TaskRange = .all
+    var sort: TaskStore.Sort = .mostRecent
+    var project: TaskStore.ProjectScope = .any
+
+    /// Whether the list is showing fewer tasks than exist. Sort reorders
+    /// rather than narrows, so it stays out of this — an empty list under a
+    /// non-default sort means no data, not an over-tight filter.
+    var narrowsResults: Bool { range != .all || project != .any }
+
+    /// Whether anything differs from the default — drives the "clear"
+    /// affordance, which should also undo a non-default sort.
+    var isNarrowed: Bool { self != TaskListFilter() }
+
+    func core(now: Date = Date(), calendar: Calendar = .current, limit: Int)
+        -> TaskStore.TaskFilter {
+        TaskStore.TaskFilter(
+            since: range.since(now: now, calendar: calendar),
+            projectScope: project, sort: sort, limit: limit)
     }
 }
 

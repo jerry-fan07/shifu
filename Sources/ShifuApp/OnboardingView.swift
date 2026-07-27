@@ -107,11 +107,22 @@ struct OnboardingView: View {
             Picker("", selection: $backend) {
                 Text("Local only (on-device Apple model when available)").tag("auto")
                 Text("Claude API — sends text samples to Anthropic, opt-in").tag("claude")
+                Text("DeepSeek / OpenAI-compatible — sends text samples to your endpoint, opt-in")
+                    .tag("openai")
             }
             .pickerStyle(.radioGroup)
             if backend == "claude" {
                 SecureField("Anthropic API key (or set ANTHROPIC_API_KEY)", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
+            }
+            if backend == "openai" {
+                SecureField("DeepSeek/OpenAI API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Endpoint and model default to DeepSeek; change them in Settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if backend != "auto" {
                 Text("Only derived text samples are sent, after exclusions and redaction. Never pixels.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -124,6 +135,9 @@ struct OnboardingView: View {
             try? Settings.set(Settings.analysisBackendKey, to: backend, database: database)
             if backend == "claude" && !apiKey.isEmpty {
                 try? Settings.set(Settings.claudeAPIKeyKey, to: apiKey, database: database)
+            }
+            if backend == "openai" && !apiKey.isEmpty {
+                try? Settings.set(Settings.openAIAPIKeyKey, to: apiKey, database: database)
             }
         }
         onboarded = true
