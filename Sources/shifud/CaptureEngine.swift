@@ -9,6 +9,11 @@ final class CaptureEngine {
     /// fall through to the OCR rung.
     static let axTextFloor = 80
 
+    /// Default capacity of `lastDHashByKey` (design.md §3.4: <80 MB steady
+    /// RSS). Window titles are unbounded in cardinality, so the dHash dedupe
+    /// map is a bounded LRU rather than a plain dictionary.
+    static let defaultDHashCacheCapacity = 256
+
     private struct OCRTarget {
         let app: NSRunningApplication
         let bundle: String
@@ -21,10 +26,14 @@ final class CaptureEngine {
     private let recorder: ObservationRecorder
     private let exclusions: Exclusions
     private let ocr = OCRCapture()
-    private var lastDHashByKey: [String: UInt64] = [:]
+    private var lastDHashByKey: BoundedLRUCache<String, UInt64>
     private var ocrInFlight = false
-    /// Chromium PIDs already asked to build their web-content AX tree.
-    private var webAXEnabledPIDs: Set<pid_t> = []
+    /// Chromium pids already asked to build their web-content AX tree,
+    /// paired with the process's launch date. macOS recycles pids (they
+    /// wrap at ~100k), so a bare pid can't tell a live process from a dead
+    /// one that used to hold the same pid — `launchDate` can. Not a leak:
+    /// bounded by the pid space, at most ~100k small entries.
+    private var webAXEnabledLaunchDates: [pid_t: Date] = [:]
 
     private(set) var lastCaptureAt: Date = .distantPast
 
@@ -32,9 +41,14 @@ final class CaptureEngine {
     /// listens here for its rules-only near-real-time classification (§4.4).
     var onCapture: ((String, String?, Bool) -> Void)?
 
-    init(recorder: ObservationRecorder, exclusions: Exclusions) {
+    init(
+        recorder: ObservationRecorder,
+        exclusions: Exclusions,
+        dhashCacheCapacity: Int = CaptureEngine.defaultDHashCacheCapacity
+    ) {
         self.recorder = recorder
         self.exclusions = exclusions
+        self.lastDHashByKey = BoundedLRUCache(capacity: dhashCacheCapacity)
     }
 
     func captureFrontmost(trigger: String) {
@@ -75,10 +89,19 @@ final class CaptureEngine {
             }
             // Chromium keeps web content out of the AX tree until asked;
             // without this rung 2 sees only browser chrome and every capture
-            // pays the OCR cost.
-            if Browsers.isChromium(bundle),
-               webAXEnabledPIDs.insert(app.processIdentifier).inserted {
-                AXHelper.enableWebAccessibility(pid: app.processIdentifier)
+            // pays the OCR cost. Dedupe on (pid, launchDate) rather than pid
+            // alone: a recycled pid belongs to a genuinely new process and
+            // must still be poked. An unavailable launchDate falls back to
+            // `.distantPast`, which is stable across captures, so such a
+            // process is still poked exactly once — a fresh `Date()` here
+            // would never match and would put two AX round-trips on every
+            // capture of that app (design.md §3.4).
+            if Browsers.isChromium(bundle) {
+                let launchDate = app.launchDate ?? .distantPast
+                if webAXEnabledLaunchDates[app.processIdentifier] != launchDate {
+                    AXHelper.enableWebAccessibility(pid: app.processIdentifier)
+                    webAXEnabledLaunchDates[app.processIdentifier] = launchDate
+                }
             }
         }
 
@@ -111,13 +134,13 @@ final class CaptureEngine {
                     return
                 }
                 let key = "\(target.bundle)|\(target.title ?? "")"
-                if let last = self.lastDHashByKey[key], DHash.isUnchanged(last, result.dhash) {
+                if let last = self.lastDHashByKey.get(key), DHash.isUnchanged(last, result.dhash) {
                     // Same screen as last time (e.g. fullscreen video): bump last_seen only.
                     _ = try? self.recorder.touch(appBundle: target.bundle, windowTitle: target.title,
                                                  url: target.url, timestamp: target.timestamp)
                     return
                 }
-                self.lastDHashByKey[key] = result.dhash
+                self.lastDHashByKey.set(result.dhash, forKey: key)
                 if result.text.isEmpty {
                     self.recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
                                         timestamp: target.timestamp, axText: target.axFallbackText)
