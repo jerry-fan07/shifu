@@ -1,7 +1,11 @@
 # Shifu
 
 Local-first macOS screen observer → productivity ledger, knowledge vault, automation radar.
-Read [design.md](design.md) for the spec and [implementation.md](implementation.md) for the phase plan.
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — **start here.** Pipeline, concept→file map,
+  consolidated schema, invariant→guard table, extension recipes.
+- [design.md](design.md) — the spec (§-numbers are cited throughout the code).
+- [implementation.md](implementation.md) — the phase plan.
 
 ## Build & test
 

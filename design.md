@@ -170,7 +170,7 @@ Contiguous observations are folded into **activity blocks**: same app/domain, ga
 
 1. **Rules layer** (instant, covers ~80%): a user-editable mapping of bundle IDs and URL domains → categories. Ships with sensible defaults (`Xcode → work`, `youtube.com → entertainment*`, `mail → admin`, …). `*` marks *ambiguous* defaults that always escalate.
 2. **Local LLM layer**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by a small on-device model (Apple Foundation Models framework where available, or a bundled ~3B quantized model via MLX). Prompt returns `{category, confidence, topic}`.
-3. **Cloud layer (opt-in)**: users may point classification and summarization at the Claude API for better topic labeling. Only text samples are sent, post-exclusion-filtering, and this is off by default.
+3. **Cloud layer (opt-in)**: users may point classification and summarization at the Claude API — or any OpenAI-compatible endpoint (DeepSeek by default; `openai.base_url`/`openai.model` settings) — for better topic labeling and semantic task grouping (§5.3). Only text samples are sent, post-exclusion-filtering, and this is off by default.
 
 Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`, `communication`, `admin`, `idle`. Every block also gets a free-text `topic` ("debugging shifu capture daemon", "watching F1 highlights") used by the knowledge and automation stages.
 
@@ -184,7 +184,7 @@ Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`,
 A user-invoked focus contract, toggled from the menu bar (and optionally auto-scheduled, e.g. weekdays 9–12).
 
 - While active, the daemon classifies the *current* block in near-real-time using the rules layer only (no LLM on the hot path). Unknown → treated as neutral, never nagged.
-- If the current block has been non-`work`/non-`learning` for a grace period (default 3 min), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades. Repeats at most every 4 min while off-task. No sound, no modal, no text — a nudge, not a scold.
+- If the current block has been non-`work`/non-`learning` for a grace period (default 3 min), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades, with a short translucent motivational line centered on the screen the user is working on (e.g. "Believe in yourself"). Repeats at most every 4 min while off-task. No sound, no modal — a nudge, not a scold.
 - Escalation is configurable: off → glow → glow + haptic (on supported trackpads) → gentle notification. Default is glow only.
 - Work Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
 
@@ -234,10 +234,13 @@ A: `SCScreenshotManager` (macOS 14+).
 
 The vault is a work database, not just flashcards:
 
-- **Tasks**: the analyzer groups activities into ongoing tasks by a stable key — the classified topic when there is one, else domain, else app (`TaskGrouper`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names).
+- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence (titles, topics, text samples) plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
 - **Projects**: user-created groups of tasks with time totals — direct goals (a learning goal, a work effort). Assigning a task to a project also scopes its notes into the project's review deck (§5.2).
-- **Vault tab** shows today's compiled log, the most recent tasks with their latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
+- **Vault tab** shows today's compiled log (most recently worked task first), the task list with its latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
+- **Task log filters**: the task list carries a filter bar — range (today / 7 days / 30 days / all time), order (most recent / most time), and project (all / one / unfiled). The range doubles as the window the time column counts, so a row's hours always match the range on screen; it never touches the *Today* day log or the *Cards* deck picker, both of which read the unfiltered roster. Session state, not persisted.
+- **Task detail page**: every task row opens as a full dashboard page (`TaskDetailView`): the LLM gist of what the task *is*, day-by-day history with the work-note narratives (§2.1 of vault-features.md) expandable inline, where the time went per source, the knowledge notes captured under the task, recent activity blocks, inline rename, and project assignment (including creating a new project in place).
+- **Themes — the second clustering mode**: `ThemeClusterer` runs an *independent* LLM clustering of the same blocks into 3–8 broad initiatives spanning weeks ("YC Startup School", "Shifu development", "Travel") — one level above tasks, assigned per block (`activities.theme_key`, `"thm:"` namespace), so a task's blocks may straddle themes. Same engine discipline as semantic tasks: roster reuse (30-day window), confidence floor, `theme_attempts` cap, rebuild carry, fail-soft. Each theme keeps an LLM **running narrative** ("the story so far"), regenerated only when the hash of its *completed* days changes — at most one generation per active theme per day. The Vault tab gains a segmented **Themes / Task log** toggle; a theme's page shows the narrative, computed per-day history (no parallel log table — days derive from `theme_key` on read), the tasks its time flowed through (linking to their pages), and recent activity. Themes are renameable; renames stick.
 
 ---
 
@@ -314,7 +317,9 @@ This section is load-bearing; a screen watcher lives or dies on trust.
   logs/               # daemon logs, size-capped
 ```
 
-Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `projects` / `task_logs` (§5.3), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization).
+Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `projects` / `task_logs` (§5.3), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences).
+
+User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Work Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched.
 
 ---
 
@@ -368,6 +373,17 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
 - Exclusion-list editing UI (defaults + `exclusions` table rows work today).
+  The Settings window (§9) is the natural home once built: `exclusions` needs a
+  new descriptor shape in `SettingsCatalog`, not a new window.
+- **OCR-inclusive per-trigger perf measurement** — required before the capture
+  heartbeat floor (§9) can drop below 30s. `make perf` cannot answer this today
+  for two independent reasons: `--synthetic-feed` exits before `Daemon` is
+  constructed, so no heartbeat timer ever runs; and `SyntheticFeed` records
+  `captureKind: .ax` only, so its cost-per-trigger excludes the
+  ScreenCaptureKit + Vision rung that dominates real capture cost. The 30s
+  floor is therefore chosen conservatively (~960 heartbeat triggers per 8h day,
+  against the harness's "<2000 real triggers" baseline) rather than measured
+  against the §3.4 budgets.
 - ~~Cap LLM re-attempts on low-confidence ambiguous blocks.~~ Shipped: with
   the `LedgerBuilder` carry (confident verdicts + `extracted` survive the
   idempotent rebuild), migration v10 adds `activities.llm_attempts` — the
@@ -386,11 +402,48 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   "false" pairs were in fact true fragmentations (same GitHub page under two
   keys) — with the overlapping-sources filter and user confirmation it fails
   safe. Decide V3 scope (suggestions-only vs wait) before building.
+  **Update (2026-07-27):** intent-level grouping shipped by a different route —
+  `SemanticTaskGrouper` (§5.3) asks the *LLM tier* to assign blocks to
+  goal-level tasks, sidestepping the weak-embedder problem entirely.
+  Embedding-based centroid assignment stays deferred; the merge-suggestion
+  half remains useful for consolidating pre-existing mechanical tasks into
+  their semantic successors.
 - ~~LLM-written narrative work logs~~ — shipped in vault phase V2
   (vault-features.md §2.1): per-(task, day) work notes whose `## Sessions`
   prose regenerates only when the day's activities change (content-hash gate
   keyed on spans + text samples, not row ids — LedgerBuilder rebuilds recreate
   row ids every run).
+- **Structural cleanups, deferred deliberately** (surveyed 2026-07-24 against
+  a green `make check` — build, tests, SwiftLint `--strict`, and the privacy
+  invariants all passing). None of these is a correctness bug; each is a
+  maintainability debt worth fixing the next time its file is opened for real
+  work, not as a standalone churn commit. Recorded in ARCHITECTURE.md too.
+  - `shifu-cli/main.swift` (480 lines) has top-level statements interleaved
+    with declarations: `let args` sits mid-file, and `do { try run() }` appears
+    before `run()` is declared. Split the command bodies into sibling files
+    (top-level code must stay in `main.swift`, functions may move) and drop the
+    `args` global in favor of passing arguments explicitly. `VaultBench.swift`
+    was already carved out for exactly this reason — the 500-line SwiftLint
+    file limit — which is the signal the file wants a real split.
+  - The `pause_until` expiry parse exists three times, in `shifu-cli/main.swift`,
+    `shifud/PauseController.swift`, and `ShifuApp/LedgerStore.swift`; the
+    `work_mode` existence check likewise. A change to either control-file
+    format silently breaks two of the three. One small injectable type in
+    ShifuCore (following `VaultStore(root:)`) would make the format testable
+    and single-sourced.
+  - `Retention` is declared at the bottom of `Analysis/LedgerBuilder.swift`,
+    where nobody grepping for the concept will find it. Move to its own file
+    under `Storage/` next to `DeletionTools`, which shares its concern.
+  - `ShifuApp/LedgerStore.swift` (326 lines) is the app's single read model for
+    pause, vault, tasks, projects, radar, and search, with 16 repetitions of
+    `try? db()` swallowing errors into empty state. Feature-scoped stores would
+    help, but the UI layer has no test coverage, so this one waits for a reason
+    beyond tidiness.
+  - `Tests/ShifuCoreTests/ShifuCoreTests.swift` is still the 6-line
+    `swift package init` placeholder.
+  - Do **not** "clean up" `shifu-cli/VaultBench.swift`: `scripts/perf-vault.sh`
+    invokes `shifu vault bench` and parses its output, so deleting it breaks
+    `make perf`.
 
 ---
 
