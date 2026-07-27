@@ -5,6 +5,9 @@ import GRDB
 /// Rebuilds a time window idempotently, so re-runs and rule changes are safe
 /// (implementation.md Phase 2 item 3).
 public enum LedgerBuilder {
+    /// What one `rebuild` did. `blocksWritten` counts rows *written*, not rows
+    /// newly discovered — a rebuild over an unchanged window rewrites every
+    /// block and reports them all.
     public struct Summary: Equatable, Sendable {
         public var blocksWritten: Int
         public var observationsProcessed: Int
@@ -20,8 +23,8 @@ public enum LedgerBuilder {
     }
 
     /// Derived state that must outlive a rebuild: LLM verdicts, the extraction
-    /// ledger, and the ambiguous-retry counter. Everything else is recomputed
-    /// from rules.
+    /// ledger, the ambiguous-retry counter, and the semantic task and theme
+    /// assignments (design.md §5.3). Everything else is recomputed from rules.
     private struct CarriedState {
         var category: Category?
         var topic: String?
@@ -29,6 +32,10 @@ public enum LedgerBuilder {
         var llmLabeled: Bool
         var extracted: Bool
         var llmAttempts: Int
+        var semKey: String?
+        var semAttempts: Int
+        var themeKey: String?
+        var themeAttempts: Int
     }
 
     /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
@@ -86,10 +93,13 @@ public enum LedgerBuilder {
     ) throws -> [SpanKey: CarriedState] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, category, topic,
-                   confidence, source, extracted, llm_attempts
+                   confidence, source, extracted, llm_attempts,
+                   sem_key, sem_attempts, theme_key, theme_attempts
             FROM activities
             WHERE ended_at > ? AND started_at < ?
-              AND (source = 'llm' OR extracted = 1 OR llm_attempts > 0)
+              AND (source = 'llm' OR extracted = 1 OR llm_attempts > 0
+                   OR sem_key IS NOT NULL OR sem_attempts > 0
+                   OR theme_key IS NOT NULL OR theme_attempts > 0)
             """, arguments: [from, to])
         var carried: [SpanKey: CarriedState] = [:]
         for row in rows {
@@ -103,7 +113,11 @@ public enum LedgerBuilder {
                 confidence: row["confidence"],
                 llmLabeled: source == "llm",
                 extracted: row["extracted"],
-                llmAttempts: row["llm_attempts"]
+                llmAttempts: row["llm_attempts"],
+                semKey: row["sem_key"],
+                semAttempts: row["sem_attempts"],
+                themeKey: row["theme_key"],
+                themeAttempts: row["theme_attempts"]
             )
         }
         return carried
@@ -131,13 +145,23 @@ public enum LedgerBuilder {
         }
         try activity.insert(db)
         guard let sessionID = activity.id else { return }
-        // Restore the extraction ledger and the retry counter onto the
-        // span-identical row so neither the LLM classifier nor the extractor
-        // re-bills a block the rebuild just recreated.
+        // Restore the extraction ledger, the retry counters, and the semantic
+        // task assignment onto the span-identical row so no LLM pass re-bills
+        // a block the rebuild just recreated.
         if let prior, prior.extracted || prior.llmAttempts > 0 {
             try db.execute(
                 sql: "UPDATE activities SET extracted = ?, llm_attempts = ? WHERE id = ?",
                 arguments: [prior.extracted, prior.llmAttempts, sessionID])
+        }
+        if let prior, prior.semKey != nil || prior.semAttempts > 0 {
+            try db.execute(
+                sql: "UPDATE activities SET sem_key = ?, sem_attempts = ? WHERE id = ?",
+                arguments: [prior.semKey, prior.semAttempts, sessionID])
+        }
+        if let prior, prior.themeKey != nil || prior.themeAttempts > 0 {
+            try db.execute(
+                sql: "UPDATE activities SET theme_key = ?, theme_attempts = ? WHERE id = ?",
+                arguments: [prior.themeKey, prior.themeAttempts, sessionID])
         }
         if !observationIDs.isEmpty {
             let placeholders = databaseQuestionMarks(count: observationIDs.count)
@@ -145,6 +169,48 @@ public enum LedgerBuilder {
                 sql: "UPDATE observations SET session_id = ? WHERE id IN (\(placeholders))",
                 arguments: StatementArguments([sessionID] + observationIDs)
             )
+        }
+    }
+
+    /// One activity with its display labels resolved — Time-tab fuel for the
+    /// category/theme/task breakdown lenses (design.md §7). Task and theme
+    /// names come from joins, because `Activity` deliberately doesn't mirror
+    /// `task_id`/`theme_key`.
+    public struct LabeledActivity: Identifiable, Sendable {
+        public var id: Int64
+        public var startedAt: Int64
+        public var endedAt: Int64
+        public var category: String
+        public var source: String       // domain, or app-bundle tail
+        public var taskName: String?
+        public var themeName: String?
+
+        public var durationMs: Int64 { endedAt - startedAt }
+    }
+
+    /// Labeled activities overlapping [from, to), oldest first.
+    public static func labeledActivities(
+        database: ShifuDatabase, from: Int64, to: Int64
+    ) throws -> [LabeledActivity] {
+        try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT a.id, a.started_at, a.ended_at, a.category, a.domain, a.app_bundle,
+                       t.name AS task_name, th.name AS theme_name
+                FROM activities a
+                LEFT JOIN tasks t ON t.id = a.task_id
+                LEFT JOIN themes th ON th.key = a.theme_key
+                WHERE a.ended_at > ? AND a.started_at < ?
+                ORDER BY a.started_at
+                """, arguments: [from, to]
+            ).map { row in
+                let bundle: String = row["app_bundle"]
+                return LabeledActivity(
+                    id: row["id"], startedAt: row["started_at"], endedAt: row["ended_at"],
+                    category: row["category"],
+                    source: (row["domain"] as String?)
+                        ?? (bundle.split(separator: ".").last.map(String.init) ?? bundle),
+                    taskName: row["task_name"], themeName: row["theme_name"])
+            }
         }
     }
 
