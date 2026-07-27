@@ -170,6 +170,133 @@ import Testing
         #expect(dayLogs.count == 1)
         #expect(dayLogs[0].taskName == "grdb migrations")
     }
+
+    /// The recency filter drops tasks last worked before the cutoff, and the
+    /// time beside a surviving row counts only the part inside the window —
+    /// an activity straddling the cutoff is clipped, not counted whole.
+    @Test func filterScopesBothMembershipAndTime() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 60,
+                   topic: "spanning task")
+        try insert(database, start: day2.addingTimeInterval(9 * 3_600), minutes: 30,
+                   topic: "spanning task")
+        try insert(database, start: day1.addingTimeInterval(14 * 3_600), minutes: 45,
+                   topic: "day one only")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2) + 86_400_000,
+                            calendar: calendar)
+
+        let all = try TaskStore.recentTasks(database: database)
+        #expect(all.count == 2)
+        let spanningMs = all.first { $0.task.name == "spanning task" }?.totalMs ?? 0
+        #expect(spanningMs == 90 * 60_000)
+
+        let recent = try TaskStore.recentTasks(
+            database: database, filter: .init(since: ms(day2)))
+        #expect(recent.map(\.task.name) == ["spanning task"])
+        #expect(recent[0].totalMs == 30 * 60_000)
+
+        // A cutoff mid-activity keeps only the minutes after it.
+        let midday = ms(day2.addingTimeInterval(9 * 3_600 + 600))
+        let clipped = try TaskStore.recentTasks(
+            database: database, filter: .init(since: midday))
+        #expect(clipped[0].totalMs == 20 * 60_000)
+    }
+
+    /// Sorting by time spent reorders a list that recency orders differently.
+    @Test func filterSortsByTimeSpentAndProject() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 120,
+                   topic: "long early task")
+        try insert(database, start: day1.addingTimeInterval(15 * 3_600), minutes: 20,
+                   topic: "short late task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let byRecency = try TaskStore.recentTasks(database: database)
+        #expect(byRecency.map(\.task.name) == ["short late task", "long early task"])
+        let byTime = try TaskStore.recentTasks(
+            database: database, filter: .init(sort: .mostTime))
+        #expect(byTime.map(\.task.name) == ["long early task", "short late task"])
+
+        // Project scope: one task filed, the other left loose.
+        let project = try TaskStore.createProject(named: "Shifu", database: database)
+        let filed = byTime[0].task.id!
+        try TaskStore.assign(taskID: filed, projectID: project.id, database: database)
+
+        let inProject = try TaskStore.recentTasks(
+            database: database, filter: .init(projectScope: .project(id: project.id!)))
+        #expect(inProject.map(\.task.name) == ["long early task"])
+        #expect(inProject[0].projectName == "Shifu")
+
+        let loose = try TaskStore.recentTasks(
+            database: database, filter: .init(projectScope: .unassigned))
+        #expect(loose.map(\.task.name) == ["short late task"])
+    }
+
+    /// The day log leads with the most recently worked task, not the longest —
+    /// the Vault tab's "Today" list is a recency feed.
+    @Test func dayLogLeadsWithTheMostRecentTask() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 120,
+                   topic: "long morning task")
+        try insert(database, start: day1.addingTimeInterval(15 * 3_600), minutes: 20,
+                   topic: "short afternoon task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let dayLogs = try TaskStore.logs(dayStart: ms(day1), database: database)
+        #expect(dayLogs.map(\.taskName) == ["short afternoon task", "long morning task"])
+    }
+}
+
+@Suite struct TaskDetailTests {
+    @Test func detailGathersHistorySourcesNotesAndRecent() throws {
+        let database = try ShifuDatabase.inMemory()
+        try database.queue.write { db in
+            try db.execute(sql: "INSERT INTO projects (name, created_at) VALUES ('Travel', 0)")
+            try db.execute(sql: """
+                INSERT INTO tasks (key, name, gist, project_id, created_at, last_active_at)
+                VALUES ('sem:sf-trip', 'Planning the SF trip', 'Flights and lodging.', 1, 0, 99)
+                """)
+            for (index, domain) in ["united.com", "united.com", "airbnb.com"].enumerated() {
+                var activity = Activity(
+                    startedAt: Int64(index) * 3_600_000,
+                    endedAt: Int64(index) * 3_600_000 + 600_000,
+                    appBundle: "com.apple.Safari", domain: domain, category: .admin,
+                    topic: index == 2 ? "picking a rental" : nil)
+                try activity.insert(db)
+                try db.execute(sql: "UPDATE activities SET task_id = 1 WHERE id = ?",
+                               arguments: [activity.id])
+            }
+            try db.execute(sql: """
+                INSERT INTO task_logs (task_id, day_start, duration_ms, summary)
+                VALUES (1, 0, 1800000, 'united.com — comparing fares'),
+                       (1, 86400000, 600000, 'airbnb.com — picking a rental')
+                """)
+            try db.execute(sql: """
+                INSERT INTO vault_index
+                    (note_id, path, kind, task_id, captured, content_hash, mtime)
+                VALUES ('01NOTE', '2026/07/27-baggage-rules.md', 'knowledge', 1, 500, 1, 1)
+                """)
+            let rowid = try Int64.fetchOne(db, sql: "SELECT id FROM vault_index")!
+            try db.execute(sql: "INSERT INTO vault_fts (rowid, title, body) VALUES (?, ?, ?)",
+                           arguments: [rowid, "Baggage rules", "carry-on limits"])
+        }
+
+        let detail = try #require(try TaskStore.detail(taskID: 1, database: database))
+        #expect(detail.task.name == "Planning the SF trip")
+        #expect(detail.gist == "Flights and lodging.")
+        #expect(detail.projectName == "Travel")
+        #expect(detail.totalMs == 3 * 600_000)
+        #expect(detail.days.map(\.dayStart) == [86_400_000, 0])   // newest first
+        #expect(detail.sources.map(\.source) == ["united.com", "airbnb.com"])
+        #expect(detail.sources[0].ms == 1_200_000)
+        #expect(detail.notes.map(\.title) == ["Baggage rules"])
+        #expect(detail.recent.count == 3)
+        #expect(detail.recent[0].topic == "picking a rental")     // newest first
+
+        #expect(try TaskStore.detail(taskID: 99, database: database) == nil)
+    }
 }
 
 @Suite struct ReviewDeckMatchingTests {
