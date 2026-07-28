@@ -4,6 +4,7 @@ import SwiftUI
 // Shifu.app — menu bar UI (design.md §7). One menu bar item, one window.
 @main
 struct ShifuApp: App {
+    @NSApplicationDelegateAdaptor(WindowActivationController.self) private var activation
     @StateObject private var store = LedgerStore()
     @StateObject private var settings = SettingsStore()
     @Environment(\.openWindow) private var openWindow

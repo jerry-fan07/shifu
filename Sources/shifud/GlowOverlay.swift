@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import CoreImage
 import ScreenCaptureKit
 
@@ -40,6 +41,9 @@ final class GlowOverlay: NSObject {
     /// Teardown slack past the last animation frame, so cleanup never races
     /// the fade it follows.
     private static let teardownSlack: TimeInterval = 0.2
+    /// How often to re-check for Mission Control across an in-flight pulse
+    /// (§4.4). Only ever paid during a pulse, never on the idle path (§3.4).
+    private static let missionControlCheckInterval: TimeInterval = 1.0
 
     private var windows: [NSWindow] = []
     private var messageLabel: NSTextField?
@@ -59,10 +63,24 @@ final class GlowOverlay: NSObject {
         teardown()
     }
 
-    func pulse() {
-        guard !isPulsing else { return }          // one pulse at a time
+    /// Fires the pulse, returning whether an overlay was actually shown.
+    ///
+    /// Skips (returns false) when Mission Control — a Dock full-screen overlay
+    /// (also App Exposé / Launchpad) — is on screen: our windows sit at
+    /// `.screenSaver` level with `.transient`, which — verified empirically on
+    /// this machine — does NOT hide them behind the window picker, so a pulse
+    /// would paint the amber vignette + text straight over the Mission Control
+    /// UI (§4.4). The false return lets `WorkModeController` leave
+    /// `lastPulseAt` untouched, so the next off-task capture (a heartbeat away)
+    /// retries the nudge instead of losing it for a whole `pulseSpacing`.
+    func pulse() -> Bool {
+        guard !isPulsing else { return false }          // one pulse at a time
         let screens = NSScreen.screens
-        guard !screens.isEmpty else { return }    // all displays gone: skip, don't latch
+        guard !screens.isEmpty else { return false }    // all displays gone: skip, don't latch
+        guard !Self.missionControlActive() else {
+            log("work mode: glow pulse skipped — Mission Control active")
+            return false
+        }
         isPulsing = true
 
         let messageScreen = Self.screenUnderPointer(in: screens)
@@ -92,6 +110,48 @@ final class GlowOverlay: NSObject {
         schedule(after: Self.breatheIn + Self.hold + Self.breatheOut + Self.teardownSlack) {
             $0.teardown()
         }
+
+        // Mission Control can also appear *mid-pulse* (the user hits F3 while
+        // the vignette breathes), and our overlay draws on top of it (§4.4).
+        // Poll a few times across the pulse and tear down the moment it does —
+        // reusing the phase mechanism, so `teardown()` cancels the remaining
+        // checks and only the first to detect it logs. No standing timer: the
+        // cost is paid only while a pulse is live (§3.4 idle budget).
+        for tick in stride(from: Self.missionControlCheckInterval,
+                           to: Self.breatheIn + Self.hold + Self.breatheOut,
+                           by: Self.missionControlCheckInterval) {
+            schedule(after: tick) { overlay in
+                guard overlay.isPulsing, Self.missionControlActive() else { return }
+                log("work mode: glow pulse dismissed — Mission Control appeared")
+                overlay.teardown()
+            }
+        }
+        return true
+    }
+
+    /// True while a Dock-owned full-screen overlay — Mission Control, and also
+    /// App Exposé / Launchpad, all rendered by the Dock process — is on screen.
+    /// Verified empirically on this machine: with Mission Control up, an
+    /// on-screen window owned by "Dock" appears at layer 18 (the real Dock sits
+    /// at layer 20) spanning the full display (e.g. 1512×982), and vanishes on
+    /// dismiss. The window name is nil without a Screen Recording grant, so we
+    /// key on owner + layer + size, never the name — unreadable metadata simply
+    /// reads as false (pulse as usual), never a permanent block. Mission
+    /// Control posts no NSNotification in our process, so polling the window
+    /// list is the only available signal (§4.4).
+    private static func missionControlActive() -> Bool {
+        guard let infoList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        for info in infoList {
+            guard (info[kCGWindowOwnerName as String] as? String) == "Dock" else { continue }
+            let layer = info[kCGWindowLayer as String] as? Int ?? .max
+            guard layer > 0, layer < 20 else { continue }   // below the real Dock (layer 20)
+            guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? Double,
+                  let height = bounds["Height"] as? Double else { continue }
+            if width > 200, height > 200 { return true }     // full-screen backdrop
+        }
+        return false
     }
 
     /// Dismisses an in-flight pulse immediately; no-op when idle. Called when
