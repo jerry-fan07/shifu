@@ -283,7 +283,11 @@ actions:    [Draft the automation with Claude Code] [Dismiss] [Snooze 30d]
 Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generous whitespace, system fonts and colors, no badges or gamification, no settings page longer than one screen. Three surfaces total:
 
 - **Menu bar item** (the only always-visible surface): status glyph (watching / paused / excluded app), Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Dashboard, Quit & Stop Capture.
-- **Dashboard window**: four tabs — *Time* (stacked day/week bars, topic drill-down), *Vault* (today's work log, tasks, projects — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **Dashboard window**: four tabs — *Time*, *Vault* (today's work log, tasks, projects — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **The Time tab** carries one window (Day / Week) and one lens (Category / Theme / Task, §5.3) across two modes:
+  - *Summary* — where the time went. A hero total with its change against the same window before it, a donut, and one row per group: color, name, duration, share, a proportional bar, expanding into the apps and domains inside it, its block count, and the hour it peaked. This is what makes "3 h 10 m of today was work, and 40 m of that was Chrome" a thing you can read at a glance.
+  - *Timeline* — when it happened. Stacked bars over the hours or days, plus the block list. Its legend carries each group's total, so the strip under the chart is a breakdown rather than a color key.
+  - A group wears the same color in both modes; category hues are fixed, theme/task hues come from a stable hash of the name so a theme keeps its color as the window changes. Past the top 7 groups everything folds into "Other" rather than growing the palette.
 - **Review session**: minimal card interface (see §5.2).
 - **Onboarding**: a 4-screen flow that (1) explains exactly what is and isn't captured, (2) requests Screen Recording + Accessibility permissions with live previews of what Shifu sees, (3) sets exclusions (pre-checked: password managers, banking category, private browsing), (4) picks analysis backend (local-only default).
 
