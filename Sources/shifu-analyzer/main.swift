@@ -51,11 +51,21 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
 
-// Tier-2 LLM pass over ambiguous blocks (§4.2). Backend selection: explicit
-// "claude" opt-in wins; otherwise on-device Foundation Models if the OS has
-// it; otherwise rules-only (nothing to do — §10 fallback).
-let backend: (any LLMBackend)? = try ClaudeBackend.ifConfigured(database: database)
-    ?? FoundationModelsBackend.ifAvailable()
+// Tier-2 LLM pass over ambiguous blocks (§4.2). Backend selection: an explicit
+// cloud opt-in wins ("claude", or "openai" for DeepSeek/OpenAI-compatible);
+// otherwise on-device Foundation Models if the OS has it; otherwise rules-only
+// (nothing to do — §10 fallback). "off" disables every LLM stage.
+let backendChoice = try Settings.get(Settings.analysisBackendKey, database: database)
+let backend: (any LLMBackend)?
+if backendChoice == "off" {
+    backend = nil
+} else if let claude = try ClaudeBackend.ifConfigured(database: database) {
+    backend = claude
+} else if let openAI = try OpenAIBackend.ifConfigured(database: database) {
+    backend = openAI
+} else {
+    backend = FoundationModelsBackend.ifAvailable()
+}
 if let backend {
     do {
         let relabeled = try await AmbiguousClassifier.run(
@@ -69,13 +79,49 @@ if let backend {
     }
 }
 
+// Semantic task grouping (§5.3): the LLM assigns the window's blocks to
+// intent-level tasks before the mechanical grouper runs, so `sem_key` exists
+// when TaskGrouper picks keys. Fail-soft: on any failure blocks keep their
+// mechanical grouping and stay queued for the next run (§10).
+if let backend {
+    do {
+        let semSummary = try await SemanticTaskGrouper.run(
+            database: database, backend: backend, from: from, to: nowMs)
+        if semSummary.assigned > 0 {
+            print("semantic tasks (\(backend.name)): \(semSummary.assigned) blocks assigned, "
+                + "\(semSummary.tasksCreated) tasks created")
+        }
+    } catch {
+        print("semantic grouping failed, blocks stay mechanically grouped: \(error)")
+    }
+}
+
 // Tasks & work logs (§5.3): group the window's activities into ongoing tasks
-// and compile per-day logs. Runs after the LLM pass so topics exist, and
-// *before* extraction so `activities.task_id` exists when notes are born
-// (vault-features.md §3).
+// and compile per-day logs. Runs after the LLM passes so semantic keys and
+// topics exist, and *before* extraction so `activities.task_id` exists when
+// notes are born (vault-features.md §3).
 let taskSummary = try TaskGrouper.run(database: database, from: from, to: nowMs)
 if taskSummary.tasksTouched > 0 {
     print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+}
+
+// Theme layer (§5.3): the second, independent clustering into broad
+// initiatives. Runs after TaskGrouper so task names exist as evidence.
+// Fail-soft like every LLM stage.
+if let backend {
+    do {
+        let themeSummary = try await ThemeClusterer.run(
+            database: database, backend: backend, from: from, to: nowMs)
+        if themeSummary.assigned > 0 {
+            print("themes (\(backend.name)): \(themeSummary.assigned) blocks assigned, "
+                + "\(themeSummary.themesCreated) themes created")
+        }
+        let narrated = try await ThemeClusterer.refreshNarratives(
+            database: database, backend: backend)
+        if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
+    } catch {
+        print("theme clustering failed, themes stay as they were: \(error)")
+    }
 }
 
 // Durable block signatures (vault-features.md §5.1): re-derived each run
@@ -84,6 +130,16 @@ if taskSummary.tasksTouched > 0 {
 try TaskMerges.writeSignatures(database: database, from: from, to: nowMs)
 
 let vault = VaultStore(database: database)
+
+// Prune noise tasks (design.md §5.3): sub-threshold, never renamed, no
+// project, stale for a week — debris the substance gate now stops at the
+// source. Their time stays in the ledger; logs and notes recompile.
+do {
+    let pruned = try TaskStore.prune(database: database, vault: vault)
+    if pruned > 0 { print("tasks: pruned \(pruned) noise tasks") }
+} catch {
+    print("task prune failed (retries next run): \(error)")
+}
 
 // Knowledge extraction over learning/novel-work blocks (§5.1).
 if let backend {

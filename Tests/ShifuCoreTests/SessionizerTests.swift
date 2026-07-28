@@ -74,6 +74,28 @@ import Testing
         #expect(!mixed[0].excluded)
     }
 
+    /// Per-window dedupe bumps `last_seen` on the *older* row, so two windows
+    /// alternated inside the dedupe TTL produce rows with interleaved spans:
+    /// obs 2 starts before obs 1 was last seen. Blocks must still tile the
+    /// timeline rather than overlap, or the Time tab bills the same minute
+    /// twice (design.md §7).
+    @Test func interleavedObservationsYieldNonOverlappingBlocks() {
+        let blocks = Sessionizer.sessionize([
+            obs(id: 1, start: 0, seen: 100_000, bundle: "com.tinyspeck.slackmacgap"),
+            obs(id: 2, start: 30_000, seen: 100_000, bundle: "com.apple.Safari",
+                url: "https://github.com/x")
+        ])
+        #expect(blocks.count == 2)
+        for block in blocks {
+            #expect(block.startedAt <= block.endedAt)
+        }
+        for (earlier, later) in zip(blocks, blocks.dropFirst()) {
+            #expect(earlier.endedAt <= later.startedAt)
+        }
+        // Slack held focus until Safari's first sighting, and no longer.
+        #expect(blocks[0].endedAt == 30_000)
+    }
+
     @Test func emptyInputYieldsNoBlocks() {
         #expect(Sessionizer.sessionize([]).isEmpty)
     }

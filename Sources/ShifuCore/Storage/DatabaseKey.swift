@@ -9,6 +9,10 @@ public enum DatabaseKey {
     static let service = "com.shifu.database-key"
     static let account = "shifu"
 
+    /// Keychain access failures. Distinct from "no key exists": callers must
+    /// treat a thrown `KeyError` as *unknown* key state, never as absence —
+    /// `ShifuDatabase.openRotatingOnCorruption` rethrows it rather than
+    /// rotating, because a locked Keychain would otherwise orphan good data.
     public enum KeyError: Error, CustomStringConvertible {
         case keychain(OSStatus)
         case randomFailed

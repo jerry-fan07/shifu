@@ -4,16 +4,38 @@ import Foundation
 /// dependency (implementation.md §0). State lives in note frontmatter so the
 /// vault folder stays self-contained.
 public enum FSRS {
+    /// The user's self-reported recall on one card. Raw values are the FSRS
+    /// convention (1–4) and are stored directly in `srs_reviews.grade`, so they
+    /// must not be renumbered.
     public enum Grade: Int, Sendable, CaseIterable {
         case again = 1, hard = 2, good = 3, easy = 4
     }
 
+    /// One note's scheduling state.
+    ///
+    /// Persisted in the note's own Markdown frontmatter (`srs: {…}`), not in a
+    /// table — that is what keeps the vault a self-contained folder you can
+    /// move, back up, or open in Obsidian without Shifu. `srs_reviews` is a
+    /// separate append-only log kept only for later parameter fitting; it is
+    /// not the scheduler's state.
+    ///
+    /// A default-constructed value means "never reviewed" (`reps == 0`), which
+    /// `review` detects to seed from the initial-stability weights.
     public struct State: Equatable, Sendable {
+        /// Memory strength in days; the interval at which recall probability
+        /// falls to `requestRetention`. Grows with each successful review.
         public var stability: Double
+        /// Intrinsic difficulty, clamped to 1...10. Higher means stability
+        /// grows more slowly.
         public var difficulty: Double
+        /// Days scheduled after the last review. Zero means relearn today —
+        /// the `.again` path.
         public var intervalDays: Double
+        /// When this note next becomes due. `VaultStore.due()` selects on it.
         public var due: Date
         public var reps: Int
+        /// Nil until the first review. Elapsed time since this drives the
+        /// retrievability term.
         public var lastReview: Date?
 
         public init(stability: Double = 0, difficulty: Double = 0, intervalDays: Double = 0,

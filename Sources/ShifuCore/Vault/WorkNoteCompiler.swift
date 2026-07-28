@@ -11,6 +11,9 @@ import GRDB
 /// text samples — the same rows KnowledgeExtractor reads; never anything
 /// upstream of the redaction choke point.
 public enum WorkNoteCompiler {
+    /// What one `run` did. `narrativesGenerated` is the count that cost tokens;
+    /// `notesWritten` includes notes whose deterministic parts were rewritten
+    /// while their prose carried over unchanged, so the two differ by design.
     public struct Summary: Equatable, Sendable {
         public var notesWritten: Int
         public var narrativesGenerated: Int

@@ -5,52 +5,113 @@ import SwiftUI
 /// Dashboard (design.md §7): *Time*, *Vault*, *Cards*, and *Radar* tabs.
 /// Shows onboarding instead until the first-run flow completes.
 struct DashboardView: View {
+    enum Tab: String, CaseIterable { case time = "Time", vault = "Vault", cards = "Cards", radar = "Radar" }
+
     @AppStorage("shifu.onboarded") private var onboarded = false
+    @State private var tab: Tab = .time
 
     var body: some View {
         if onboarded {
-            tabs
+            dashboard
         } else {
             OnboardingView()
         }
     }
 
-    private var tabs: some View {
-        TabView {
-            TimeTabView()
-                .tabItem { Label("Time", systemImage: "chart.bar") }
-            VaultTabView()
-                .tabItem { Label("Vault", systemImage: "tray.full") }
-            CardsTabView()
-                .tabItem { Label("Cards", systemImage: "rectangle.stack") }
-            RadarTabView()
-                .tabItem { Label("Radar", systemImage: "dot.radiowaves.left.and.right") }
+    private var dashboard: some View {
+        content
+            .frame(minWidth: 680, minHeight: 580)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    DashboardTabBar(tab: $tab)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch tab {
+        case .time: TimeTabView()
+        case .vault: VaultTabView()
+        case .cards: CardsTabView()
+        case .radar: RadarTabView()
         }
-        .frame(minWidth: 680, minHeight: 580)
     }
 }
 
-/// *Time* tab: stacked bars, day/week toggle, block drill-down.
-/// System fonts and colors throughout (§7).
+/// Equal-width segmented control for the dashboard's top bar. Built by hand
+/// (rather than a `Picker`) so every label gets the same width — the native
+/// segmented style sizes each segment to its own text, which is what made
+/// the titlebar tab strip look unevenly spaced.
+private struct DashboardTabBar: View {
+    @Binding var tab: DashboardView.Tab
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(DashboardView.Tab.allCases, id: \.self) { item in
+                Button {
+                    tab = item
+                } label: {
+                    Text(item.rawValue)
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(minWidth: 64)
+                        .padding(.vertical, 5)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(tab == item ? Color.primary : Color.secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(tab == item ? Color.primary.opacity(0.12) : Color.clear)
+                )
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+    }
+}
+
+/// *Time* tab: stacked bars, day/week toggle, block drill-down. A second
+/// segmented lens picks what the stacks break down by — category, theme, or
+/// task (design.md §7, §5.3). System fonts and colors throughout (§7).
 struct TimeTabView: View {
     enum Span: String, CaseIterable { case day = "Day", week = "Week" }
+    enum Lens: String, CaseIterable {
+        case category = "Category"
+        case theme = "Theme"
+        case task = "Task"
+    }
 
     @EnvironmentObject private var store: LedgerStore
     @State private var span: Span = .day
+    @State private var lens: Lens = .category
 
     static let categoryColors: KeyValuePairs<String, Color> = [
         "work": .blue, "learning": .green, "entertainment": .orange,
         "social": .pink, "communication": .teal, "admin": .gray,
         "private": .secondary, "unclassified": Color.gray.opacity(0.4)
     ]
+    /// Theme/task lenses collapse everything beyond the biggest N groups into
+    /// "Other", so the legend stays readable over a busy week.
+    static let maxGroups = 7
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("", selection: $span) {
-                ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
+            HStack(spacing: 12) {
+                Picker("", selection: $span) {
+                    ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                Picker("", selection: $lens) {
+                    ForEach(Lens.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 240)
+                .help("What the bars break down by")
             }
-            .pickerStyle(.segmented)
-            .frame(width: 180)
 
             chart
                 .frame(minHeight: 220)
@@ -81,46 +142,78 @@ struct TimeTabView: View {
     private struct Bucket: Identifiable {
         let id = UUID()
         let label: String
-        let category: String
+        let group: String
         let hours: Double
+        let order: Int
+    }
+
+    /// The lens's label for one activity.
+    private func groupLabel(_ activity: LedgerBuilder.LabeledActivity) -> String {
+        switch lens {
+        case .category: return activity.category
+        case .theme: return activity.themeName ?? "No theme"
+        case .task: return activity.taskName ?? "No task"
+        }
+    }
+
+    /// The biggest groups by total time in the window (theme/task lenses);
+    /// everything else collapses into "Other".
+    private func topGroups(_ activities: [LedgerBuilder.LabeledActivity]) -> Set<String> {
+        guard lens != .category else { return [] }
+        var totals: [String: Int64] = [:]
+        for activity in activities {
+            totals[groupLabel(activity), default: 0] += activity.durationMs
+        }
+        return Set(totals.sorted { $0.value > $1.value }
+            .prefix(Self.maxGroups).map(\.key))
     }
 
     private var buckets: [Bucket] {
         let (from, to) = range
-        let activities = store.activities(from: from, to: to)
+        let activities = store.labeledActivities(from: from, to: to)
+        let top = topGroups(activities)
         let cal = Calendar.current
-        // (bucket label, category) → ms
-        var sums: [String: [String: Int64]] = [:]
+        let dayZero = cal.startOfDay(for: from)
+        // bucket label → (chronological order, group → ms)
+        var sums: [String: (order: Int, byGroup: [String: Int64])] = [:]
         for activity in activities {
+            let raw = groupLabel(activity)
+            let group = lens == .category || top.contains(raw) ? raw : "Other"
             let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
             var cursor = max(start, from)
             let end = min(Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000), to)
             while cursor < end {
                 let bucketEnd: Date
                 let label: String
+                let order: Int
                 switch span {
                 case .day:
                     let hour = cal.component(.hour, from: cursor)
                     label = String(format: "%02d", hour)
+                    order = hour
                     bucketEnd = cal.date(
                         bySettingHour: hour, minute: 59, second: 59, of: cursor)!
                         .addingTimeInterval(1)
                 case .week:
                     label = cursor.formatted(.dateTime.weekday(.abbreviated))
+                    order = cal.dateComponents(
+                        [.day], from: dayZero, to: cal.startOfDay(for: cursor)).day ?? 0
                     bucketEnd = cal.startOfDay(for: cursor).addingTimeInterval(86_400)
                 }
                 let slice = min(end, bucketEnd).timeIntervalSince(cursor)
-                sums[label, default: [:]][activity.category.rawValue, default: 0]
-                    += Int64(slice * 1_000)
+                var entry = sums[label] ?? (order: order, byGroup: [:])
+                entry.byGroup[group, default: 0] += Int64(slice * 1_000)
+                sums[label] = entry
                 cursor = bucketEnd
             }
         }
-        return sums.flatMap { label, byCategory in
-            byCategory.map { category, ms in
-                Bucket(label: label, category: category, hours: Double(ms) / 3_600_000)
+        return sums.flatMap { label, entry in
+            entry.byGroup.map { group, ms in
+                Bucket(label: label, group: group, hours: Double(ms) / 3_600_000,
+                       order: entry.order)
             }
         }
-        .sorted { $0.label < $1.label }
+        .sorted { $0.order < $1.order }
     }
 
     @ViewBuilder private var chart: some View {
@@ -131,21 +224,50 @@ struct TimeTabView: View {
                 systemImage: "chart.bar",
                 description: Text("The analyzer runs hourly. Data appears once shifud has been watching for a while.")
             )
+        } else if lens == .category {
+            barChart(data)
+                .chartForegroundStyleScale(Self.categoryColors)
         } else {
+            barChart(data)   // themes/tasks: automatic palette, top-N + Other
+        }
+    }
+
+    private func barChart(_ data: [Bucket]) -> some View {
+        GeometryReader { proxy in
             Chart(data) { bucket in
                 BarMark(
                     x: .value(span == .day ? "Hour" : "Day", bucket.label),
                     y: .value("Hours", bucket.hours)
                 )
-                .foregroundStyle(by: .value("Category", bucket.category))
+                .foregroundStyle(by: .value(lens.rawValue, bucket.group))
             }
-            .chartForegroundStyleScale(Self.categoryColors)
+            .chartXAxis {
+                AxisMarks(values: axisLabels(in: data, width: proxy.size.width)) {
+                    AxisGridLine()
+                    AxisTick()
+                    // Charts otherwise squeezes each label into its own bar's
+                    // width and ellipsises it; we've already thinned for space.
+                    AxisValueLabel(collisionResolution: .disabled)
+                }
+            }
         }
+    }
+
+    /// Every bucket gets a label while they fit; past that, every *n*th one. Without
+    /// this the axis truncates to "…" as soon as the window narrows (§7).
+    private func axisLabels(in data: [Bucket], width: CGFloat) -> [String] {
+        var seen: Set<String> = []
+        let labels = data.map(\.label).filter { seen.insert($0).inserted }
+        guard !labels.isEmpty, width > 0 else { return labels }
+        let perLabel: CGFloat = span == .day ? 25 : 46   // widest label plus breathing room
+        let room = max(1, Int(width / perLabel))
+        let step = max(1, Int((Double(labels.count) / Double(room)).rounded(.up)))
+        return labels.enumerated().compactMap { $0.offset.isMultiple(of: step) ? $0.element : nil }
     }
 
     private var blockList: some View {
         let (from, to) = range
-        let activities = store.activities(from: from, to: to)
+        let activities = store.labeledActivities(from: from, to: to)
             .sorted { $0.startedAt > $1.startedAt }
         return List(activities, id: \.id) { activity in
             HStack {
@@ -153,13 +275,19 @@ struct TimeTabView: View {
                      format: .dateTime.hour().minute())
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                Text(activity.domain ?? shortBundle(activity.appBundle))
+                Text(lens == .category ? activity.source : groupLabel(activity))
                     .lineLimit(1)
+                if lens != .category {
+                    Text(activity.source)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
                 Spacer()
                 Text(LedgerStore.hours(activity.durationMs))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                Text(activity.category.rawValue)
+                Text(activity.category)
                     .font(.caption)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -167,9 +295,5 @@ struct TimeTabView: View {
             }
         }
         .listStyle(.inset)
-    }
-
-    private func shortBundle(_ bundle: String) -> String {
-        bundle.split(separator: ".").last.map(String.init) ?? bundle
     }
 }

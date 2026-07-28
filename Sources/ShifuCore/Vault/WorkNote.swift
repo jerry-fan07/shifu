@@ -7,6 +7,9 @@ import Foundation
 /// day's knowledge notes) are optional sections the compiler can replace
 /// independently.
 public struct WorkNote: Equatable, Sendable {
+    /// One contiguous stretch of work within a task-day, rendered as local
+    /// wall-clock strings rather than timestamps — these are written into
+    /// Markdown for a human to read, not parsed back.
     public struct Session: Equatable, Sendable {
         public var start: String    // "HH:MM", local time
         public var end: String

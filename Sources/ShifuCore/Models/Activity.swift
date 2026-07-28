@@ -14,19 +14,46 @@ public enum Category: String, Codable, Sendable, CaseIterable {
     case unclassified
 }
 
-/// One classified activity block in the ledger (design.md §4.1, §4.3).
+/// One classified activity block in the ledger (design.md §4.1, §4.3) — a run
+/// of observations on the same app/domain, folded together and given a category.
+///
+/// Rows are **not stable across runs.** `LedgerBuilder.rebuild` deletes and
+/// re-inserts every activity overlapping its window each time the analyzer
+/// runs, so `id` changes freely. What persists is the *span identity*
+/// (`startedAt`, `endedAt`, `appBundle`); the rebuild uses it to carry
+/// expensive derived state — the LLM verdict, `extracted`, `llmAttempts` —
+/// onto the newly inserted row. Never store a long-lived reference to an
+/// activity `id`.
+///
+/// This struct is a **partial** mirror of the `activities` table. The columns
+/// added by migrations v4–v10 — `extracted`, `task_id`, `signature`,
+/// `llm_attempts` — are deliberately absent here and read/written with raw SQL
+/// by the passes that own them (`KnowledgeExtractor`, `TaskGrouper`,
+/// `TaskMerges`, `AmbiguousClassifier`). Check the migrator in
+/// `ShifuDatabase`, not this type, for the full schema.
 public struct Activity: Codable, Sendable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "activities"
 
     public var id: Int64?
-    public var startedAt: Int64          // unix ms
+    /// Unix ms. With `endedAt` and `appBundle`, forms the span identity the
+    /// idempotent rebuild matches on.
+    public var startedAt: Int64
     public var endedAt: Int64
     public var appBundle: String
+    /// Normalized host of the block's URL: lowercased, `www.` stripped
+    /// (`Sessionizer.domain(of:)`). Nil for non-browser blocks.
     public var domain: String?
     public var category: Category
+    /// Short free-text description of what the user was doing. Only the LLM
+    /// tier produces one — nil for every rules-classified block.
     public var topic: String?
+    /// The LLM's self-reported confidence, nil outside the LLM tier. Verdicts
+    /// below `AmbiguousClassifier.confidenceFloor` are never applied at all.
     public var confidence: Double?
-    public var source: String            // rules | llm | user
+    /// Which tier produced `category`: `"rules"`, `"llm"`, or `"user"`. A free
+    /// string rather than an enum; `"user"` outranks the others and is never
+    /// overwritten by a later pass.
+    public var source: String
     /// True when the rules layer marked this mapping ambiguous (`*` entries):
     /// the LLM tier should revisit it (§4.2).
     public var ambiguous: Bool

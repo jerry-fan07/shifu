@@ -5,6 +5,7 @@ import SwiftUI
 @main
 struct ShifuApp: App {
     @StateObject private var store = LedgerStore()
+    @StateObject private var settings = SettingsStore()
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
@@ -53,6 +54,11 @@ struct ShifuApp: App {
                 NSApp.activate(ignoringOtherApps: true)
             }
 
+            Button("Settings…") {
+                openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+
             Divider()
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
@@ -72,11 +78,17 @@ struct ShifuApp: App {
         }
         .defaultSize(width: 720, height: 640)
 
+        // Resizable: cards can carry code blocks and display math (§5.2).
         Window("Review", id: "review") {
             ReviewSessionView()
                 .environmentObject(store)
         }
-        .defaultSize(width: 440, height: 360)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 520, height: 480)
+
+        Window("Settings", id: "settings") {
+            SettingsView()
+                .environmentObject(settings)
+        }
+        .defaultSize(width: 460, height: 520)
     }
 }

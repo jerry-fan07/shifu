@@ -28,7 +28,7 @@ if let rotated {
 let recorder = ObservationRecorder(database: database)
 let exclusions = try Exclusions(database: database)
 let engine = CaptureEngine(recorder: recorder, exclusions: exclusions)
-let daemon = Daemon(engine: engine)
+let daemon = Daemon(engine: engine, database: database)
 
 // Accessory app: no dock icon, but the glow overlay can create windows.
 NSApplication.shared.setActivationPolicy(.accessory)

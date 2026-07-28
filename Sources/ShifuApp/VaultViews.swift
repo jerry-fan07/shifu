@@ -1,10 +1,18 @@
 import ShifuCore
 import SwiftUI
 
-/// *Vault* tab (design.md §5.3): today's compiled work log, the most recent
-/// tasks (renameable, assignable to projects), and projects with time spent.
+/// *Vault* tab (design.md §5.3), two modes behind a segmented toggle:
+/// *Themes* — the broad initiatives your time clusters into — and the
+/// *Task log* — today's compiled work log, recent tasks, and projects.
+/// Rows navigate to full pages (ThemeDetailView / TaskDetailView).
 struct VaultTabView: View {
+    enum Mode: String, CaseIterable {
+        case themes = "Themes"
+        case log = "Task log"
+    }
+
     @EnvironmentObject private var store: LedgerStore
+    @State private var mode: Mode = .themes
     @State private var newProjectName = ""
     @State private var selectedHit: VaultSearch.Hit?
 
@@ -13,6 +21,39 @@ struct VaultTabView: View {
     }
 
     var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                .padding(.top, 10)
+                switch mode {
+                case .themes: ThemeListView()
+                case .log: logPage
+                }
+            }
+            .navigationDestination(for: Int64.self) { taskID in
+                TaskDetailView(taskID: taskID)
+            }
+            .navigationDestination(for: ThemeRoute.self) { route in
+                ThemeDetailView(themeID: route.id)
+            }
+        }
+    }
+
+    /// The filter bar is pinned above the list rather than living in the
+    /// Tasks section, so it stays put while the log scrolls.
+    private var logPage: some View {
+        VStack(spacing: 0) {
+            filterBar
+            Divider()
+            list
+        }
+    }
+
+    private var list: some View {
         List {
             Section {
                 TextField("Search the vault", text: $store.vaultQuery)
@@ -59,11 +100,8 @@ struct VaultTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.todayLogs) { entry in
-                    // Opens the task's latest work note (vault-features.md §2.1).
-                    Button {
-                        selectedHit = store.latestWorkNote(
-                            taskID: entry.taskID, title: entry.taskName)
-                    } label: {
+                    // Opens the task's full page (design.md §5.3).
+                    NavigationLink(value: entry.taskID) {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(entry.taskName).bold()
@@ -79,12 +117,11 @@ struct VaultTabView: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                     .padding(.vertical, 2)
                 }
             }
 
-            Section("Recent tasks") {
+            Section(store.taskCountLabel.isEmpty ? "Tasks" : "Tasks · \(store.taskCountLabel)") {
                 // Merge suggestions inline above the tasks they concern
                 // (vault-features.md §5.2): one click merges, never automatic.
                 ForEach(store.mergeSuggestions) { suggestion in
@@ -99,17 +136,14 @@ struct VaultTabView: View {
                     }
                     .padding(.vertical, 2)
                 }
-                if store.recentTasks.isEmpty {
-                    Text("Tasks appear once the analyzer has grouped some activity.")
+                if store.filteredTasks.isEmpty {
+                    Text(store.taskFilter.narrowsResults
+                        ? "No tasks match these filters."
+                        : "Tasks appear once the analyzer has grouped some activity.")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(store.recentTasks) { overview in
-                    TaskRowView(overview: overview) {
-                        if let taskID = overview.task.id {
-                            selectedHit = store.latestWorkNote(
-                                taskID: taskID, title: overview.task.name)
-                        }
-                    }
+                ForEach(store.filteredTasks) { overview in
+                    TaskRowView(overview: overview)
                 }
             }
 
@@ -162,6 +196,62 @@ struct VaultTabView: View {
         }
     }
 
+    /// Range · sort · project, over the Tasks section only — the Today
+    /// section stays the compiled day log, and the Cards deck picker keeps the
+    /// full roster (LedgerStore.recentTasks). Labelled because it sits above
+    /// the whole page, where an unlabelled bar would read as filtering all of it.
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            Text("Tasks")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Range", selection: $store.taskFilter.range) {
+                ForEach(TaskRange.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .fixedSize()
+            .help("How far back the list reaches")
+
+            Picker("Minimum", selection: $store.taskFilter.minimum) {
+                ForEach(TaskMinimum.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .fixedSize()
+            .help("Hide tasks you spent barely any time on")
+
+            Picker("Sort", selection: $store.taskFilter.sort) {
+                Text("Most recent").tag(TaskStore.Sort.mostRecent)
+                Text("Most time").tag(TaskStore.Sort.mostTime)
+            }
+            .fixedSize()
+            .help("Order by when it was worked, or how much time it took")
+
+            Picker("Project", selection: $store.taskFilter.project) {
+                Text("All projects").tag(TaskStore.ProjectScope.any)
+                Text("No project").tag(TaskStore.ProjectScope.unassigned)
+                ForEach(store.projectSummaries) { summary in
+                    if let projectID = summary.project.id {
+                        Text(summary.project.name)
+                            .tag(TaskStore.ProjectScope.project(id: projectID))
+                    }
+                }
+            }
+            .fixedSize()
+            .help("Narrow to one project")
+
+            if store.taskFilter.isNarrowed {
+                Button("Clear") { store.taskFilter = TaskListFilter() }
+                    .buttonStyle(.borderless)
+            }
+            Spacer()
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .font(.caption)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .onChange(of: store.taskFilter) { _, _ in store.loadTasks() }
+    }
+
     private func addProject() {
         let name = newProjectName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
@@ -172,7 +262,8 @@ struct VaultTabView: View {
 
 /// Read-only view of one vault note from a search hit (vault-features.md §4).
 /// Editing happens in the user's editor of choice — hence Reveal in Finder.
-private struct NoteReaderView: View {
+/// Shared with TaskDetailView, which presents notes from the task page.
+struct NoteReaderView: View {
     @EnvironmentObject private var store: LedgerStore
     @Environment(\.dismiss) private var dismiss
     let hit: VaultSearch.Hit
@@ -214,12 +305,11 @@ private struct NoteReaderView: View {
     }
 }
 
-/// One task row: inline rename, latest log line, project assignment, and a
-/// button opening the task's latest work note.
+/// One task row: inline rename, latest log line, project assignment, and
+/// navigation to the task's full page.
 private struct TaskRowView: View {
     @EnvironmentObject private var store: LedgerStore
     let overview: TaskStore.Overview
-    var openNote: () -> Void
     @State private var name = ""
 
     var body: some View {
@@ -232,11 +322,13 @@ private struct TaskRowView: View {
                         if let taskID = overview.task.id { store.renameTask(taskID, to: name) }
                     }
                 Spacer()
-                Button(action: openNote) {
-                    Image(systemName: "doc.text")
+                if let taskID = overview.task.id {
+                    NavigationLink(value: taskID) {
+                        Image(systemName: "chevron.right.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Open the task page")
                 }
-                .buttonStyle(.borderless)
-                .help("Open the latest work note")
                 Text(LedgerStore.hours(overview.totalMs))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -274,144 +366,5 @@ private struct TaskRowView: View {
     }
 }
 
-/// *Cards* tab — the spaced-repetition screen (design.md §5.2): pick a deck
-/// (everything, a project, or a task), start a session, and triage the inbox.
-struct CardsTabView: View {
-    @EnvironmentObject private var store: LedgerStore
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Picker("Deck", selection: $store.reviewDeck) {
-                    Text("All notes").tag(ReviewDeck.all)
-                    ForEach(store.projectSummaries) { summary in
-                        if let projectID = summary.project.id {
-                            Text("Project · \(summary.project.name)")
-                                .tag(ReviewDeck.project(id: projectID, name: summary.project.name))
-                        }
-                    }
-                    ForEach(store.recentTasks) { overview in
-                        Text("Task · \(overview.task.name)")
-                            .tag(ReviewDeck.task(key: overview.task.key, name: overview.task.name))
-                    }
-                }
-                .frame(maxWidth: 340)
-                Spacer()
-                Button("Review · \(store.deckDueNotes.count) due") {
-                    openWindow(id: "review")
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.deckDueNotes.isEmpty)
-            }
-
-            Divider()
-
-            if store.inboxNotes.isEmpty {
-                ContentUnavailableView(
-                    "Inbox empty", systemImage: "tray",
-                    description: Text("New knowledge candidates appear here after analysis.")
-                )
-            } else {
-                Text("Inbox — K keeps, D discards the first card")
-                    .font(.headline)
-                List(store.inboxNotes, id: \.id) { note in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(note.topic).bold()
-                            Spacer()
-                            Button("Keep") { store.keep(note) }
-                            Button("Discard") { store.discard(note) }
-                        }
-                        Text(note.body)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(4)
-                    }
-                    .padding(.vertical, 4)
-                }
-                .listStyle(.inset)
-            }
-        }
-        .padding(20)
-        .onAppear { store.refresh() }
-        // Single-keystroke triage of the top card (§5.1).
-        .background {
-            Group {
-                Button("") { if let first = store.inboxNotes.first { store.keep(first) } }
-                    .keyboardShortcut("k", modifiers: [])
-                Button("") { if let first = store.inboxNotes.first { store.discard(first) } }
-                    .keyboardShortcut("d", modifiers: [])
-            }
-            .opacity(0)
-        }
-    }
-}
-
-/// Minimal card session (design.md §5.2): question, reveal, grade 1–4.
-/// Draws from the deck selected on the Cards tab.
-struct ReviewSessionView: View {
-    @EnvironmentObject private var store: LedgerStore
-    @State private var revealed = false
-    @State private var reviewedCount = 0
-
-    var body: some View {
-        VStack(spacing: 24) {
-            if store.reviewDeck != .all {
-                Text("Deck: \(store.reviewDeck.label)")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            if let note = store.deckDueNotes.first, let qa = note.questionAnswer {
-                Text(note.topic)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(qa.question)
-                    .font(.title3)
-                    .multilineTextAlignment(.center)
-
-                if revealed {
-                    Divider().frame(width: 160)
-                    Text(qa.answer)
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                    HStack(spacing: 12) {
-                        gradeButton("Again", .again, "1")
-                        gradeButton("Hard", .hard, "2")
-                        gradeButton("Good", .good, "3")
-                        gradeButton("Easy", .easy, "4")
-                    }
-                } else {
-                    Button("Reveal") { revealed = true }
-                        .keyboardShortcut(.space, modifiers: [])
-                        .buttonStyle(.borderedProminent)
-                }
-                Spacer(minLength: 0)
-                Text("\(store.deckDueNotes.count) left")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            } else {
-                ContentUnavailableView(
-                    reviewedCount > 0 ? "Done — \(reviewedCount) reviewed" : "Nothing due",
-                    systemImage: "checkmark.circle",
-                    description: Text("Come back when notes are due.")
-                )
-            }
-        }
-        .padding(28)
-        .frame(minWidth: 420, minHeight: 320)
-        .onAppear { store.refresh() }
-    }
-
-    private func gradeButton(_ label: String, _ grade: FSRS.Grade, _ key: Character) -> some View {
-        Button(label) {
-            if let note = store.deckDueNotes.first {
-                store.review(note, grade: grade)
-                reviewedCount += 1
-                revealed = false
-            }
-        }
-        .keyboardShortcut(KeyEquivalent(key), modifiers: [])
-    }
-}
+// The *Cards* tab (home screen, inbox, review session) lives in
+// CardsHomeView.swift / ReviewView.swift / CardEditSheet.swift.

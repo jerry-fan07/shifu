@@ -5,6 +5,9 @@ import GRDB
 public struct ShifuDatabase: Sendable {
     public let queue: DatabaseQueue
 
+    /// Failures that are *not* corruption. Kept separate precisely so
+    /// `openRotatingOnCorruption` can tell "unreadable forever" from
+    /// "readable, but not right now" and avoid rotating good data aside.
     public enum OpenError: Error, CustomStringConvertible {
         /// The file is SQLCipher-encrypted but no key is available. This is a
         /// configuration problem, not corruption — never rotate on it.
@@ -312,6 +315,51 @@ public struct ShifuDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v11") { db in
+            // Semantic task grouping (design.md §5.3): the LLM assigns blocks
+            // to intent-level tasks ("booking flights for the trip") instead
+            // of the mechanical topic/domain/app key. `sem_key` holds the
+            // assigned task key ("sem:<slug>"); NULL falls back to the
+            // mechanical key. `sem_attempts` caps re-billing of blocks the
+            // model declines to place, mirroring `llm_attempts`. Both are
+            // carried across LedgerBuilder rebuilds by span identity.
+            try db.alter(table: "activities") { table in
+                table.add(column: "sem_key", .text)
+                table.add(column: "sem_attempts", .integer).notNull().defaults(to: 0)
+            }
+            // One-sentence LLM gist of what a semantic task is about; shown on
+            // the task detail page. NULL for mechanically keyed tasks.
+            try db.alter(table: "tasks") { table in
+                table.add(column: "gist", .text)
+            }
+        }
+
+        migrator.registerMigration("v12") { db in
+            // Theme layer (design.md §5.3): a second, *independent* LLM
+            // clustering of blocks into 3–8 broad initiatives ("YC Startup
+            // School", "travel"), coarser than semantic tasks and assigned
+            // per block — a task's blocks may straddle themes. Same carry and
+            // attempt-cap discipline as `sem_key`/`sem_attempts`.
+            try db.alter(table: "activities") { table in
+                table.add(column: "theme_key", .text)
+                table.add(column: "theme_attempts", .integer).notNull().defaults(to: 0)
+            }
+            try db.create(table: "themes") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("key", .text).notNull().unique()   // "thm:<slug>"
+                table.column("name", .text).notNull()           // user-renameable
+                table.column("gist", .text)                     // LLM one-liner
+                // Running narrative, regenerated only when the hash of the
+                // theme's *completed* days changes — ~one generation per
+                // active theme per day, never per hourly run.
+                table.column("summary", .text)
+                table.column("summary_hash", .integer).notNull().defaults(to: 0)
+                table.column("created_at", .integer).notNull()
+                table.column("last_active_at", .integer).notNull()
+            }
+            try db.create(index: "idx_themes_last_active", on: "themes", columns: ["last_active_at"])
+        }
+
         return migrator
     }
 }
@@ -319,9 +367,13 @@ public struct ShifuDatabase: Sendable {
 /// Typed access to the `settings` table.
 public enum Settings {
     /// Analysis backend: "auto" (Foundation Models if available, else rules-only),
-    /// "claude" (opt-in cloud, analyzer-only), "off" (rules-only).
+    /// "claude" (opt-in cloud, analyzer-only), "openai" (opt-in cloud,
+    /// OpenAI-compatible endpoint — DeepSeek by default), "off" (rules-only).
     public static let analysisBackendKey = "analysis.backend"
     public static let claudeAPIKeyKey = "claude.api_key"
+    public static let openAIAPIKeyKey = "openai.api_key"
+    public static let openAIBaseURLKey = "openai.base_url"
+    public static let openAIModelKey = "openai.model"
     public static let digestHourKey = "digest.hour"
 
     public static func get(_ key: String, database: ShifuDatabase) throws -> String? {
@@ -338,5 +390,74 @@ public enum Settings {
                 arguments: [key, value]
             )
         }
+    }
+}
+
+// MARK: - Catalog-typed access
+
+/// Typed reads/writes for `SettingsCatalog` entries. Every path routes through
+/// the descriptor's own `clamp`/`normalize`, so callers never restate bounds —
+/// that's what keeps the daemon and the app from drifting apart.
+extension Settings {
+    /// Clamped, and defaulted when missing or unparseable. Non-throwing: a bad
+    /// settings row must never take the daemon down (design.md §10).
+    public static func value(_ setting: IntSetting, database: ShifuDatabase) -> Int {
+        guard let raw = try? get(setting.key, database: database),
+              let parsed = Int(raw.trimmingCharacters(in: .whitespaces))
+        else { return setting.defaultValue }
+        return setting.clamp(parsed)
+    }
+
+    public static func set(_ setting: IntSetting, to value: Int, database: ShifuDatabase) throws {
+        try set(setting.key, to: String(setting.clamp(value)), database: database)
+    }
+
+    /// Normalized and de-duplicated, order preserved.
+    public static func value(_ setting: DomainListSetting, database: ShifuDatabase) -> [String] {
+        guard let raw = try? get(setting.key, database: database) else { return [] }
+        var seen: Set<String> = []
+        return raw.split(separator: "\n").compactMap { line in
+            guard let domain = setting.normalize(String(line)), seen.insert(domain).inserted
+            else { return nil }
+            return domain
+        }
+    }
+
+    public static func set(
+        _ setting: DomainListSetting, to domains: [String], database: ShifuDatabase
+    ) throws {
+        var seen: Set<String> = []
+        let cleaned = domains.compactMap { entry -> String? in
+            guard let domain = setting.normalize(entry), seen.insert(domain).inserted
+            else { return nil }
+            return domain
+        }
+        try set(setting.key, to: cleaned.joined(separator: "\n"), database: database)
+    }
+
+    /// Normalized to a known option, defaulted when missing or unrecognized.
+    public static func value(_ setting: ChoiceSetting, database: ShifuDatabase) -> String {
+        guard let raw = try? get(setting.key, database: database)
+        else { return setting.defaultValue }
+        return setting.normalize(raw)
+    }
+
+    public static func set(
+        _ setting: ChoiceSetting, to value: String, database: ShifuDatabase
+    ) throws {
+        try set(setting.key, to: setting.normalize(value), database: database)
+    }
+
+    /// Trimmed; empty string when unset.
+    public static func value(_ setting: TextSetting, database: ShifuDatabase) -> String {
+        ((try? get(setting.key, database: database)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public static func set(
+        _ setting: TextSetting, to value: String, database: ShifuDatabase
+    ) throws {
+        try set(setting.key, to: value.trimmingCharacters(in: .whitespacesAndNewlines),
+                database: database)
     }
 }

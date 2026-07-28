@@ -15,7 +15,8 @@ Everything stays on your Mac. See [design.md](design.md) for the full specificat
 
 - macOS 14+ (Apple Silicon primary), Xcode 16+ toolchain
 - On-device LLM features use Apple Foundation Models (macOS 26+); cloud analysis
-  via the Claude API is strictly opt-in
+  via the Claude API or any OpenAI-compatible endpoint (DeepSeek by default) is
+  strictly opt-in — pick the backend and paste a key in Settings → Analysis
 
 ## Install
 
@@ -103,8 +104,12 @@ shifu encrypt           migrate the database to SQLCipher (key in Keychain)
 
 ## Development
 
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** is the orientation doc: how the
+  pipeline fits together, where each concept lives in code, the consolidated
+  database schema, and how the privacy invariants are enforced.
 - `make check` must be green before every commit; a perf-budget regression
   (`make perf`) blocks like a test failure (<0.5% avg CPU, <80 MB RSS).
 - Targets: `ShifuCore` (all testable logic), `shifud` (capture daemon),
   `shifu-analyzer` (batch worker), `shifu` (CLI), `ShifuApp` (menu bar + dashboard).
+- Rebuilding to see a change in the running app: [start.md](start.md).
 - Phase plan and verification gates: [implementation.md](implementation.md).

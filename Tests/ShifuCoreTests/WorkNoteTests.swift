@@ -173,8 +173,9 @@ private struct ExtractorBackend: LLMBackend {
         let database = try ShifuDatabase.inMemory()
         let vault = try makeVault(database)
         let backend = CountingBackend()
-        // 3 minutes < 10-minute default; text present but too little time.
-        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 3,
+        // 6 minutes clears the task substance gate (5 min) but sits under
+        // the 10-minute narrative default; text present, too little time.
+        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 6,
                            sampleText: "dashboard glance")
         // 45 minutes but zero text samples.
         try insertActivity(database, start: day1.addingTimeInterval(11 * 3_600), minutes: 45,

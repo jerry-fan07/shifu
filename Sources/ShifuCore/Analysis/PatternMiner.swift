@@ -3,8 +3,16 @@ import Foundation
 /// Deterministic pattern miner (design.md §6.1): structural repetition in
 /// activity sequences. Pure over rows; cheap enough to run weekly.
 public enum PatternMiner {
+    /// One mined repetition, before an LLM has described it.
+    ///
+    /// `estMinutesSavedWeekly` is a heuristic upper bound used only for
+    /// ranking — it assumes the whole ritual could be automated away, which is
+    /// rarely true. Don't present it to the user as a promise.
     public struct Pattern: Equatable, Sendable {
-        public var key: String            // stable identity, e.g. "ngram:a>b"
+        /// Stable identity across mining runs (e.g. `"ngram:a>b"`), and the
+        /// unique key on `suggestions` — this is what keeps a dismissed
+        /// pattern dismissed when it is mined again next week.
+        public var key: String
         public var kind: String           // ngram | frequent_visit | alternation
         public var evidence: String       // human-readable evidence line
         public var occurrences: Int
