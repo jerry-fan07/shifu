@@ -83,14 +83,16 @@ struct TimeTabView: View {
         let label: String
         let category: String
         let hours: Double
+        let order: Int
     }
 
     private var buckets: [Bucket] {
         let (from, to) = range
         let activities = store.activities(from: from, to: to)
         let cal = Calendar.current
-        // (bucket label, category) → ms
-        var sums: [String: [String: Int64]] = [:]
+        let dayZero = cal.startOfDay(for: from)
+        // bucket label → (chronological order, category → ms)
+        var sums: [String: (order: Int, byCategory: [String: Int64])] = [:]
         for activity in activities {
             let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
             var cursor = max(start, from)
@@ -98,29 +100,35 @@ struct TimeTabView: View {
             while cursor < end {
                 let bucketEnd: Date
                 let label: String
+                let order: Int
                 switch span {
                 case .day:
                     let hour = cal.component(.hour, from: cursor)
                     label = String(format: "%02d", hour)
+                    order = hour
                     bucketEnd = cal.date(
                         bySettingHour: hour, minute: 59, second: 59, of: cursor)!
                         .addingTimeInterval(1)
                 case .week:
                     label = cursor.formatted(.dateTime.weekday(.abbreviated))
+                    order = cal.dateComponents(
+                        [.day], from: dayZero, to: cal.startOfDay(for: cursor)).day ?? 0
                     bucketEnd = cal.startOfDay(for: cursor).addingTimeInterval(86_400)
                 }
                 let slice = min(end, bucketEnd).timeIntervalSince(cursor)
-                sums[label, default: [:]][activity.category.rawValue, default: 0]
+                var entry = sums[label] ?? (order: order, byCategory: [:])
+                entry.byCategory[activity.category.rawValue, default: 0]
                     += Int64(slice * 1_000)
+                sums[label] = entry
                 cursor = bucketEnd
             }
         }
-        return sums.flatMap { label, byCategory in
-            byCategory.map { category, ms in
-                Bucket(label: label, category: category, hours: Double(ms) / 3_600_000)
+        return sums.flatMap { label, entry in
+            entry.byCategory.map { category, ms in
+                Bucket(label: label, category: category, hours: Double(ms) / 3_600_000, order: entry.order)
             }
         }
-        .sorted { $0.label < $1.label }
+        .sorted { $0.order < $1.order }
     }
 
     @ViewBuilder private var chart: some View {
@@ -132,15 +140,38 @@ struct TimeTabView: View {
                 description: Text("The analyzer runs hourly. Data appears once shifud has been watching for a while.")
             )
         } else {
-            Chart(data) { bucket in
-                BarMark(
-                    x: .value(span == .day ? "Hour" : "Day", bucket.label),
-                    y: .value("Hours", bucket.hours)
-                )
-                .foregroundStyle(by: .value("Category", bucket.category))
+            GeometryReader { proxy in
+                Chart(data) { bucket in
+                    BarMark(
+                        x: .value(span == .day ? "Hour" : "Day", bucket.label),
+                        y: .value("Hours", bucket.hours)
+                    )
+                    .foregroundStyle(by: .value("Category", bucket.category))
+                }
+                .chartForegroundStyleScale(Self.categoryColors)
+                .chartXAxis {
+                    AxisMarks(values: axisLabels(in: data, width: proxy.size.width)) {
+                        AxisGridLine()
+                        AxisTick()
+                        // Charts otherwise squeezes each label into its own bar's
+                        // width and ellipsises it; we've already thinned for space.
+                        AxisValueLabel(collisionResolution: .disabled)
+                    }
+                }
             }
-            .chartForegroundStyleScale(Self.categoryColors)
         }
+    }
+
+    /// Every bucket gets a label while they fit; past that, every *n*th one. Without
+    /// this the axis truncates to "…" as soon as the window narrows (§7).
+    private func axisLabels(in data: [Bucket], width: CGFloat) -> [String] {
+        var seen: Set<String> = []
+        let labels = data.map(\.label).filter { seen.insert($0).inserted }
+        guard !labels.isEmpty, width > 0 else { return labels }
+        let perLabel: CGFloat = span == .day ? 25 : 46   // widest label plus breathing room
+        let room = max(1, Int(width / perLabel))
+        let step = max(1, Int((Double(labels.count) / Double(room)).rounded(.up)))
+        return labels.enumerated().compactMap { $0.offset.isMultiple(of: step) ? $0.element : nil }
     }
 
     private var blockList: some View {

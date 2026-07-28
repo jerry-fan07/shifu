@@ -221,7 +221,8 @@ A: `SCScreenshotManager` (macOS 14+).
 ### 5.2 Review (spaced repetition)
 
 - Scheduler: **FSRS** (modern, better-calibrated than SM-2; a Swift implementation is small). SRS state lives in the note's frontmatter so the folder stays self-contained.
-- Review UI: a minimal SwiftUI card session launched from the menu bar ("Review · 7 due"), plus a `shifu review` CLI for terminal users. Grade with 1–4 / arrow keys.
+- Review UI: a SwiftUI card session launched from the menu bar ("Review · 7 due") or the *Cards* tab, plus a `shifu review` CLI for terminal users. Space reveals, 1–4 grades (with next-interval previews); cards can be edited (E), skipped (S), or deleted mid-session, and "Again" cards rotate to the back of the session queue. Card text renders inline/fenced code and $LaTeX$ natively via `CardMarkup` (no web views).
+- **Cards home** (dashboard *Cards* tab): review-activity calendar heatmap (from `srs_reviews`), per-card urgency overview (overdue / due today / new / soon / scheduled), and the deck picker. Inbox triage and the review session are separate screens pushed from here.
 - **Decks** (dashboard *Cards* tab): the session pulls from a selectable deck — all notes, one project, or one task (§5.3). Notes match a task by grouping key (topic slug, with containment fallback for topic keys).
 - Target session length: < 5 minutes/day. The digest nags gently if the due queue exceeds a threshold.
 
@@ -279,7 +280,7 @@ actions:    [Draft the automation with Claude Code] [Dismiss] [Snooze 30d]
 Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generous whitespace, system fonts and colors, no badges or gamification, no settings page longer than one screen. Three surfaces total:
 
 - **Menu bar item** (the only always-visible surface): status glyph (watching / paused / excluded app), Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Dashboard, Quit & Stop Capture.
-- **Dashboard window**: four tabs — *Time* (stacked day/week bars, topic drill-down), *Vault* (today's work log, tasks, projects — §5.3), *Cards* (deck picker + inbox triage — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **Dashboard window**: four tabs — *Time* (stacked day/week bars, topic drill-down), *Vault* (today's work log, tasks, projects — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
 - **Review session**: minimal card interface (see §5.2).
 - **Onboarding**: a 4-screen flow that (1) explains exactly what is and isn't captured, (2) requests Screen Recording + Accessibility permissions with live previews of what Shifu sees, (3) sets exclusions (pre-checked: password managers, banking category, private browsing), (4) picks analysis backend (local-only default).
 

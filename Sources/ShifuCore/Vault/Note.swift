@@ -2,7 +2,7 @@ import Foundation
 
 /// One knowledge note: plain Markdown with YAML frontmatter (design.md §5.1).
 /// The vault stays readable and portable without Shifu — Obsidian-compatible.
-public struct Note: Equatable, Sendable {
+public struct Note: Equatable, Sendable, Identifiable {
     public enum State: String, Sendable {
         case inbox      // candidate awaiting keep/discard triage
         case kept       // confirmed; in the review queue if it has a Q/A
@@ -42,14 +42,45 @@ public struct Note: Equatable, Sendable {
     /// The Q/A pair, if the note is reviewable (§5.1: notes without one are
     /// reference notes, excluded from the SRS queue).
     public var questionAnswer: (question: String, answer: String)? {
-        var question: String?
-        var answer: String?
-        for line in body.split(separator: "\n") {
-            if line.hasPrefix("Q: ") { question = String(line.dropFirst(3)) }
-            if line.hasPrefix("A: ") { answer = String(line.dropFirst(3)) }
-        }
-        guard let question, let answer else { return nil }
-        return (question, answer)
+        cardParts.map { ($0.question, $0.answer) }
+    }
+
+    /// The card-shaped split of a body (§5.1): leading reference text, then
+    /// the `Q:` / `A:` pair.
+    public struct CardParts: Equatable, Sendable {
+        public var reference: String
+        public var question: String
+        public var answer: String
+    }
+
+    /// Splits the body into leading reference text, question, and answer.
+    /// The question spans from the `Q: ` line up to the `A: ` line; the answer
+    /// runs to the end of the body — so multi-line content (code blocks,
+    /// display math) survives review and round-trips through the card editor.
+    public var cardParts: CardParts? {
+        let lines = body.components(separatedBy: "\n")
+        guard let qIndex = lines.firstIndex(where: { $0.hasPrefix("Q: ") }),
+              let aIndex = lines[(qIndex + 1)...].firstIndex(where: { $0.hasPrefix("A: ") })
+        else { return nil }
+        let question = ([String(lines[qIndex].dropFirst(3))] + lines[(qIndex + 1)..<aIndex])
+            .joined(separator: "\n")
+        let answer = ([String(lines[aIndex].dropFirst(3))] + lines[(aIndex + 1)...])
+            .joined(separator: "\n")
+        let reference = lines[..<qIndex].joined(separator: "\n")
+        return CardParts(
+            reference: reference.trimmingCharacters(in: .whitespacesAndNewlines),
+            question: question.trimmingCharacters(in: .whitespacesAndNewlines),
+            answer: answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    /// Rebuilds a body in the extractor's shape (reference paragraph, blank
+    /// line, `Q:`/`A:`) so edited cards stay parseable by `cardParts`.
+    public static func composeBody(reference: String, question: String, answer: String) -> String {
+        let ref = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let qaBlock = "Q: \(question.trimmingCharacters(in: .whitespacesAndNewlines))\n"
+            + "A: \(answer.trimmingCharacters(in: .whitespacesAndNewlines))"
+        return ref.isEmpty ? qaBlock : ref + "\n\n" + qaBlock
     }
 
     // MARK: - Serialization

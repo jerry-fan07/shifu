@@ -72,11 +72,11 @@ struct ShifuApp: App {
         }
         .defaultSize(width: 720, height: 640)
 
+        // Resizable: cards can carry code blocks and display math (§5.2).
         Window("Review", id: "review") {
             ReviewSessionView()
                 .environmentObject(store)
         }
-        .defaultSize(width: 440, height: 360)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 520, height: 480)
     }
 }

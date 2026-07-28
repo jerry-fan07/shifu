@@ -226,6 +226,18 @@ public struct VaultStore: Sendable {
         return updated
     }
 
+    /// Timestamps of past reviews since `since`, oldest first — the Cards
+    /// screen buckets them into its activity heatmap (design.md §5.2).
+    public func reviewLog(since: Date) throws -> [Date] {
+        guard let database else { return [] }
+        let sinceMs = Int64(since.timeIntervalSince1970 * 1_000)
+        return try database.queue.read { db in
+            try Int64.fetchAll(db, sql: """
+                SELECT reviewed_at FROM srs_reviews WHERE reviewed_at >= ? ORDER BY reviewed_at
+                """, arguments: [sinceMs])
+        }.map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+    }
+
     // MARK: - Dedupe (minimal, §13.4 deferred)
 
     /// If a candidate matches an existing note's topic with near-duplicate

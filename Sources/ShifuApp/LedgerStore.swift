@@ -15,6 +15,10 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var workModeOn = false
     @Published private(set) var inboxNotes: [Note] = []
     @Published private(set) var dueNotes: [Note] = []
+    /// Every kept, reviewable card (Q/A present), most urgent first.
+    @Published private(set) var allCards: [Note] = []
+    /// Start-of-day → number of reviews done that day (heatmap, §5.2).
+    @Published private(set) var reviewsByDay: [Date: Int] = [:]
     @Published private(set) var suggestions: [Suggestion] = []
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
     @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
@@ -55,8 +59,7 @@ final class LedgerStore: ObservableObject {
             pausedUntil = nil
         }
         workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
-        inboxNotes = (try? vault.inbox()) ?? []
-        dueNotes = (try? vault.due()) ?? []
+        refreshVaultNotes()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
             let dayStart = Int64(
@@ -134,6 +137,38 @@ final class LedgerStore: ObservableObject {
 
     // MARK: - Vault (triage + review)
 
+    /// One vault walk feeding inbox, review queue, and the Cards screens.
+    /// Queues are sorted most-urgent first (earliest due date; cards that
+    /// never entered scheduling sort ahead of everything).
+    private func refreshVaultNotes() {
+        let notes = (try? vault.allNotes()) ?? []
+        inboxNotes = notes.filter { $0.state == .inbox }
+        allCards = notes
+            .filter { $0.state == .kept && $0.questionAnswer != nil }
+            .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
+        let now = Date()
+        dueNotes = allCards.filter { $0.srs.map { $0.due <= now } ?? true }
+        // A week of slack so the heatmap's week-aligned first column has
+        // counts for its leading days too.
+        let heatmapStart = Calendar.current.date(
+            byAdding: .day, value: -(HeatmapSpan.days + 7),
+            to: Calendar.current.startOfDay(for: now))!
+        let log = (try? vault.reviewLog(since: heatmapStart)) ?? []
+        reviewsByDay = log.reduce(into: [:]) { counts, date in
+            counts[Calendar.current.startOfDay(for: date), default: 0] += 1
+        }
+    }
+
+    /// How far back the review-activity heatmap looks (26 weeks ≈ 6 months).
+    enum HeatmapSpan {
+        static let weeks = 26
+        static let days = weeks * 7
+    }
+
+    var reviewsToday: Int {
+        reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
+    }
+
     func keep(_ note: Note) {
         try? vault.keep(note)
         refresh()
@@ -146,6 +181,24 @@ final class LedgerStore: ObservableObject {
 
     func review(_ note: Note, grade: FSRS.Grade) {
         _ = try? vault.review(note, grade: grade)
+        refresh()
+    }
+
+    /// Persists a card edit (topic + reference + Q/A) from the card editor.
+    /// The file keeps its identity — `VaultStore.save` finds it by id.
+    func updateCard(
+        _ note: Note, topic: String, reference: String, question: String, answer: String
+    ) {
+        var updated = note
+        let trimmedTopic = topic.trimmingCharacters(in: .whitespaces)
+        if !trimmedTopic.isEmpty { updated.topic = trimmedTopic }
+        let hasQA = !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Clearing the Q/A demotes the card to a reference note (§5.1).
+        updated.body = hasQA
+            ? Note.composeBody(reference: reference, question: question, answer: answer)
+            : reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try? vault.save(updated)
         refresh()
     }
 
