@@ -131,14 +131,26 @@ try TaskMerges.writeSignatures(database: database, from: from, to: nowMs)
 
 let vault = VaultStore(database: database)
 
-// Prune noise tasks (design.md §5.3): sub-threshold, never renamed, no
-// project, stale for a week — debris the substance gate now stops at the
+// Prune noise tasks (design.md §5.3): sub-threshold, never renamed, never
+// hand-filed under a theme, stale for a week — debris the gate now stops at the
 // source. Their time stays in the ledger; logs and notes recompile.
 do {
     let pruned = try TaskStore.prune(database: database, vault: vault)
     if pruned > 0 { print("tasks: pruned \(pruned) noise tasks") }
 } catch {
     print("task prune failed (retries next run): \(error)")
+}
+
+// Auto-merge (vault-features.md §5.2) is the other half of roster hygiene, so
+// it runs beside prune every pass rather than in the weekly block that mints
+// the suggestions: it drains a *stored* queue, which costs one indexed query
+// when there is nothing to fold, and folding within the hour beats letting
+// duplicates sit in the task list for a week. It needs no embedder.
+do {
+    let merged = try TaskMerges.autoMerge(database: database, vault: vault)
+    if merged > 0 { print("tasks: \(merged) duplicate tasks auto-merged") }
+} catch {
+    print("auto-merge failed (retries next run): \(error)")
 }
 
 // Knowledge extraction over learning/novel-work blocks (§5.1).
@@ -170,7 +182,7 @@ do {
 
 // Vault search index reconcile (vault-features.md §4): write-through hooks
 // cover Shifu's own writes; this catches external edits (Obsidian) and runs
-// after task grouping so task_key → task/project resolution is current.
+// after task grouping so task_key → task resolution is current.
 // The embedder keeps vault_vectors in step for hybrid search (V4);
 // nil (no OS model) leaves search bm25-only.
 let embedder = SentenceEmbedder()
@@ -209,31 +221,23 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
         }
     }
 
-    // Task merge + project suggestions (vault-features.md §5.2–5.3), same
-    // weekly cadence. No embedder ⇒ no-op; all actions are user-confirmed.
+    // Task merge + theme suggestions (vault-features.md §5.2–5.3), same
+    // weekly cadence. No embedder ⇒ no new suggestions; theme assignment
+    // stays user-confirmed.
     if let embedder {
         do {
             let suggested = try TaskMerges.suggest(database: database, embedder: embedder)
             if suggested > 0 { print("tasks: \(suggested) merge suggestions") }
-            let projectSuggested = try TaskMerges.suggestProjects(
+            let themeSuggested = try TaskMerges.suggestThemes(
                 database: database, embedder: embedder)
-            if projectSuggested > 0 {
-                print("projects: \(projectSuggested) assignment suggestions")
+            if themeSuggested > 0 {
+                print("themes: \(themeSuggested) assignment suggestions")
             }
         } catch {
             print("suggesters failed (retry next week): \(error)")
         }
     }
 
-    // Project notes (vault-features.md §2.2): weekly recompile; the LLM
-    // status paragraph is hash-gated like work-note narratives.
-    do {
-        let compiled = try await ProjectNoteCompiler.run(
-            database: database, vault: vault, backend: backend)
-        if compiled > 0 { print("projects: \(compiled) notes compiled") }
-    } catch {
-        print("project notes failed (retries next week): \(error)")
-    }
 }
 
 // Daily digest at/after the configured hour (default 18:00, §4.3).

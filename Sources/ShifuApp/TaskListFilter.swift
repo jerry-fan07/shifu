@@ -5,19 +5,20 @@ import ShifuCore
 /// timestamp so the cutoff is recomputed per query (see `LedgerStore.loadTasks`).
 enum TaskRange: String, CaseIterable, Identifiable, Hashable {
     case today = "Today"
-    case week = "Last 7 days"
+    case week = "This week"
     case month = "Last 30 days"
     case all = "All time"
 
     var id: String { rawValue }
 
     /// Unix ms cutoff, 0 for all time. Day-aligned for `today` so it means
-    /// "since midnight", not "in the last 24 hours".
+    /// "since midnight", not "in the last 24 hours", and week-aligned for
+    /// `week` so it means "since Monday", not "in the last seven days".
     func since(now: Date = Date(), calendar: Calendar = .current) -> Int64 {
         let start: Date
         switch self {
         case .today: start = calendar.startOfDay(for: now)
-        case .week: start = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        case .week: start = calendar.startOfWeek(for: now)
         case .month: start = calendar.date(byAdding: .day, value: -30, to: now) ?? now
         case .all: return 0
         }
@@ -46,7 +47,7 @@ enum TaskMinimum: String, CaseIterable, Identifiable, Hashable {
 }
 
 /// The Task log's filter bar (design.md §5.3): how far back, how long, how to
-/// order, which project. Session state — deliberately not persisted, so
+/// order, which theme. Session state — deliberately not persisted, so
 /// reopening the window always shows the unfiltered list.
 struct TaskListFilter: Equatable {
     var range: TaskRange = .all
@@ -55,12 +56,12 @@ struct TaskListFilter: Equatable {
     /// rather than silent.
     var minimum: TaskMinimum = .fiveMinutes
     var sort: TaskStore.Sort = .mostRecent
-    var project: TaskStore.ProjectScope = .any
+    var theme: TaskStore.ThemeScope = .any
 
     /// Whether the list is showing fewer tasks than exist. Sort reorders
     /// rather than narrows, so it stays out of this — an empty list under a
     /// non-default sort means no data, not an over-tight filter.
-    var narrowsResults: Bool { range != .all || minimum != .any || project != .any }
+    var narrowsResults: Bool { range != .all || minimum != .any || theme != .any }
 
     /// Whether anything differs from the default — drives the "clear"
     /// affordance, which should also undo a non-default sort.
@@ -71,21 +72,21 @@ struct TaskListFilter: Equatable {
         TaskStore.TaskFilter(
             since: range.since(now: now, calendar: calendar),
             minimumMs: minimum.ms,
-            projectScope: project, sort: sort, limit: limit)
+            themeScope: theme, sort: sort, limit: limit)
     }
 }
 
 /// What the review session pulls cards from (design.md §5.2): everything, one
-/// project's tasks, or a single task.
+/// theme's tasks, or a single task.
 enum ReviewDeck: Hashable {
     case all
-    case project(id: Int64, name: String)
+    case theme(key: String, name: String)
     case task(key: String, name: String)
 
     var label: String {
         switch self {
         case .all: return "All notes"
-        case .project(_, let name): return name
+        case .theme(_, let name): return name
         case .task(_, let name): return name
         }
     }

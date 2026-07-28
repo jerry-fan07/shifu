@@ -33,7 +33,7 @@ private struct ExtractorBackend: LLMBackend {
             taskName: "Capture daemon", day: "2026-07-18", durationMs: 9_840_000,
             sources: ["Xcode", "github.com"],
             sessions: [.init(start: "09:12", end: "10:41"), .init(start: "14:03", end: "15:20")],
-            project: "shifu", contentHash: -42,
+            contentHash: -42,
             summary: "Xcode, github.com — debugging capture daemon",
             sessionsProse: "- **09:12–10:41** — Chased the AX observer leak.",
             capturedLinks: ["17-sck-single-frame"])

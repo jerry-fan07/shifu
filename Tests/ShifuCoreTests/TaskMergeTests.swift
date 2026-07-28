@@ -161,6 +161,167 @@ private struct StubEmbedder: Embedder {
         #expect(try TaskMerges.suggest(database: database, embedder: stub, now: day2) == 0)
     }
 
+    // MARK: - Auto-merge (§5.2)
+
+    /// Forces every open suggestion to the given score, so a test can put a
+    /// seeded pair on either side of the auto-merge threshold.
+    private func setCosine(_ value: Double, _ database: ShifuDatabase) throws {
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE task_merge_suggestions SET cosine = ?", arguments: [value])
+        }
+    }
+
+    private func taskNames(_ database: ShifuDatabase) throws -> [String] {
+        try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT name FROM tasks ORDER BY name")
+        }
+    }
+
+    @Test func autoMergesNearIdenticalDefaultNamedTasks() throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.98, database)
+
+        #expect(try TaskMerges.autoMerge(database: database, vault: vault,
+                                         calendar: calendar) == 1)
+        #expect(try taskNames(database) == ["capture daemon", "cooking pasta"])
+        // Nothing left to ask about, and the pair never comes back.
+        #expect(try TaskMerges.pending(database: database).isEmpty)
+        #expect(try TaskMerges.suggest(database: database, embedder: stub, now: day2) == 0)
+        // Activities followed the survivor.
+        let orphaned = try database.queue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM activities a LEFT JOIN tasks t ON t.id = a.task_id
+                WHERE a.task_id IS NOT NULL AND t.id IS NULL
+                """)!
+        }
+        #expect(orphaned == 0)
+    }
+
+    /// Both sides are an hour of real work, so only the high bar applies.
+    @Test func belowThresholdPairsStayForTheUser() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.93, database)   // suggestible, not auto-mergeable
+
+        #expect(try TaskMerges.autoMerge(database: database) == 0)
+        #expect(try TaskMerges.pending(database: database).count == 1)
+    }
+
+    /// The same 0.93 pair folds once one side is a two-minute fragment — the
+    /// shape prune would otherwise delete outright.
+    @Test func fragmentsFoldAtTheOrdinaryThreshold() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.93, database)
+        let fragment = try id(database, key: "topic:capture-daemon-leak")
+        try database.queue.write { db in
+            try db.execute(sql: """
+                UPDATE activities SET ended_at = started_at + 120000 WHERE task_id = ?
+                """, arguments: [fragment])
+        }
+
+        #expect(try TaskMerges.autoMerge(database: database) == 1)
+        #expect(try taskNames(database) == ["capture daemon", "cooking pasta"])
+        // Renaming still wins over smallness.
+        #expect(try TaskMerges.pending(database: database).isEmpty)
+    }
+
+    @Test func renamedFragmentIsStillNeverAutoMerged() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.93, database)
+        let fragment = try id(database, key: "topic:capture-daemon-leak")
+        try database.queue.write { db in
+            try db.execute(sql: """
+                UPDATE activities SET ended_at = started_at + 120000 WHERE task_id = ?
+                """, arguments: [fragment])
+        }
+        try TaskStore.rename(taskID: fragment, to: "Leak hunt", database: database)
+
+        #expect(try TaskMerges.autoMerge(database: database) == 0)
+        #expect(try TaskMerges.pending(database: database).count == 1)
+    }
+
+    @Test func renamedTaskIsNeverAutoMerged() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.99, database)
+        try TaskStore.rename(taskID: try id(database, key: "topic:capture-daemon-leak"),
+                             to: "My Daemon Work", database: database)
+
+        #expect(try TaskMerges.autoMerge(database: database) == 0)
+        #expect(try TaskMerges.pending(database: database).count == 1)
+    }
+
+    /// The `sem:` half of the same guarantee: the LLM's own title is fair
+    /// game, a title the user replaced is not.
+    @Test func semanticTaskRenameBlocksAutoMerge() throws {
+        #expect(TaskGrouper.isDefaultName("booking flights", forKey: "sem:booking-flights"))
+        #expect(!TaskGrouper.isDefaultName("Tokyo trip", forKey: "sem:booking-flights"))
+    }
+
+    /// Hand-filing two look-alike tasks under different themes is an explicit
+    /// "these are different work" — auto-merge must respect it. A theme the
+    /// *clusterer* chose carries no such weight.
+    @Test func tasksFiledUnderDifferentThemesAreNeverAutoMerged() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.99, database)
+        let shifu = try #require(try ThemeStore.create(named: "Shifu", database: database))
+        let travel = try #require(try ThemeStore.create(named: "Travel", database: database))
+        let daemon = try id(database, key: "topic:capture-daemon")
+        let leak = try id(database, key: "topic:capture-daemon-leak")
+
+        try TaskStore.assignTheme(taskID: daemon, themeKey: shifu, database: database)
+        try TaskStore.assignTheme(taskID: leak, themeKey: travel, database: database)
+        #expect(try TaskMerges.autoMerge(database: database) == 0)
+
+        // The clusterer's own split does not block it: same keys, but written
+        // the way ThemeClusterer writes them (theme_user_set stays 0).
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE activities SET theme_user_set = 0")
+        }
+        #expect(try TaskMerges.autoMerge(database: database) == 1)
+    }
+
+    @Test func dismissedPairIsNeverAutoMerged() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        try setCosine(0.99, database)
+        try TaskMerges.dismiss(
+            suggestionID: try TaskMerges.pending(database: database)[0].id, database: database)
+
+        #expect(try TaskMerges.autoMerge(database: database) == 0)
+        #expect(try taskNames(database).count == 3)
+    }
+
+    /// A~B and B~C is one three-way fragmentation, not two folds that leave a
+    /// suggestion pointing at a deleted task.
+    @Test func chainsCollapseToOneSurvivor() throws {
+        #expect(TaskMerges.components(of: [(1, 2), (2, 3), (7, 8)])
+            == [[1, 2, 3], [7, 8]])
+        #expect(TaskMerges.components(of: []).isEmpty)
+    }
+
+    @Test func dismissAllClearsTheQueue() throws {
+        let database = try ShifuDatabase.inMemory()
+        try seed(database)
+        _ = try TaskMerges.suggest(database: database, embedder: stub, now: day2)
+        #expect(try TaskMerges.dismissAll(database: database) == 1)
+        #expect(try TaskMerges.pending(database: database).isEmpty)
+        // Dismissal is permanent — the weekly pass doesn't re-open them.
+        #expect(try TaskMerges.suggest(database: database, embedder: stub, now: day2) == 0)
+    }
+
     @Test func signaturesAreStableAcrossReanalysis() throws {
         let database = try ShifuDatabase.inMemory()
         try database.queue.write { db in
@@ -195,6 +356,12 @@ private struct StubEmbedder: Embedder {
 
     private func taskID(_ database: ShifuDatabase, key: String) async throws -> Int64 {
         try await database.queue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM tasks WHERE key = ?", arguments: [key])!
+        }
+    }
+
+    private func id(_ database: ShifuDatabase, key: String) throws -> Int64 {
+        try database.queue.read { db in
             try Int64.fetchOne(db, sql: "SELECT id FROM tasks WHERE key = ?", arguments: [key])!
         }
     }

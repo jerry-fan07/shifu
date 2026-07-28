@@ -128,7 +128,7 @@ struct TimeTabView: View {
                     slices: slices, lens: lens,
                     previousMs: previousTotalMs,
                     periodLabel: span == .day ? "today" : "this week",
-                    comparisonLabel: span == .day ? "yesterday" : "the previous 7 days")
+                    comparisonLabel: span == .day ? "yesterday" : "last week")
             case .timeline:
                 timeline(activities: activities, slices: slices)
             }
@@ -162,13 +162,12 @@ struct TimeTabView: View {
         case .day:
             return (cal.startOfDay(for: now), now)
         case .week:
-            let start = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now))!
-            return (start, now)
+            return (cal.startOfWeek(for: now), now)
         }
     }
 
     /// Tracked time over the same-length window immediately before this one —
-    /// yesterday up to this hour, or the 7 days before these 7. Read lazily:
+    /// yesterday up to this hour, or last week up to this weekday. Read lazily:
     /// only the Summary mode's delta line asks for it.
     private var previousTotalMs: Int64 {
         let (from, to) = range
@@ -262,7 +261,8 @@ struct TimeTabView: View {
     }
 
     private func barChart(_ data: [Bucket]) -> some View {
-        GeometryReader { proxy in
+        let domain = bucketDomain
+        return GeometryReader { proxy in
             Chart(data) { bucket in
                 BarMark(
                     x: .value(span == .day ? "Hour" : "Day", bucket.label),
@@ -271,8 +271,9 @@ struct TimeTabView: View {
                 .foregroundStyle(by: .value(lens.rawValue, bucket.group))
             }
             .chartLegend(.hidden)   // replaced by TimeLegendStrip, which carries totals
+            .chartXScale(domain: domain)
             .chartXAxis {
-                AxisMarks(values: axisLabels(in: data, width: proxy.size.width)) {
+                AxisMarks(values: axisLabels(in: domain, width: proxy.size.width)) {
                     AxisGridLine()
                     AxisTick()
                     // Charts otherwise squeezes each label into its own bar's
@@ -283,11 +284,27 @@ struct TimeTabView: View {
         }
     }
 
+    /// Every bucket the span *covers*, in order — 00…23 for a day, Mon…Sun for a
+    /// week — rather than only the ones the data happened to fill. Pinning the x
+    /// scale to this keeps an idle hour, an untracked Wednesday, and the days of
+    /// the week still to come as gaps on the axis instead of letting the chart
+    /// close up around them (§7).
+    private var bucketDomain: [String] {
+        let cal = Calendar.current
+        switch span {
+        case .day:
+            return (0..<24).map { String(format: "%02d", $0) }
+        case .week:
+            return (0..<7).compactMap { offset in
+                cal.date(byAdding: .day, value: offset, to: range.from)?
+                    .formatted(.dateTime.weekday(.abbreviated))
+            }
+        }
+    }
+
     /// Every bucket gets a label while they fit; past that, every *n*th one. Without
     /// this the axis truncates to "…" as soon as the window narrows (§7).
-    private func axisLabels(in data: [Bucket], width: CGFloat) -> [String] {
-        var seen: Set<String> = []
-        let labels = data.map(\.label).filter { seen.insert($0).inserted }
+    private func axisLabels(in labels: [String], width: CGFloat) -> [String] {
         guard !labels.isEmpty, width > 0 else { return labels }
         let perLabel: CGFloat = span == .day ? 25 : 46   // widest label plus breathing room
         let room = max(1, Int(width / perLabel))

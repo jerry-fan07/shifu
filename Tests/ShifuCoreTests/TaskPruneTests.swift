@@ -14,10 +14,10 @@ import Testing
     @discardableResult
     private func seedTask(
         _ database: ShifuDatabase, key: String, name: String, minutes: Double,
-        projectID: Int64? = nil, endedAt: Int64
+        endedAt: Int64
     ) throws -> Int64 {
         try database.queue.write { db in
-            var task = WorkTask(key: key, name: name, projectID: projectID,
+            var task = WorkTask(key: key, name: name,
                                 createdAt: endedAt, lastActiveAt: endedAt)
             try task.insert(db)
             var activity = Activity(
@@ -48,9 +48,12 @@ import Testing
                                minutes: 45, endedAt: stale)
         try seedTask(database, key: "domain:united.com", name: "united.com",
                      minutes: 3, endedAt: ms(now) - 3_600_000)
-        let project = try TaskStore.createProject(named: "Trips", database: database)
-        try seedTask(database, key: "domain:kayak.com", name: "kayak.com",
-                     minutes: 3, projectID: project.id, endedAt: stale)
+        // Filed under a theme by hand: junk by every other measure, kept
+        // because the user said it belongs somewhere.
+        let filed = try seedTask(database, key: "domain:kayak.com", name: "kayak.com",
+                                 minutes: 3, endedAt: stale)
+        let trips = try #require(try ThemeStore.create(named: "Trips", database: database))
+        try TaskStore.assignTheme(taskID: filed, themeKey: trips, database: database)
 
         try database.queue.write { db in
             try db.execute(sql: """
@@ -58,9 +61,9 @@ import Testing
                 VALUES (?, ?, 0.95, 'new', 0), (?, ?, 0.95, 'dismissed', 0)
                 """, arguments: [junk, big, renamed, big])
             try db.execute(sql: """
-                INSERT INTO project_suggestions (task_id, project_id, cosine, status, created_at)
+                INSERT INTO theme_suggestions (task_id, theme_key, cosine, status, created_at)
                 VALUES (?, ?, 0.9, 'new', 0)
-                """, arguments: [junk, project.id])
+                """, arguments: [junk, trips])
         }
 
         let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
@@ -81,14 +84,54 @@ import Testing
                 SELECT COUNT(*) FROM task_logs WHERE task_id = \(junk)
                 """) ?? -1,
              merges: try String.fetchAll(db, sql: "SELECT status FROM task_merge_suggestions"),
-             projects: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_suggestions") ?? -1)
+             themes: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM theme_suggestions") ?? -1)
         }
         #expect(state.orphans == 1)
         #expect(state.junkLogs == 0)
         #expect(state.merges == ["dismissed"])  // only the open pair naming junk died
-        #expect(state.projects == 0)
+        #expect(state.themes == 0)
 
         // Re-running finds nothing left to prune.
         #expect(try TaskStore.prune(database: database, now: now, calendar: calendar) == 0)
+    }
+
+    /// System-surface tasks minted before the grouping denylist existed die
+    /// regardless of accrued time, recency, or even a hand-filed theme (the
+    /// dogfood DB had loginwindow filed under a theme from testing the filing
+    /// UI); only a rename protects one, and a real app-keyed task of the same
+    /// size survives untouched.
+    @Test func reapsSystemBundleTasksRegardlessOfSubstance() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        let recent = ms(now) - 3_600_000
+
+        let lock = try seedTask(database, key: "app:com.apple.loginwindow",
+                                name: "loginwindow", minutes: 400, endedAt: recent)
+        try seedTask(database, key: "app:com.mitchellh.ghostty", name: "ghostty",
+                     minutes: 400, endedAt: recent)
+        try seedTask(database, key: "app:com.apple.dock", name: "Desk setup",
+                     minutes: 400, endedAt: recent)
+        let dev = try #require(try ThemeStore.create(named: "Shifu Development",
+                                                     database: database))
+        try TaskStore.assignTheme(taskID: lock, themeKey: dev, database: database)
+
+        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
+        #expect(pruned == 1)
+
+        let keys = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
+        }
+        #expect(keys == ["app:com.apple.dock", "app:com.mitchellh.ghostty"])
+
+        let state = try database.queue.read { db in
+            (orphans: try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM activities WHERE task_id IS NULL
+                """) ?? -1,
+             lockLogs: try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM task_logs WHERE task_id = \(lock)
+                """) ?? -1)
+        }
+        #expect(state.orphans == 1)
+        #expect(state.lockLogs == 0)
     }
 }

@@ -1,15 +1,21 @@
 import Foundation
 import GRDB
 
-/// Read/write API over tasks, projects, and work logs (design.md §5.3) —
-/// the queries the Vault tab and review decks are built from.
+/// Read/write API over tasks, themes-of-tasks, and work logs (design.md §5.3)
+/// — the queries the Vault tab and review decks are built from.
+///
+/// A task belongs to a theme *derivatively*: themes are filed per block
+/// (`activities.theme_key`), and a task's blocks may straddle several, so a
+/// task's theme is the one its time mostly sits in — see `dominantThemeSQL`.
 public enum TaskStore {
     /// One row of the Vault tab's task list: a task plus the joined facts the
     /// UI shows beside it.
     public struct Overview: Identifiable, Sendable {
         public var task: WorkTask
-        /// Nil when the task hasn't been assigned to a project.
-        public var projectName: String?
+        /// The task's dominant theme. Nil while none of its blocks are filed —
+        /// the clusterer hasn't reached them, or the user emptied it.
+        public var themeKey: String?
+        public var themeName: String?
         /// Time spent inside the filter's window — lifetime under the default
         /// (`since: 0`) filter, clipped to `since` otherwise, so the number
         /// beside a row always matches the range the user picked.
@@ -22,15 +28,6 @@ public enum TaskStore {
         public var id: Int64 { task.id ?? 0 }
     }
 
-    /// A project with its rolled-up task count and time.
-    public struct ProjectSummary: Identifiable, Sendable {
-        public var project: Project
-        public var taskCount: Int
-        public var totalMs: Int64
-
-        public var id: Int64 { project.id ?? 0 }
-    }
-
     /// One task's work on one day — a `task_logs` row joined to its task name.
     public struct DayLogEntry: Identifiable, Sendable {
         /// The `task_logs` row id. Regenerated whenever the day is rebuilt,
@@ -40,15 +37,19 @@ public enum TaskStore {
         public var taskName: String
         public var summary: String
         public var durationMs: Int64
+        /// The task's dominant theme, derived live from its blocks (not frozen
+        /// into the log row), so the Vault tab's theme filter can scope the
+        /// day log.
+        public var themeKey: String?
     }
 
     // MARK: - Tasks
 
-    /// Which project's tasks a `TaskFilter` admits.
-    public enum ProjectScope: Sendable, Hashable {
+    /// Which theme's tasks a `TaskFilter` admits.
+    public enum ThemeScope: Sendable, Hashable {
         case any
-        case project(id: Int64)
-        /// Tasks the user hasn't filed anywhere yet.
+        case theme(key: String)
+        /// Tasks no block of which is filed under a theme yet.
         case unassigned
     }
 
@@ -72,22 +73,22 @@ public enum TaskStore {
         /// mostly one-off minutes; without this the list is unreadable
         /// whatever the range.
         public var minimumMs: Int64
-        public var projectScope: ProjectScope
+        public var themeScope: ThemeScope
         public var sort: Sort
         public var limit: Int
 
         public init(since: Int64 = 0, minimumMs: Int64 = 0,
-                    projectScope: ProjectScope = .any,
+                    themeScope: ThemeScope = .any,
                     sort: Sort = .mostRecent, limit: Int = 12) {
             self.since = since
             self.minimumMs = minimumMs
-            self.projectScope = projectScope
+            self.themeScope = themeScope
             self.sort = sort
             self.limit = limit
         }
     }
 
-    /// Tasks matching `filter`, with their project, time spent inside the
+    /// Tasks matching `filter`, with their theme, time spent inside the
     /// filter's window, and the latest day-log line (the "very brief
     /// explanation").
     ///
@@ -112,9 +113,9 @@ public enum TaskStore {
                 Overview(
                     task: WorkTask(
                         id: row["id"], key: row["key"], name: row["name"],
-                        projectID: row["project_id"], createdAt: row["created_at"],
-                        lastActiveAt: row["last_active_at"]),
-                    projectName: row["project_name"],
+                        createdAt: row["created_at"], lastActiveAt: row["last_active_at"]),
+                    themeKey: row["theme_key"],
+                    themeName: row["theme_name"],
                     totalMs: row["total_ms"],
                     latestSummary: row["latest_summary"])
             }
@@ -136,6 +137,22 @@ public enum TaskStore {
         }
     }
 
+    /// One row per task: the theme its time mostly sits in. Blocks are filed
+    /// per theme and a task's may straddle several, so "the task's theme" is a
+    /// ranking, not a column — biggest share wins, key breaks ties so the
+    /// answer is stable across runs. Joined rather than repeated as a
+    /// correlated subquery so the name comes along in the same pass and the
+    /// scope clause below can filter on it.
+    static let dominantThemeSQL = """
+        (SELECT task_id, theme_key,
+                ROW_NUMBER() OVER (
+                    PARTITION BY task_id
+                    ORDER BY SUM(ended_at - started_at) DESC, theme_key) AS rank
+         FROM activities
+         WHERE task_id IS NOT NULL AND theme_key IS NOT NULL
+         GROUP BY task_id, theme_key)
+        """
+
     /// The filtered set as a subquery, shared by the page and its count so the
     /// two can't drift. Time is summed inside the window (activities that
     /// straddle `since` are clipped to it), which is also what `minimumMs`
@@ -146,27 +163,29 @@ public enum TaskStore {
         var arguments: [any DatabaseValueConvertible] = [
             filter.since, filter.since, filter.since
         ]
-        let projectClause: String
-        switch filter.projectScope {
+        let themeClause: String
+        switch filter.themeScope {
         case .any:
-            projectClause = ""
-        case .project(let projectID):
-            projectClause = "AND t.project_id = ?"
-            arguments.append(projectID)
+            themeClause = ""
+        case .theme(let key):
+            themeClause = "AND dt.theme_key = ?"
+            arguments.append(key)
         case .unassigned:
-            projectClause = "AND t.project_id IS NULL"
+            themeClause = "AND dt.theme_key IS NULL"
         }
         arguments.append(filter.minimumMs)
         let sql = """
-            (SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
-                    p.name AS project_name,
+            (SELECT t.id, t.key, t.name, t.created_at, t.last_active_at,
+                    dt.theme_key AS theme_key, th.name AS theme_name,
                     COALESCE((SELECT SUM(a.ended_at - MAX(a.started_at, ?))
                               FROM activities a
                               WHERE a.task_id = t.id AND a.ended_at > ?), 0) AS total_ms,
                     (SELECT l.summary FROM task_logs l WHERE l.task_id = t.id
                      ORDER BY l.day_start DESC LIMIT 1) AS latest_summary
-             FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-             WHERE t.last_active_at >= ? \(projectClause))
+             FROM tasks t
+             LEFT JOIN \(dominantThemeSQL) dt ON dt.task_id = t.id AND dt.rank = 1
+             LEFT JOIN themes th ON th.key = dt.theme_key
+             WHERE t.last_active_at >= ? \(themeClause))
             WHERE total_ms >= ?
             """
         return (sql, arguments)
@@ -183,14 +202,16 @@ public enum TaskStore {
     public static func logs(dayStart: Int64, database: ShifuDatabase) throws -> [DayLogEntry] {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT l.id, l.task_id, t.name, l.summary, l.duration_ms
+                SELECT l.id, l.task_id, t.name, dt.theme_key, l.summary, l.duration_ms
                 FROM task_logs l JOIN tasks t ON t.id = l.task_id
+                LEFT JOIN \(dominantThemeSQL) dt ON dt.task_id = t.id AND dt.rank = 1
                 WHERE l.day_start = ?
                 ORDER BY t.last_active_at DESC, l.duration_ms DESC
                 """, arguments: [dayStart]
             ).map { row in
                 DayLogEntry(id: row["id"], taskID: row["task_id"], taskName: row["name"],
-                            summary: row["summary"], durationMs: row["duration_ms"])
+                            summary: row["summary"], durationMs: row["duration_ms"],
+                            themeKey: row["theme_key"])
             }
         }
     }
@@ -204,113 +225,50 @@ public enum TaskStore {
         }
     }
 
-    public static func assign(taskID: Int64, projectID: Int64?, database: ShifuDatabase) throws {
-        try database.queue.write { db in
-            try db.execute(sql: "UPDATE tasks SET project_id = ? WHERE id = ?",
-                           arguments: [projectID, taskID])
-        }
-    }
-
-    // MARK: - Merge (vault-features.md §5.2 — always user-confirmed)
-
-    /// Folds one task into another: activities repoint to the survivor (which
-    /// keeps its user-chosen name), the absorbed task dies (its task_logs
-    /// cascade away), and the affected days' logs and work notes recompile —
-    /// the absorbed task's note files are removed and its content re-lands
-    /// under the survivor. Historical rows outside the affected days are
-    /// untouched.
-    public static func merge(
-        survivorID: Int64, absorbedID: Int64, database: ShifuDatabase,
-        vault: VaultStore? = nil, calendar: Calendar = .current
+    /// Files a whole task under a theme by hand. Themes live on blocks, so
+    /// this writes every one of the task's blocks — anything less and the
+    /// dominant-theme ranking above could still land somewhere else, making
+    /// the menu look like it didn't take.
+    ///
+    /// Clearing burns each block's `theme_attempts` instead of just nulling
+    /// the key: the clusterer's queue is "blocks with no theme and attempts
+    /// left", so without this the next analyzer run would quietly re-file what
+    /// the user just emptied. Same mechanism that stops it re-billing blocks
+    /// it keeps declining to place. Only blocks that *were* filed are burnt —
+    /// "No theme" on a task the clusterer simply hasn't reached yet is a
+    /// no-op, not a permanent opt-out.
+    public static func assignTheme(
+        taskID: Int64, themeKey: String?, database: ShifuDatabase
     ) throws {
-        guard survivorID != absorbedID else { return }
-        let spans: [(start: Int64, end: Int64)] = try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT started_at, ended_at FROM activities WHERE task_id = ?
-                """, arguments: [absorbedID]
-            ).map { ($0["started_at"], $0["ended_at"]) }
-        }
-        let days = TaskGrouper.affectedDays(of: spans, calendar: calendar)
-
         try database.queue.write { db in
-            try db.execute(sql: "UPDATE activities SET task_id = ? WHERE task_id = ?",
-                           arguments: [survivorID, absorbedID])
-            try db.execute(sql: """
-                UPDATE tasks SET last_active_at = MAX(last_active_at,
-                    COALESCE((SELECT last_active_at FROM tasks WHERE id = ?), 0))
-                WHERE id = ?
-                """, arguments: [absorbedID, survivorID])
-            try db.execute(sql: "DELETE FROM tasks WHERE id = ?", arguments: [absorbedID])
-            // The accepted pair is recorded; other open suggestions naming the
-            // dead task are meaningless now and go away.
-            try db.execute(sql: """
-                UPDATE task_merge_suggestions SET status = 'merged'
-                WHERE (task_a = ? AND task_b = ?) OR (task_a = ? AND task_b = ?)
-                """, arguments: [survivorID, absorbedID, absorbedID, survivorID])
-            try db.execute(sql: """
-                DELETE FROM task_merge_suggestions
-                WHERE status = 'new' AND (task_a = ? OR task_b = ?)
-                """, arguments: [absorbedID, absorbedID])
-            for day in days {
-                try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
+            guard let themeKey else {
+                try db.execute(sql: """
+                    UPDATE activities
+                    SET theme_key = NULL, theme_attempts = ?, theme_user_set = 0
+                    WHERE task_id = ? AND theme_key IS NOT NULL
+                    """, arguments: [ThemeClusterer.maxAttempts, taskID])
+                return
             }
-        }
-        if let vault {
-            try WorkNoteCompiler.recompile(
-                days: days, database: database, vault: vault, calendar: calendar)
+            // `theme_user_set` is the hand-filed bit the prune and auto-merge
+            // gates read (migration v14). Only this path sets it; the
+            // clusterer's own writes leave it 0.
+            try db.execute(sql: """
+                UPDATE activities SET theme_key = ?, theme_user_set = 1 WHERE task_id = ?
+                """, arguments: [themeKey, taskID])
+            // The Themes list orders by recency; adopting a task's blocks can
+            // only make a theme more recently active, never less.
+            try db.execute(sql: """
+                UPDATE themes SET last_active_at = MAX(last_active_at, COALESCE(
+                    (SELECT MAX(ended_at) FROM activities WHERE task_id = ?), 0))
+                WHERE key = ?
+                """, arguments: [taskID, themeKey])
         }
     }
 
+    // Merge (vault-features.md §5.2) lives in TaskMerging.swift.
     // Prune (design.md §5.3) lives in TaskPrune.swift.
 
-    // MARK: - Projects
-
-    /// Creates a project (or returns the existing one with the same name).
-    @discardableResult
-    public static func createProject(named name: String, database: ShifuDatabase) throws -> Project {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return try database.queue.write { db in
-            if let existing = try Project
-                .filter(sql: "name = ?", arguments: [trimmed]).fetchOne(db) {
-                return existing
-            }
-            var project = Project(
-                name: trimmed, createdAt: Int64(Date().timeIntervalSince1970 * 1_000))
-            try project.insert(db)
-            return project
-        }
-    }
-
-    /// All projects with task counts and total time spent across their tasks.
-    public static func projects(database: ShifuDatabase) throws -> [ProjectSummary] {
-        try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT p.id, p.name, p.created_at,
-                       (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
-                       COALESCE((SELECT SUM(a.ended_at - a.started_at)
-                                 FROM activities a JOIN tasks t ON a.task_id = t.id
-                                 WHERE t.project_id = p.id), 0) AS total_ms
-                FROM projects p ORDER BY p.name
-                """
-            ).map { row in
-                ProjectSummary(
-                    project: Project(id: row["id"], name: row["name"], createdAt: row["created_at"]),
-                    taskCount: row["task_count"],
-                    totalMs: row["total_ms"])
-            }
-        }
-    }
-
-    /// Grouping keys of a project's tasks — a project review deck is the
-    /// union of its task decks.
-    public static func taskKeys(projectID: Int64, database: ShifuDatabase) throws -> [String] {
-        try database.queue.read { db in
-            try String.fetchAll(db, sql: "SELECT key FROM tasks WHERE project_id = ?",
-                                arguments: [projectID])
-        }
-    }
-
-    // MARK: - Review decks (design.md §5.2: pull cards per task/project)
+    // MARK: - Review decks (design.md §5.2: pull cards per task/theme)
 
     /// The grouping key a vault note would fall under, mirroring how the
     /// note's source activity was grouped.
@@ -379,7 +337,9 @@ extension TaskStore {
     public struct Detail: Sendable {
         public var task: WorkTask
         public var gist: String?
-        public var projectName: String?
+        /// The task's dominant theme — see `Overview.themeKey`.
+        public var themeKey: String?
+        public var themeName: String?
         public var totalMs: Int64
         public var days: [DayRow]
         public var sources: [SourceShare]
@@ -393,9 +353,11 @@ extension TaskStore {
     ) throws -> Detail? {
         try database.queue.read { db in
             guard let head = try Row.fetchOne(db, sql: """
-                SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
-                       t.gist, p.name AS project_name
-                FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                SELECT t.id, t.key, t.name, t.created_at, t.last_active_at,
+                       t.gist, dt.theme_key, th.name AS theme_name
+                FROM tasks t
+                LEFT JOIN \(dominantThemeSQL) dt ON dt.task_id = t.id AND dt.rank = 1
+                LEFT JOIN themes th ON th.key = dt.theme_key
                 WHERE t.id = ?
                 """, arguments: [taskID]) else { return nil }
 
@@ -424,10 +386,10 @@ extension TaskStore {
             return Detail(
                 task: WorkTask(
                     id: head["id"], key: head["key"], name: head["name"],
-                    projectID: head["project_id"], createdAt: head["created_at"],
-                    lastActiveAt: head["last_active_at"]),
+                    createdAt: head["created_at"], lastActiveAt: head["last_active_at"]),
                 gist: head["gist"],
-                projectName: head["project_name"],
+                themeKey: head["theme_key"],
+                themeName: head["theme_name"],
                 totalMs: activity.totalMs,
                 days: days,
                 sources: activity.sources,

@@ -9,7 +9,6 @@ public enum FrontMatter {
     public enum Kind: String, Sendable {
         case knowledge
         case work
-        case project
     }
 
     /// A parsed note file: frontmatter as flat strings, plus the trimmed body.

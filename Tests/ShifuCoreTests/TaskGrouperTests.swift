@@ -32,6 +32,15 @@ import Testing
         #expect(!TaskGrouper.isDefaultName("Reading", forKey: "domain:github.com"))
     }
 
+    @Test func systemBundlesAreBarredBySetAndPrefix() {
+        #expect(TaskGrouper.isSystemBundle("com.apple.loginwindow"))
+        #expect(TaskGrouper.isSystemBundle("com.apple.LoginWindow"))
+        #expect(TaskGrouper.isSystemBundle("unknown.4242"))   // CaptureEngine's pid fallback
+        #expect(TaskGrouper.isSystemBundle("com.shifu.app"))  // self-observation
+        #expect(!TaskGrouper.isSystemBundle("com.mitchellh.ghostty"))
+        #expect(!TaskGrouper.isSystemBundle("com.google.chrome"))
+    }
+
     @Test func summaryLineReadsWhereThenWhat() {
         #expect(TaskGrouper.summaryLine(sources: ["Xcode", "github.com"],
                                         topics: ["debugging capture daemon"])
@@ -163,6 +172,28 @@ import Testing
         #expect(counts.logs == 0)
     }
 
+    /// The lock screen's hours stay in the ledger but never become a task,
+    /// however far past the substance gate they run — even when a topic
+    /// somehow attached, the bundle alone bars the block from grouping.
+    @Test func systemBundlesNeverMintTasks() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(2 * 3_600), minutes: 90,
+                   app: "com.apple.loginwindow", topic: "waiting at the lock screen")
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 30,
+                   app: "com.shifu.app")
+        let summary = try TaskGrouper.run(
+            database: database, from: 0, to: ms(day2), calendar: calendar)
+        #expect(summary.tasksTouched == 0)
+
+        let counts = try database.queue.read { db in
+            (tasks: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks") ?? -1,
+             assigned: try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM activities WHERE task_id IS NOT NULL") ?? -1)
+        }
+        #expect(counts.tasks == 0)
+        #expect(counts.assigned == 0)
+    }
+
     @Test func recurringKeyCrossesGateWithinWindowAndMints() throws {
         let database = try makeDB()
         // Three 2-min blocks of one intent: individually passing, together
@@ -203,29 +234,40 @@ import Testing
         #expect(logs[1].durationMs == 2 * 60_000)
     }
 
-    @Test func projectsGroupTasksAndSumTime() throws {
+    /// Filing a task under a theme writes every one of its blocks, so the
+    /// derived task→theme relation, the theme's review deck, and a re-file all
+    /// agree afterwards.
+    @Test func themeAssignmentCoversEveryBlockAndSticks() throws {
         let database = try makeDB()
         try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 60, topic: "shifu vault")
-        try insert(database, start: day1.addingTimeInterval(14 * 3_600), minutes: 30, topic: "shifu radar")
+        try insert(database, start: day1.addingTimeInterval(14 * 3_600), minutes: 30, topic: "shifu vault")
+        try insert(database, start: day1.addingTimeInterval(16 * 3_600), minutes: 30, topic: "trip planning")
         try TaskGrouper.run(database: database, from: 0, to: ms(day2), calendar: calendar)
 
-        let project = try TaskStore.createProject(named: "Shifu", database: database)
-        let tasks = try database.queue.read { try WorkTask.fetchAll($0) }
-        for task in tasks {
-            try TaskStore.assign(taskID: task.id!, projectID: project.id, database: database)
-        }
+        let key = try #require(try ThemeStore.create(named: "Shifu development", database: database))
+        #expect(key == "thm:shifu-development")
+        let vaultTask = try #require(try database.queue.read { db in
+            try Int64.fetchOne(db, sql: "SELECT id FROM tasks WHERE key = 'topic:shifu-vault'")
+        })
+        try TaskStore.assignTheme(taskID: vaultTask, themeKey: key, database: database)
 
-        let summaries = try TaskStore.projects(database: database)
-        #expect(summaries.count == 1)
-        #expect(summaries[0].taskCount == 2)
-        #expect(summaries[0].totalMs == 90 * 60_000)
+        let themed = try TaskStore.recentTasks(
+            database: database, filter: .init(themeScope: .theme(key: key)))
+        #expect(themed.map(\.task.name) == ["shifu vault"])
+        #expect(themed[0].themeName == "Shifu development")
+        let loose = try TaskStore.recentTasks(
+            database: database, filter: .init(themeScope: .unassigned))
+        #expect(loose.map(\.task.name) == ["trip planning"])
+        #expect(try ThemeStore.taskKeys(themeKey: key, database: database) == ["topic:shifu-vault"])
 
-        // Duplicate creation returns the existing project.
-        let again = try TaskStore.createProject(named: "Shifu", database: database)
-        #expect(again.id == project.id)
-
-        let keys = try TaskStore.taskKeys(projectID: project.id!, database: database)
-        #expect(Set(keys) == Set(["topic:shifu-vault", "topic:shifu-radar"]))
+        // Emptying it burns the clusterer's attempts, so the next analyzer run
+        // can't quietly re-file what the user just cleared.
+        try TaskStore.assignTheme(taskID: vaultTask, themeKey: nil, database: database)
+        #expect(try TaskStore.recentTasks(
+            database: database, filter: .init(themeScope: .theme(key: key))).isEmpty)
+        let pending = try ThemeClusterer.pendingSamples(
+            database: database, from: 0, to: ms(day2))
+        #expect(!pending.contains { $0.id == 1 || $0.id == 2 })
     }
 
     @Test func overviewCarriesLatestLogAndTotals() throws {
@@ -293,18 +335,17 @@ import Testing
             database: database, filter: .init(sort: .mostTime))
         #expect(byTime.map(\.task.name) == ["long early task", "short late task"])
 
-        // Project scope: one task filed, the other left loose.
-        let project = try TaskStore.createProject(named: "Shifu", database: database)
-        let filed = byTime[0].task.id!
-        try TaskStore.assign(taskID: filed, projectID: project.id, database: database)
+        // Theme scope: one task filed, the other left loose.
+        let key = try #require(try ThemeStore.create(named: "Shifu", database: database))
+        try TaskStore.assignTheme(taskID: byTime[0].task.id!, themeKey: key, database: database)
 
-        let inProject = try TaskStore.recentTasks(
-            database: database, filter: .init(projectScope: .project(id: project.id!)))
-        #expect(inProject.map(\.task.name) == ["long early task"])
-        #expect(inProject[0].projectName == "Shifu")
+        let inTheme = try TaskStore.recentTasks(
+            database: database, filter: .init(themeScope: .theme(key: key)))
+        #expect(inTheme.map(\.task.name) == ["long early task"])
+        #expect(inTheme[0].themeName == "Shifu")
 
         let loose = try TaskStore.recentTasks(
-            database: database, filter: .init(projectScope: .unassigned))
+            database: database, filter: .init(themeScope: .unassigned))
         #expect(loose.map(\.task.name) == ["short late task"])
     }
 
@@ -346,8 +387,16 @@ import Testing
         try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
                             calendar: calendar)
 
+        // Filing one task lets the day log carry its theme (derived live from
+        // its blocks), which the Vault tab's theme filter scopes on.
+        let key = try #require(try ThemeStore.create(named: "Focus", database: database))
+        let tasks = try database.queue.read { try WorkTask.fetchAll($0) }
+        let afternoonID = try #require(tasks.first { $0.name == "short afternoon task" }?.id)
+        try TaskStore.assignTheme(taskID: afternoonID, themeKey: key, database: database)
+
         let dayLogs = try TaskStore.logs(dayStart: ms(day1), database: database)
         #expect(dayLogs.map(\.taskName) == ["short afternoon task", "long morning task"])
+        #expect(dayLogs.map(\.themeKey) == [key, nil])
     }
 }
 
@@ -355,10 +404,13 @@ import Testing
     @Test func detailGathersHistorySourcesNotesAndRecent() throws {
         let database = try ShifuDatabase.inMemory()
         try database.queue.write { db in
-            try db.execute(sql: "INSERT INTO projects (name, created_at) VALUES ('Travel', 0)")
             try db.execute(sql: """
-                INSERT INTO tasks (key, name, gist, project_id, created_at, last_active_at)
-                VALUES ('sem:sf-trip', 'Planning the SF trip', 'Flights and lodging.', 1, 0, 99)
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES ('thm:travel', 'Travel', 0, 99)
+                """)
+            try db.execute(sql: """
+                INSERT INTO tasks (key, name, gist, created_at, last_active_at)
+                VALUES ('sem:sf-trip', 'Planning the SF trip', 'Flights and lodging.', 0, 99)
                 """)
             for (index, domain) in ["united.com", "united.com", "airbnb.com"].enumerated() {
                 var activity = Activity(
@@ -367,8 +419,9 @@ import Testing
                     appBundle: "com.apple.Safari", domain: domain, category: .admin,
                     topic: index == 2 ? "picking a rental" : nil)
                 try activity.insert(db)
-                try db.execute(sql: "UPDATE activities SET task_id = 1 WHERE id = ?",
-                               arguments: [activity.id])
+                try db.execute(sql: """
+                    UPDATE activities SET task_id = 1, theme_key = 'thm:travel' WHERE id = ?
+                    """, arguments: [activity.id])
             }
             try db.execute(sql: """
                 INSERT INTO task_logs (task_id, day_start, duration_ms, summary)
@@ -388,7 +441,7 @@ import Testing
         let detail = try #require(try TaskStore.detail(taskID: 1, database: database))
         #expect(detail.task.name == "Planning the SF trip")
         #expect(detail.gist == "Flights and lodging.")
-        #expect(detail.projectName == "Travel")
+        #expect(detail.themeName == "Travel")
         #expect(detail.totalMs == 3 * 600_000)
         #expect(detail.days.map(\.dayStart) == [86_400_000, 0])   // newest first
         #expect(detail.sources.map(\.source) == ["united.com", "airbnb.com"])

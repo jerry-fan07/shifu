@@ -4,9 +4,16 @@ import GRDB
 /// Task merge suggestions (vault-features.md §5.2) — the shipped half of V3.
 /// The day-one embedding spike (design.md §12) showed NLEmbedding separation
 /// is too weak for silent centroid *assignment* but strong enough for
-/// user-confirmed suggestions: pairwise cosine ≥ threshold over active-task
-/// centroids, *and* overlapping sources, surfaces "these look like one task —
-/// Merge / Dismiss". Never auto-merge.
+/// suggestions: pairwise cosine ≥ threshold over active-task centroids, *and*
+/// overlapping sources, surfaces "these look like one task — Merge / Dismiss".
+///
+/// `autoMerge` then folds the top slice of that queue without asking. The
+/// original rule was "never auto-merge", on the grounds that a silent merge
+/// destroys user naming and history; what dogfooding showed is that a
+/// suggestion queue nobody can drain is its own failure — hundreds of open
+/// pairs bury the task list. The gates below preserve the original guarantee
+/// instead of the rule: nothing with a name the *user* typed, and nothing
+/// the user filed apart under two themes by hand, is ever folded silently.
 public enum TaskMerges {
     public static let mergeThresholdKey = "tasks.merge_threshold"
     static let defaultMergeThreshold = 0.9
@@ -151,29 +158,36 @@ public enum TaskMerges {
         }
     }
 
-    // MARK: - Task → project suggestions (vault-features.md §5.3)
+    // Auto-merge (§5.2) lives in TaskAutoMerge.swift.
 
-    public static let projectThresholdKey = "projects.suggest_threshold"
-    static let defaultProjectThreshold = 0.85
+    // MARK: - Task → theme suggestions (vault-features.md §5.3)
 
-    /// An unresolved "add this task to that project?" suggestion. `task_id` is
-    /// unique in `project_suggestions`, so a task has at most one open
+    public static let themeThresholdKey = "themes.suggest_threshold"
+    static let defaultThemeThreshold = 0.85
+
+    /// An unresolved "add this task to that theme?" suggestion. `task_id` is
+    /// unique in `theme_suggestions`, so a task has at most one open
     /// suggestion and a dismissed task stays quiet.
-    public struct PendingProject: Identifiable, Sendable {
+    public struct PendingTheme: Identifiable, Sendable {
         public var id: Int64
         public var taskID: Int64
         public var taskName: String
-        public var projectID: Int64
-        public var projectName: String
+        public var themeKey: String
+        public var themeName: String
         public var cosine: Double
     }
 
-    /// In the same weekly pass: an unassigned active task whose centroid
-    /// clears the threshold against a project centroid (mean of member task
-    /// centroids) becomes a one-tap "Add to X?" suggestion. task_id is
-    /// unique, so a dismissed task stays quiet.
+    /// In the same weekly pass: an unthemed active task whose centroid clears
+    /// the threshold against a theme centroid (mean of the centroids of the
+    /// tasks already sitting in it) becomes a one-tap "Add to X?" suggestion.
+    ///
+    /// This is a *second* opinion on the same question the clusterer answers
+    /// per block, and it exists for the blocks the clusterer declined: those
+    /// burn out at `theme_attempts` and would otherwise stay themeless
+    /// forever, while their task looks, by embedding, exactly like a theme the
+    /// user already has.
     @discardableResult
-    public static func suggestProjects(
+    public static func suggestThemes(
         database: ShifuDatabase, embedder: any Embedder, now: Date = Date()
     ) throws -> Int {
         let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
@@ -182,37 +196,28 @@ public enum TaskMerges {
             of: try activeTaskData(database: database, cutoff: cutoff), embedder: embedder)
         guard !taskCentroids.isEmpty else { return 0 }
 
-        let assignments: [Int64: Int64?] = try database.queue.read { db in
-            var out: [Int64: Int64?] = [:]
-            for row in try Row.fetchAll(db, sql: "SELECT id, project_id FROM tasks") {
-                out[row["id"]] = row["project_id"] as Int64?
-            }
-            return out
-        }
-        var projectVectors: [Int64: [[Float]]] = [:]
+        let themes = try dominantThemes(database: database)
+        var themeVectors: [String: [[Float]]] = [:]
         for (taskID, centroid) in taskCentroids {
-            if let projectID = assignments[taskID] ?? nil {
-                projectVectors[projectID, default: []].append(centroid)
-            }
+            if let key = themes[taskID] { themeVectors[key, default: []].append(centroid) }
         }
-        let projectCentroids = projectVectors.compactMapValues(EmbedMath.centroid)
-        guard !projectCentroids.isEmpty else { return 0 }
+        let themeCentroids = themeVectors.compactMapValues(EmbedMath.centroid)
+        guard !themeCentroids.isEmpty else { return 0 }
 
-        let raw = (try? Settings.get(projectThresholdKey, database: database)) ?? nil
-        let threshold = Float(raw.flatMap(Double.init) ?? defaultProjectThreshold)
+        let raw = (try? Settings.get(themeThresholdKey, database: database)) ?? nil
+        let threshold = Float(raw.flatMap(Double.init) ?? defaultThemeThreshold)
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
 
         return try database.queue.write { db in
             var inserted = 0
-            for (taskID, centroid) in taskCentroids
-            where (assignments[taskID] ?? nil) == nil {
-                let best = projectCentroids
+            for (taskID, centroid) in taskCentroids where themes[taskID] == nil {
+                let best = themeCentroids
                     .map { ($0.key, EmbedMath.cosine(centroid, $0.value)) }
                     .max { $0.1 < $1.1 }
                 guard let best, best.1 >= threshold else { continue }
                 try db.execute(sql: """
-                    INSERT OR IGNORE INTO project_suggestions
-                        (task_id, project_id, cosine, status, created_at)
+                    INSERT OR IGNORE INTO theme_suggestions
+                        (task_id, theme_key, cosine, status, created_at)
                     VALUES (?, ?, ?, 'new', ?)
                     """, arguments: [taskID, best.0, Double(best.1), nowMs])
                 inserted += db.changesCount
@@ -221,47 +226,62 @@ public enum TaskMerges {
         }
     }
 
-    public static func pendingProjects(database: ShifuDatabase) throws -> [PendingProject] {
+    /// Task id → the theme its time mostly sits in; absent when none of its
+    /// blocks are filed. Same ranking the task list shows, so a suggestion
+    /// can't propose a theme the row already claims.
+    private static func dominantThemes(database: ShifuDatabase) throws -> [Int64: String] {
+        try database.queue.read { db in
+            var out: [Int64: String] = [:]
+            for row in try Row.fetchAll(db, sql: """
+                SELECT task_id, theme_key FROM \(TaskStore.dominantThemeSQL)
+                WHERE rank = 1
+                """) {
+                out[row["task_id"]] = row["theme_key"]
+            }
+            return out
+        }
+    }
+
+    public static func pendingThemes(database: ShifuDatabase) throws -> [PendingTheme] {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT s.id, s.task_id, t.name AS task_name,
-                       s.project_id, p.name AS project_name, s.cosine
-                FROM project_suggestions s
+                       s.theme_key, th.name AS theme_name, s.cosine
+                FROM theme_suggestions s
                 JOIN tasks t ON t.id = s.task_id
-                JOIN projects p ON p.id = s.project_id
-                WHERE s.status = 'new' AND t.project_id IS NULL
+                JOIN themes th ON th.key = s.theme_key
+                WHERE s.status = 'new'
+                  AND NOT EXISTS (SELECT 1 FROM activities a
+                                  WHERE a.task_id = t.id AND a.theme_key IS NOT NULL)
                 ORDER BY s.cosine DESC
                 """
             ).map { row in
-                PendingProject(id: row["id"], taskID: row["task_id"],
-                               taskName: row["task_name"], projectID: row["project_id"],
-                               projectName: row["project_name"], cosine: row["cosine"])
+                PendingTheme(id: row["id"], taskID: row["task_id"],
+                             taskName: row["task_name"], themeKey: row["theme_key"],
+                             themeName: row["theme_name"], cosine: row["cosine"])
             }
         }
     }
 
-    public static func dismissProject(suggestionID: Int64, database: ShifuDatabase) throws {
+    public static func dismissTheme(suggestionID: Int64, database: ShifuDatabase) throws {
         try database.queue.write { db in
             try db.execute(
-                sql: "UPDATE project_suggestions SET status = 'dismissed' WHERE id = ?",
+                sql: "UPDATE theme_suggestions SET status = 'dismissed' WHERE id = ?",
                 arguments: [suggestionID])
         }
     }
 
-    /// Accepts: assign via the existing path, then recompile the project note
-    /// (deterministic parts; a status paragraph waits for the weekly pass).
-    public static func acceptProject(
-        _ suggestion: PendingProject, database: ShifuDatabase, vault: VaultStore
+    /// Accepts: file the task through the same path the row menu uses.
+    public static func acceptTheme(
+        _ suggestion: PendingTheme, database: ShifuDatabase
     ) throws {
-        try TaskStore.assign(taskID: suggestion.taskID, projectID: suggestion.projectID,
-                             database: database)
+        try TaskStore.assignTheme(taskID: suggestion.taskID, themeKey: suggestion.themeKey,
+                                  database: database)
         try database.queue.write { db in
             try db.execute(
-                sql: "UPDATE project_suggestions SET status = 'accepted' WHERE id = ?",
+                sql: "UPDATE theme_suggestions SET status = 'accepted' WHERE id = ?",
                 arguments: [suggestion.id])
         }
-        try ProjectNoteCompiler.compileDeterministic(
-            projectID: suggestion.projectID, database: database, vault: vault)
     }
 
     // MARK: - UI queries & actions
@@ -290,6 +310,27 @@ public enum TaskMerges {
             try db.execute(
                 sql: "UPDATE task_merge_suggestions SET status = 'dismissed' WHERE id = ?",
                 arguments: [suggestionID])
+        }
+    }
+
+    /// Clears the whole open queue in one action — "these are all fine as
+    /// they are". Same permanence as dismissing them one by one: the unique
+    /// pair key keeps every one of them from being re-suggested.
+    @discardableResult
+    public static func dismissAll(database: ShifuDatabase) throws -> Int {
+        try database.queue.write { db in
+            try db.execute(
+                sql: "UPDATE task_merge_suggestions SET status = 'dismissed' WHERE status = 'new'")
+            return db.changesCount
+        }
+    }
+
+    @discardableResult
+    public static func dismissAllThemes(database: ShifuDatabase) throws -> Int {
+        try database.queue.write { db in
+            try db.execute(
+                sql: "UPDATE theme_suggestions SET status = 'dismissed' WHERE status = 'new'")
+            return db.changesCount
         }
     }
 

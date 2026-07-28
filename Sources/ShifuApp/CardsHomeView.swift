@@ -64,11 +64,9 @@ struct CardsTabView: View {
         HStack {
             Picker("Deck", selection: $store.reviewDeck) {
                 Text("All notes").tag(ReviewDeck.all)
-                ForEach(store.projectSummaries) { summary in
-                    if let projectID = summary.project.id {
-                        Text("Project · \(summary.project.name)")
-                            .tag(ReviewDeck.project(id: projectID, name: summary.project.name))
-                    }
+                ForEach(store.themes) { theme in
+                    Text("Theme · \(theme.name)")
+                        .tag(ReviewDeck.theme(key: theme.key, name: theme.name))
                 }
                 ForEach(store.recentTasks) { overview in
                     Text("Task · \(overview.task.name)")
@@ -336,11 +334,11 @@ struct ReviewHeatmapView: View {
         }
     }
 
-    /// Start of each displayed week, oldest first, current week last.
+    /// Start of each displayed week, oldest first, current week last. Columns
+    /// run Monday→Sunday like the rest of the app.
     private func weekStarts() -> [Date] {
         let calendar = Calendar.current
-        let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start
-            ?? calendar.startOfDay(for: now)
+        let thisWeek = calendar.startOfWeek(for: now)
         return (0..<LedgerStore.HeatmapSpan.weeks).compactMap { offset in
             calendar.date(
                 byAdding: .weekOfYear,
@@ -393,12 +391,13 @@ struct ReviewHeatmapView: View {
     }
 
     private var weekdayLabels: some View {
-        let calendar = Calendar.current
+        let calendar = Calendar.current.mondayFirst
         let symbols = calendar.veryShortStandaloneWeekdaySymbols
         return VStack(spacing: Self.gap) {
+            // Every other row, so the labels don't crowd: Mon, Wed, Fri.
             ForEach(0..<7, id: \.self) { row in
                 Text(row.isMultiple(of: 2)
-                     ? "" : symbols[(calendar.firstWeekday - 1 + row) % 7])
+                     ? symbols[(calendar.firstWeekday - 1 + row) % 7] : "")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(width: 23, height: Self.cellSize)
