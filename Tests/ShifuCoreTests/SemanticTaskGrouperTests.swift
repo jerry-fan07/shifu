@@ -246,6 +246,18 @@ private struct TaskRowSnapshot: Sendable {
         #expect(samples.isEmpty)
     }
 
+    @Test func systemBundleBlocksAreNeverSent() async throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, id: &ids, startedAt: 0, bundle: "com.apple.loginwindow")
+        try seedBlock(db, id: &ids, startedAt: 3_600_000, bundle: "unknown.4242")
+        try seedBlock(db, id: &ids, startedAt: 7_200_000, bundle: "com.shifu.app")
+        try seedBlock(db, id: &ids, startedAt: 10_800_000, bundle: "com.apple.Safari")
+        let samples = try SemanticTaskGrouper.pendingSamples(
+            database: db, from: 0, to: 100_000_000)
+        #expect(samples.map(\.id) == [ids[3]])
+    }
+
     @Test func privateAndAlreadyAssignedBlocksAreNeverSent() async throws {
         let db = try ShifuDatabase.inMemory()
         var ids: [Int64] = []
