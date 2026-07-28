@@ -99,6 +99,16 @@ final class LedgerStore: ObservableObject {
         }
     }
 
+    /// refresh(), one runloop turn later. Controls embedded in List rows
+    /// (rename fields, project menus, Merge/Keep/Dismiss buttons) fire while
+    /// AppKit is still inside the backing NSTableView's delegate callback;
+    /// republishing the list's own data there is a reentrant table operation
+    /// (AppKit warns today, will assert eventually). Every store action a row
+    /// can trigger goes through this; menu-bar actions stay synchronous.
+    private func refreshSoon() {
+        Task { @MainActor [weak self] in self?.refresh() }
+    }
+
     /// Kicks shifu-analyzer on demand so the summary covers up to right now,
     /// then refreshes once it exits. Throttled so reopening the menu doesn't
     /// stack runs; concurrent with shifud's hourly run is fine (idempotent).
@@ -231,7 +241,7 @@ final class LedgerStore: ObservableObject {
         if let database = try? db() {
             try? ThemeStore.rename(themeID: themeID, to: name, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     func createProjectAndAssign(_ taskID: Int64, projectName: String) {
@@ -239,28 +249,28 @@ final class LedgerStore: ObservableObject {
               let project = try? TaskStore.createProject(named: projectName, database: database),
               let projectID = project.id else { return }
         try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
-        refresh()
+        refreshSoon()
     }
 
     func renameTask(_ taskID: Int64, to name: String) {
         if let database = try? db() {
             try? TaskStore.rename(taskID: taskID, to: name, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     func assignTask(_ taskID: Int64, toProject projectID: Int64?) {
         if let database = try? db() {
             try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     func createProject(named name: String) {
         if let database = try? db() {
             _ = try? TaskStore.createProject(named: name, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     // MARK: - Merge suggestions (vault-features.md §5.2 — user-confirmed)
@@ -269,14 +279,14 @@ final class LedgerStore: ObservableObject {
         if let database = try? db() {
             try? TaskMerges.merge(suggestion, database: database, vault: vault)
         }
-        refresh()
+        refreshSoon()
     }
 
     func dismissMerge(_ suggestion: TaskMerges.Pending) {
         if let database = try? db() {
             try? TaskMerges.dismiss(suggestionID: suggestion.id, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     // MARK: - Project suggestions (vault-features.md §5.3 — one-tap)
@@ -285,14 +295,14 @@ final class LedgerStore: ObservableObject {
         if let database = try? db() {
             try? TaskMerges.acceptProject(suggestion, database: database, vault: vault)
         }
-        refresh()
+        refreshSoon()
     }
 
     func dismissProjectSuggestion(_ suggestion: TaskMerges.PendingProject) {
         if let database = try? db() {
             try? TaskMerges.dismissProject(suggestionID: suggestion.id, database: database)
         }
-        refresh()
+        refreshSoon()
     }
 
     /// The project's compiled note as a hit for the shared note reader.
@@ -333,12 +343,12 @@ final class LedgerStore: ObservableObject {
 
     func dismiss(_ suggestion: Suggestion) {
         if let database = try? db() { try? Radar.dismiss(suggestion, database: database) }
-        refresh()
+        refreshSoon()
     }
 
     func snooze(_ suggestion: Suggestion) {
         if let database = try? db() { try? Radar.snooze(suggestion, database: database) }
-        refresh()
+        refreshSoon()
     }
 
     func toggleWorkMode() {
@@ -405,17 +415,17 @@ extension LedgerStore {
 
     func keep(_ note: Note) {
         try? vault.keep(note)
-        refresh()
+        refreshSoon()
     }
 
     func discard(_ note: Note) {
         try? vault.discard(note)
-        refresh()
+        refreshSoon()
     }
 
     func review(_ note: Note, grade: FSRS.Grade) {
         _ = try? vault.review(note, grade: grade)
-        refresh()
+        refreshSoon()
     }
 
     /// Persists a card edit (topic + reference + Q/A) from the card editor.
@@ -433,6 +443,6 @@ extension LedgerStore {
             ? Note.composeBody(reference: reference, question: question, answer: answer)
             : reference.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = try? vault.save(updated)
-        refresh()
+        refreshSoon()
     }
 }

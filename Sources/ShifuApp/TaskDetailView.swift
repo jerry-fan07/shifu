@@ -275,8 +275,13 @@ private struct DayHistoryRow: View {
         }
         .onChange(of: expanded) { _, isOpen in
             guard isOpen, !loaded else { return }
-            note = store.workNote(dayStart: day.dayStart, taskKey: taskKey)
-            loaded = true
+            // Deferred: this fires mid-expand, inside the backing table's
+            // update pass — growing the row right here is a reentrant
+            // table operation (AppKit warns, and will assert one day).
+            Task { @MainActor in
+                note = store.workNote(dayStart: day.dayStart, taskKey: taskKey)
+                loaded = true
+            }
         }
     }
 }
