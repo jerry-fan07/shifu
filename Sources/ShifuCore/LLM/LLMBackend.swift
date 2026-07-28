@@ -1,9 +1,10 @@
 import Foundation
 
-/// One protocol, several implementations (implementation.md Phase 3 item 1):
-/// Apple Foundation Models (on-device, OS-gated), Claude API (opt-in, lives in
-/// shifu-analyzer so no network code links into shifud), rules-only fallback
-/// when none is available. MLX bundled model deferred (design.md §12).
+/// One protocol, one production implementation (design.md §4.2): DeepSeek,
+/// which lives in shifu-analyzer so no network code links into shifud, with
+/// rules-only fallback when no API key is configured. The on-device tiers
+/// (Apple Foundation Models, bundled MLX) were dropped in 2026-07 — too weak,
+/// 4k window, macOS 26+ only. Tests supply in-memory fakes.
 public protocol LLMBackend: Sendable {
     var name: String { get }
     /// Total context window (prompt + response) in tokens. Batched prompts
@@ -17,8 +18,8 @@ extension LLMBackend {
 }
 
 /// Prompt sizing (CLAUDE.md invariant 7). Every batched prompt must be sized
-/// with this, never by item count — the on-device Foundation Models window is
-/// only 4k tokens for prompt *and* response combined.
+/// with this, never by item count — the window covers prompt *and* response
+/// combined, and dense OCR days can blow past any fixed item count.
 public enum LLMTokens {
     /// Conservative prompt-size estimate: ≈3 UTF-8 bytes per token, so dense
     /// OCR text can't overflow a real tokenizer's count.

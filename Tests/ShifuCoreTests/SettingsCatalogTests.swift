@@ -32,20 +32,20 @@ import Testing
 
     @Test func choiceNormalizesUnknownValuesToDefault() throws {
         let backend = SettingsCatalog.analysisBackend
-        #expect(backend.normalize("claude") == "claude")
-        #expect(backend.normalize("banana") == "auto")
+        #expect(backend.normalize("off") == "off")
+        #expect(backend.normalize("banana") == "deepseek")
 
         let db = try ShifuDatabase.inMemory()
-        #expect(Settings.value(backend, database: db) == "auto")       // missing
+        #expect(Settings.value(backend, database: db) == "deepseek")   // missing
         try Settings.set(backend.key, to: "banana", database: db)      // hand-edited row
-        #expect(Settings.value(backend, database: db) == "auto")
-        try Settings.set(backend, to: "openai", database: db)
-        #expect(Settings.value(backend, database: db) == "openai")
+        #expect(Settings.value(backend, database: db) == "deepseek")
+        try Settings.set(backend, to: "off", database: db)
+        #expect(Settings.value(backend, database: db) == "off")
     }
 
     @Test func textSettingTrimsAndDefaultsToEmpty() throws {
         let db = try ShifuDatabase.inMemory()
-        let key = SettingsCatalog.openAIAPIKey
+        let key = SettingsCatalog.deepseekAPIKey
         #expect(Settings.value(key, database: db).isEmpty)
         try Settings.set(key, to: "  sk-secret \n", database: db)
         #expect(Settings.value(key, database: db) == "sk-secret")

@@ -194,68 +194,63 @@ public enum SettingsCatalog {
         placeholder: "reddit.com"
     )
 
-    // AI backend (design.md §4.2 tiers 2–3, §8). Cloud choices are opt-in and
-    // analyzer-only; only redacted, post-exclusion text samples are ever sent.
+    // AI backend (design.md §4.2, §8). DeepSeek is the only LLM backend and
+    // it is analyzer-only; the API key is the opt-in — without one, analysis
+    // is rules-only and nothing ever leaves this Mac.
     public static let analysisBackend = ChoiceSetting(
         key: Settings.analysisBackendKey, section: .analysis,
         title: "AI backend",
         help: "Names tasks, classifies ambiguous time, and writes work-log narratives. "
-            + "On-device never leaves this Mac; cloud backends receive only redacted "
-            + "text samples, after exclusions. \"Rules only\" disables AI entirely.",
+            + "DeepSeek receives only redacted text samples, after exclusions — never "
+            + "pixels or raw captures. \"Rules only\" disables AI entirely.",
         options: [
-            .init(value: "auto", label: "On-device (default)"),
-            .init(value: "claude", label: "Claude API"),
-            .init(value: "openai", label: "DeepSeek / OpenAI-compatible"),
+            .init(value: "deepseek", label: "DeepSeek"),
             .init(value: "off", label: "Rules only")
         ],
-        defaultValue: "auto"
+        defaultValue: "deepseek"
     )
 
-    public static let claudeAPIKey = TextSetting(
-        key: Settings.claudeAPIKeyKey, section: .analysis,
-        title: "Anthropic API key",
-        help: "Stored locally. The ANTHROPIC_API_KEY environment variable overrides it.",
-        placeholder: "sk-ant-…", secure: true,
-        visibleWhen: (key: Settings.analysisBackendKey, value: "claude")
-    )
-
-    public static let claudeModel = TextSetting(
-        key: "claude.model", section: .analysis,
-        title: "Claude model",
-        help: "Blank uses the default.",
-        placeholder: "claude-opus-4-8",
-        visibleWhen: (key: Settings.analysisBackendKey, value: "claude")
-    )
-
-    public static let openAIAPIKey = TextSetting(
-        key: Settings.openAIAPIKeyKey, section: .analysis,
+    public static let deepseekAPIKey = TextSetting(
+        key: Settings.deepseekAPIKeyKey, section: .analysis,
         title: "API key",
-        help: "Stored locally. DEEPSEEK_API_KEY or OPENAI_API_KEY overrides it.",
+        help: "Stored locally. The DEEPSEEK_API_KEY environment variable overrides it. "
+            + "Until a key is set, analysis runs rules-only and stays on this Mac.",
         placeholder: "sk-…", secure: true,
-        visibleWhen: (key: Settings.analysisBackendKey, value: "openai")
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
-    public static let openAIBaseURL = TextSetting(
-        key: Settings.openAIBaseURLKey, section: .analysis,
+    public static let deepseekBaseURL = TextSetting(
+        key: Settings.deepseekBaseURLKey, section: .analysis,
         title: "Endpoint",
         help: "Any OpenAI-compatible /chat/completions server. Blank uses DeepSeek.",
         placeholder: "https://api.deepseek.com",
-        visibleWhen: (key: Settings.analysisBackendKey, value: "openai")
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
-    public static let openAIModel = TextSetting(
-        key: Settings.openAIModelKey, section: .analysis,
+    public static let deepseekModel = TextSetting(
+        key: Settings.deepseekModelKey, section: .analysis,
         title: "Model",
-        help: "Blank uses deepseek-chat.",
-        placeholder: "deepseek-chat",
-        visibleWhen: (key: Settings.analysisBackendKey, value: "openai")
+        help: "Classifies time and writes notes and narratives. Blank uses "
+            + "deepseek-v4-flash (cheap, fast).",
+        placeholder: "deepseek-v4-flash",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
+    public static let deepseekReasoningModel = TextSetting(
+        key: Settings.deepseekReasoningModelKey, section: .analysis,
+        title: "Reasoning model",
+        help: "Groups your time into tasks and themes — the judgment-heavy "
+            + "stages. Blank uses deepseek-v4-pro (thinking model, slower and "
+            + "pricier but better at naming intent).",
+        placeholder: "deepseek-v4-pro",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
     public static let ints: [IntSetting] = [heartbeatSeconds, analysisIntervalSeconds]
     public static let domainLists: [DomainListSetting] = [workModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
-        claudeAPIKey, claudeModel, openAIAPIKey, openAIBaseURL, openAIModel
+        deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel
     ]
 }
 

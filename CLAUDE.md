@@ -27,15 +27,15 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 
 ## Standing invariants (violations are bugs, no exceptions)
 
-1. **No network code in `shifud`.** Only `shifu-analyzer` may touch the network, and only when
-   cloud analysis is opted in (§8).
+1. **No network code in `shifud`.** Only `shifu-analyzer` may touch the network, and only to the
+   configured DeepSeek endpoint once the user has supplied an API key — the key is the opt-in (§8).
 2. **Redaction is a single choke point** before every DB write — cards, SSNs, key/JWT shapes (§8).
 3. **Exclusions are enforced before capture**, not filtered after (§8).
 4. **Pixels are never persisted** — screenshots live in memory only for the OCR call (§3.2).
 5. **Pause tears down observers**, it doesn't just gate writes (§8).
 6. Perf budgets (§3.4) are CI: <0.5% avg CPU, <80 MB RSS for the daemon.
 7. **LLM prompts are token-budgeted.** Every prompt sent through `LLMBackend.complete` must fit
-   the backend's `contextWindowTokens` (on-device Foundation Models is only 4k, prompt + response
+   the backend's `contextWindowTokens` (DeepSeek is deliberately capped at 60k, prompt + response
    combined). Size batches with `LLMTokens.estimate`, never by item count alone.
 8. Variables must be named with greater than 1 character.
 

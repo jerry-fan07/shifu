@@ -4,8 +4,8 @@ import ShifuCore
 
 // shifu-analyzer — batch analysis worker (design.md §4). Runs opportunistically
 // (invoked hourly by shifud, or on demand); skips on battery unless forced.
-// This is the only Shifu binary allowed to touch the network, and only when
-// cloud analysis is opted in (Phase 3+; nothing here yet).
+// This is the only Shifu binary allowed to touch the network, and only to the
+// configured DeepSeek endpoint once the user has supplied an API key (§8).
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
@@ -51,21 +51,16 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
 
-// Tier-2 LLM pass over ambiguous blocks (§4.2). Backend selection: an explicit
-// cloud opt-in wins ("claude", or "openai" for DeepSeek/OpenAI-compatible);
-// otherwise on-device Foundation Models if the OS has it; otherwise rules-only
-// (nothing to do — §10 fallback). "off" disables every LLM stage.
-let backendChoice = try Settings.get(Settings.analysisBackendKey, database: database)
-let backend: (any LLMBackend)?
-if backendChoice == "off" {
-    backend = nil
-} else if let claude = try ClaudeBackend.ifConfigured(database: database) {
-    backend = claude
-} else if let openAI = try OpenAIBackend.ifConfigured(database: database) {
-    backend = openAI
-} else {
-    backend = FoundationModelsBackend.ifAvailable()
-}
+// DeepSeek is the only LLM backend; without an API key (or with backend
+// "off") every LLM stage is skipped and the rules-only ledger stands (§10
+// fallback). Two model slots share the one opt-in (§4.2): the fast model
+// serves the high-volume labeling stages below, the reasoning model serves
+// the grouping stages that name the user's intent.
+let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: database)
+let reasoningBackend: (any LLMBackend)? =
+    try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
+
+// Tier-2 LLM pass over ambiguous blocks (§4.2) — fast model.
 if let backend {
     do {
         let relabeled = try await AmbiguousClassifier.run(
@@ -81,15 +76,16 @@ if let backend {
 
 // Semantic task grouping (§5.3): the LLM assigns the window's blocks to
 // intent-level tasks before the mechanical grouper runs, so `sem_key` exists
-// when TaskGrouper picks keys. Fail-soft: on any failure blocks keep their
-// mechanical grouping and stay queued for the next run (§10).
-if let backend {
+// when TaskGrouper picks keys. Uses the reasoning model — naming intent is
+// the judgment call the pricier slot exists for. Fail-soft: on any failure
+// blocks keep their mechanical grouping and stay queued for the next run (§10).
+if let reasoningBackend {
     do {
         let semSummary = try await SemanticTaskGrouper.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: reasoningBackend, from: from, to: nowMs)
         if semSummary.assigned > 0 {
-            print("semantic tasks (\(backend.name)): \(semSummary.assigned) blocks assigned, "
-                + "\(semSummary.tasksCreated) tasks created")
+            print("semantic tasks (\(reasoningBackend.name)): \(semSummary.assigned) "
+                + "blocks assigned, \(semSummary.tasksCreated) tasks created")
         }
     } catch {
         print("semantic grouping failed, blocks stay mechanically grouped: \(error)")
@@ -107,17 +103,19 @@ if taskSummary.tasksTouched > 0 {
 
 // Theme layer (§5.3): the second, independent clustering into broad
 // initiatives. Runs after TaskGrouper so task names exist as evidence.
-// Fail-soft like every LLM stage.
-if let backend {
+// Clustering is the reasoning model's job; the narratives it refreshes are
+// hash-gated to ~one generation per theme per day, so they ride along rather
+// than earn a second wiring. Fail-soft like every LLM stage.
+if let reasoningBackend {
     do {
         let themeSummary = try await ThemeClusterer.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: reasoningBackend, from: from, to: nowMs)
         if themeSummary.assigned > 0 {
-            print("themes (\(backend.name)): \(themeSummary.assigned) blocks assigned, "
-                + "\(themeSummary.themesCreated) themes created")
+            print("themes (\(reasoningBackend.name)): \(themeSummary.assigned) "
+                + "blocks assigned, \(themeSummary.themesCreated) themes created")
         }
         let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend)
+            database: database, backend: reasoningBackend)
         if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")

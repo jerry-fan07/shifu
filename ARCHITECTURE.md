@@ -43,8 +43,8 @@ Sources/ShifuCore/
   Analysis/    Sessionizer, RulesClassifier, AmbiguousClassifier, LedgerBuilder,
                SemanticTaskGrouper, ThemeClusterer, TaskGrouper, TaskMerges (+TaskAutoMerge),
                PatternMiner, Radar, DigestGenerator, Embedder
-  LLM/         LLMBackend protocol, FoundationModelsBackend
-               (ClaudeBackend + OpenAIBackend live in shifu-analyzer — invariant 1)
+  LLM/         LLMBackend protocol + LLMTokens
+               (DeepSeekBackend, the only implementation, lives in shifu-analyzer — invariant 1)
   Vault/       Note, WorkNote, FrontMatter, FSRS, VaultStore, VaultIndexer,
                VaultSearch, TaskStore (+TaskMerging, TaskPrune), ThemeStore,
                KnowledgeExtractor, WorkNoteCompiler
@@ -199,7 +199,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The Time tab's modes, span and lens | [`ShifuApp/DashboardView.swift`](Sources/ShifuApp/DashboardView.swift) — `TimeTabView` |
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
-| Cloud LLM endpoints (Claude / DeepSeek-compatible) | [`shifu-analyzer/ClaudeBackend.swift`](Sources/shifu-analyzer/ClaudeBackend.swift), [`shifu-analyzer/OpenAIBackend.swift`](Sources/shifu-analyzer/OpenAIBackend.swift) |
+| The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
 | What is never captured at all | [`Privacy/Exclusions.swift`](Sources/ShifuCore/Privacy/Exclusions.swift) |
 | The capture ladder / rung thresholds | [`shifud/CaptureEngine.swift`](Sources/shifud/CaptureEngine.swift) |
@@ -288,12 +288,14 @@ seeds in `RulesClassifier` / `Exclusions`. Unique on `(kind, value)` where
 `kind` is `bundle` \| `domain`.
 
 **`settings`** — key/value. Keys live on `Settings` (`analysis.backend`,
-`claude.api_key`, `openai.api_key`/`base_url`/`model`, `digest.hour`) plus
+`deepseek.api_key`/`base_url`/`model`/`reasoning_model`, `digest.hour`) plus
 ad-hoc ones (`radar.last_mined`, `tasks.merge_threshold`,
 `tasks.auto_merge_threshold` — set it above 1 to switch auto-merge off —
-`themes.suggest_threshold`, `claude.model`). Backend/key/model settings are
+`themes.suggest_threshold`). Backend/key/model settings are
 `ChoiceSetting`/`TextSetting` entries in `SettingsCatalog`, so the Settings
-window renders them (key fields only for the selected backend).
+window renders them (connection fields only when the backend isn't "off").
+Migration v15 folded the legacy `claude.*`/`openai.*` keys and backend
+choices into these.
 
 **`suggestions`** (radar, unique `pattern_key`), **`srs_reviews`** (review log
 for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
@@ -335,7 +337,7 @@ This is where each is actually enforced, and what would catch a regression.
 
 | # | Invariant | Choke point | Guard |
 |---|---|---|---|
-| 1 | No network code in `shifud` | `ClaudeBackend` and `OpenAIBackend` live in the `shifu-analyzer` target — the SwiftPM target graph makes them unlinkable from `shifud` | ✅ `scripts/check-no-network.sh` — `nm -u` symbol scan, run by `make check` |
+| 1 | No network code in `shifud` | `DeepSeekBackend` lives in the `shifu-analyzer` target — the SwiftPM target graph makes it unlinkable from `shifud` | ✅ `scripts/check-no-network.sh` — `nm -u` symbol scan, run by `make check` |
 | 2 | Redaction is a single choke point before every DB write | `ObservationRecorder.record` calls `Redactor.redact` before insert; nothing else writes `observations` | ✅ `ObservationRecorderTests.textIsRedactedBeforeDisk`, `RedactorTests` |
 | 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ⚠️ Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText`. **The ordering inside `CaptureEngine` itself is structural — no test** |
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
@@ -411,13 +413,13 @@ itself — except `privateTime` and `unclassified`, which it filters out.
 **Add a capture-ladder rung.** `CaptureEngine.capture`, ordered cheapest first,
 and add a `CaptureKind` case. Keep exclusion checks above every content read.
 
-**Add an LLM backend.** Conform to `LLMBackend` (`name`,
-`contextWindowTokens`, `complete`). If it touches the network it **must** live
-in the `shifu-analyzer` target, not `ShifuCore` — see invariant 1 (that is
-where `ClaudeBackend` and `OpenAIBackend` live). Wire selection into the
-explicit chain in `shifu-analyzer/main.swift`; note an OpenAI-compatible
-server usually needs no new backend — point `openai.base_url`/`openai.model`
-at it.
+**Add an LLM backend.** Usually unnecessary: any OpenAI-compatible
+/chat/completions server needs no new code — point
+`deepseek.base_url`/`deepseek.model` at it. Otherwise conform to `LLMBackend`
+(`name`, `contextWindowTokens`, `complete`). If it touches the network it
+**must** live in the `shifu-analyzer` target, not `ShifuCore` — see
+invariant 1 (that is where `DeepSeekBackend` lives) — and wire selection into
+`shifu-analyzer/main.swift`.
 
 **Add a user setting.** Add one entry to `SettingsCatalog`
 (`Storage/SettingsCatalog.swift`) and append it to `ints` / `domainLists` /

@@ -9,14 +9,18 @@ A local-first, always-on macOS screen observer that turns what's on your screen 
    reviewed on an FSRS spaced-repetition schedule
 3. **Efficiency radar** — detection of repetitive workflows worth automating
 
-Everything stays on your Mac. See [design.md](design.md) for the full specification.
+All capture stays on your Mac. AI analysis uses DeepSeek and sends only
+redacted, post-exclusion text samples — and only after you paste an API key.
+See [design.md](design.md) for the full specification.
 
 ## Requirements
 
 - macOS 14+ (Apple Silicon primary), Xcode 16+ toolchain
-- On-device LLM features use Apple Foundation Models (macOS 26+); cloud analysis
-  via the Claude API or any OpenAI-compatible endpoint (DeepSeek by default) is
-  strictly opt-in — pick the backend and paste a key in Settings → Analysis
+- AI features use DeepSeek (any OpenAI-compatible endpoint works via
+  Settings → Analysis): `deepseek-v4-flash` for the high-volume stages
+  (classification, extraction, narratives) and `deepseek-v4-pro` for
+  task/theme grouping, each overridable. Paste a key there or set
+  `DEEPSEEK_API_KEY`; without one, Shifu runs rules-only and fully offline
 
 ## Install
 
@@ -83,7 +87,7 @@ shifu encrypt           migrate the database to SQLCipher (key in Keychain)
   before anything touches disk.
 - **No network in the daemon** — enforced by symbol inspection in CI
   (`scripts/check-no-network.sh`). Only the analyzer may talk to the network,
-  and only when cloud analysis is switched on.
+  and only to the configured DeepSeek endpoint once an API key is set.
 - Raw text expires after 14 days; the ledger and confirmed notes persist.
 - **Encryption at rest (opt-in)**: `shifu encrypt` migrates the database to
   SQLCipher (via DuckDuckGo's GRDB+SQLCipher build); the key lives in your

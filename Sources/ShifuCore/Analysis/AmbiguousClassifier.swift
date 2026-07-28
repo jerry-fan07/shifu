@@ -95,8 +95,8 @@ public enum AmbiguousClassifier {
     }
 
     /// Splits samples into batches whose rendered prompt fits the token
-    /// budget, so small-window backends (Foundation Models: 4k total) never
-    /// see an oversized prompt. An over-budget lone sample still gets its own
+    /// budget, so the backend never sees an oversized prompt however dense
+    /// the day's text was. An over-budget lone sample still gets its own
     /// batch — its text is already capped by pendingSamples.
     static func batches(
         _ samples: [BlockSample], ongoingTopics: [String] = [], promptTokenBudget: Int
