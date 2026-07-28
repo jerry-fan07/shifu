@@ -142,11 +142,16 @@ order, and some of that ordering is load-bearing:
    applied only above `confidenceFloor` (0.6).
 4. **`SemanticTaskGrouper.run`** — the LLM assigns evidence-bearing blocks to
    intent-level tasks (design.md §5.3): each batch carries a roster of recent
-   `sem:` tasks to join plus the blocks' titles/topics/text. Confident verdicts
-   write `activities.sem_key` and upsert `tasks` rows (LLM title + `gist`,
-   never overwriting a user rename); unplaced blocks burn one of 3
+   `sem:` tasks to join — with the history that makes it a weighted prior
+   (minutes, days active, days since, top sources) — the already-grouped
+   blocks around the batch as stickiness context, and the blocks' own
+   titles/pages/topics/text sampled across their whole span. Confident
+   verdicts write `activities.sem_key` and upsert `tasks` rows (LLM title +
+   `gist`, never overwriting a user rename); unplaced blocks burn one of 3
    `sem_attempts`. Fail-soft: no backend or a failed call leaves blocks
-   mechanically grouped.
+   mechanically grouped. What the model is *shown* lives in
+   `SemanticTaskEvidence.swift`; the pipeline around it in
+   `SemanticTaskGrouper.swift`.
 5. **`TaskGrouper.run`** — groups activities into tasks by a stable key
    (`sem_key` when the semantic pass set one, else `topic:` → `domain:` →
    `app:`) and rebuilds per-day `task_logs`.
@@ -187,7 +192,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | What counts as one continuous block | [`Analysis/Sessionizer.swift`](Sources/ShifuCore/Analysis/Sessionizer.swift) — `gapThresholdMs` |
 | How blocks become the ledger | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) |
 | How activities group into tasks | [`Analysis/TaskGrouper.swift`](Sources/ShifuCore/Analysis/TaskGrouper.swift) — `key(topic:domain:appBundle:)` |
-| Intent-level (LLM) task grouping, its prompt and gates | [`Analysis/SemanticTaskGrouper.swift`](Sources/ShifuCore/Analysis/SemanticTaskGrouper.swift) |
+| Intent-level (LLM) task grouping, its gates and batching | [`Analysis/SemanticTaskGrouper.swift`](Sources/ShifuCore/Analysis/SemanticTaskGrouper.swift) |
+| What that model is shown — roster prior, stickiness context, block evidence, the prompt | [`Analysis/SemanticTaskEvidence.swift`](Sources/ShifuCore/Analysis/SemanticTaskEvidence.swift) |
 | Theme clustering (the high-level mode) + running narratives | [`Analysis/ThemeClusterer.swift`](Sources/ShifuCore/Analysis/ThemeClusterer.swift) |
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift) |
@@ -325,7 +331,7 @@ This is where each is actually enforced, and what would catch a regression.
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
 | 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
-| 7 | LLM prompts are token-budgeted | `AmbiguousClassifier.batches` and `SemanticTaskGrouper.run`'s batch loop size by `LLMTokens.estimate`, never item count | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem` |
+| 7 | LLM prompts are token-budgeted | `AmbiguousClassifier.batches` and `SemanticTaskGrouper.run`'s batch loop size by `LLMTokens.estimate`, never item count; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
 **Invariants 4 and 5 have no automated guard** because both live in `shifud`,

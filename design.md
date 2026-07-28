@@ -235,7 +235,7 @@ A: `SCScreenshotManager` (macOS 14+).
 
 The vault is a work database, not just flashcards:
 
-- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence (titles, topics, text samples) plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, projectless tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
+- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The prompt is built around what a human watching over your shoulder actually uses (`SemanticTaskEvidence.swift`). **The roster is a weighted prior, not a list of names**: every entry carries its minutes and days logged over the 14-day window, days since last worked, and the domains its time actually went to — so a `partiful.com` block matches the task that already lives there, not merely the one whose title reads closest. **Work is sticky**: the already-grouped blocks on either side of a batch ride along read-only (id-less, so they can't be re-assigned), with the instruction to prefer the surrounding task when a block's own evidence is thin — the strongest cue a human has, since switches are punctuated events. That prior is explicitly **fenced against interruptions**: a short messaging/social/entertainment detour between two stretches of one task is a break from it, never part of it — the *return* is the continuity evidence, not the detour. **The evidence per block is denser at the same token cost**: observations are sampled across the block's whole span (first, last, and an even fan between) instead of its opening minutes, and browser blocks carry sanitized page identities (`github.com/org/repo` — origin plus two path segments, query and fragment dropped, then re-redacted, since `observations.url` is stored raw) instead of the bare host. Everything stays token-budgeted (CLAUDE.md invariant 7): backends under 16k context get the compact tier — the twelve heaviest tasks, names and gists only, and a shorter context section — which keeps on-device Foundation Models' 4k window in budget. The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, projectless tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
 - **Projects**: user-created groups of tasks with time totals — direct goals (a learning goal, a work effort). Assigning a task to a project also scopes its notes into the project's review deck (§5.2).
 - **Vault tab** shows today's compiled log (most recently worked task first), the task list with its latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
@@ -418,6 +418,62 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
   domain/app keys — fixed in §5.3 with prompt-anchored topics, the 5-min
   substance gate, and prune, so the fallback path can't refill the roster
   with debris.
+- **Human-observer priors for task grouping — the deferred half.** A human
+  watching someone work groups it better than the pipeline does, and the
+  mechanisms are nameable: a *weighted* prior over known tasks (with reserved
+  mass for "this is new"), *stickiness* (whatever was happening a minute ago
+  probably still is), *retrospective revision* (re-reading ambiguous evidence
+  once later evidence lands), *intent-proximal evidence* (dynamics, not
+  snapshots), and *the ability to ask*. Shipped 2026-07-28 in §5.3: the
+  weighted roster, fenced stickiness, spread evidence sampling, and page
+  identities. Still deferred, roughly in value order:
+  - **Dormant-task recall** — candidate-driven retrieval past the 14-day
+    roster cliff: match a batch's domains/topics against all-time task sources
+    (SQL join, or generalize `TaskMerges.activeTaskData`) and inject the top-k
+    as "Dormant tasks (resume if continued)". Monthly recurrences currently
+    re-mint duplicates instead of resuming.
+  - **Interruption annotation (no LLM)** — sandwich detection over the tiled
+    timeline: middle block short (≈≤5 min, threshold tuned on the dogfood DB),
+    category social/communication/entertainment or task-less, same task on
+    both sides, contiguous tiling (an idle hole is a *break*, not a
+    distraction) → link it to the task it interrupted (`interrupted_task_id`,
+    or compute-on-read in the Time tab first, no migration). Gives
+    interruption counts and focus fragmentation per task, and a natural Work
+    Mode metric later. The grouper's fence keeps these blocks *out* of the
+    task; this is what would record that they happened *during* it.
+  - **End-of-day revision sweep** — one extra batch re-offering omitted /
+    low-confidence blocks (`sem_attempts > 0 AND sem_key IS NULL`) with the
+    day's final task list as hindsight. Inference today is forward-only
+    filtering; humans smooth.
+  - **Unified roster** — offer recent *mechanical* tasks (`topic:`/`domain:`/
+    `app:`) in the semantic roster, marked as such, so the semantic layer
+    absorbs them instead of duplicating them (cleanup falls to weekly merge
+    suggestions today).
+  - **Corrections as memory** — store rename/merge/assign events as
+    (evidence → task) exemplars and inject the top-k relevant into prompts;
+    needs the missing per-block "belongs to task…" correction path (no
+    `source='user'` write path exists, and the `rules` table has no writer).
+    Highest long-term value, and product-level rather than analyzer-level.
+  - **Ask-when-uncertain** — at most one menu-bar question a day about the
+    biggest unresolved cluster; answers feed the correction memory above.
+    (`shifu log` is the proactive twin that already exists.)
+  - **Hierarchy context** — one line per active theme (the 30-day theme roster
+    already exists) at the top of the grouping prompt.
+  - **Engagement flag** (first capture-side change, needs a migration) — a
+    boolean per observation from the `CGEventSource.secondsSinceLastInput()`
+    the idle gate already reads. No event tap, no counts, no content;
+    separates producing/reading from passive playback and gives "omit idle
+    browsing" real signal.
+  - **Document identity** — read `AXDocument` for document-based apps into a
+    `document` column (basename + parent dir, path exclusions extended), so
+    tasks anchor to artifacts ("thesis.tex" across weeks).
+  - **Changed-text sampling** — prefer observations whose SimHash differs from
+    their predecessor (the screen actually changed); a sampling-time filter on
+    top of the spread sampling that shipped.
+  - **Deliberately not**: keystroke/clipboard/input-content capture (hard
+    non-goal, §1), event counting beyond the engagement boolean, and meeting
+    content. Calendar integration stays deferred above; ask-when-uncertain is
+    its cheap cousin.
 - ~~LLM-written narrative work logs~~ — shipped in vault phase V2
   (vault-features.md §2.1): per-(task, day) work notes whose `## Sessions`
   prose regenerates only when the day's activities change (content-hash gate
