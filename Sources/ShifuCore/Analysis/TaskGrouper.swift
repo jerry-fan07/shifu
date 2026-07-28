@@ -6,6 +6,14 @@ import GRDB
 /// Idempotent over a window, like LedgerBuilder: tasks are keyed stably, day
 /// logs are recomputed from scratch for every day the window touches.
 public enum TaskGrouper {
+    /// A key never seen before earns a task row only once the window shows
+    /// this much time behind it. Passing subjects — a glanced-at domain, a
+    /// topic worded once — stay unassigned instead of minting a permanent
+    /// task; the idempotent window re-runs grouping, so a key that keeps
+    /// accruing time mints and picks up its earlier blocks retroactively.
+    /// Keys with an existing task always attach, however small the block.
+    public static let minNewTaskMs: Int64 = 5 * 60_000
+
     public struct Summary: Equatable, Sendable {
         public var tasksTouched: Int
         public var logsWritten: Int
@@ -28,6 +36,20 @@ public enum TaskGrouper {
     /// Initial display name for a new task; the user can rename it later.
     static func displayName(topic: String?, domain: String?, appBundle: String) -> String {
         topic ?? domain ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
+    }
+
+    /// True while a task still wears the name run() derived from its key —
+    /// i.e. the user never renamed it. TaskStore.prune only ever deletes
+    /// default-named tasks.
+    public static func isDefaultName(_ name: String, forKey key: String) -> Bool {
+        if key.hasPrefix("topic:") { return slug(name) == String(key.dropFirst(6)) }
+        if key.hasPrefix("domain:") { return name.lowercased() == String(key.dropFirst(7)) }
+        if key.hasPrefix("app:") {
+            let bundle = key.dropFirst(4)
+            let lastComponent = bundle.split(separator: ".").last.map(String.init) ?? String(bundle)
+            return name.lowercased() == lastComponent
+        }
+        return false
     }
 
     public static func slug(_ text: String) -> String {
@@ -92,8 +114,9 @@ public enum TaskGrouper {
     }
 
     /// Assigns `activities.task_id` for the window, creating tasks as needed
-    /// (existing names are never overwritten — renames stick), then rebuilds
-    /// task logs for every local day the window's activities touch.
+    /// (existing names are never overwritten — renames stick; new keys must
+    /// clear the minNewTaskMs substance gate), then rebuilds task logs for
+    /// every local day the window's activities touch.
     @discardableResult
     public static func run(
         database: ShifuDatabase, from: Int64, to: Int64,
@@ -107,6 +130,7 @@ public enum TaskGrouper {
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
 
         return try database.queue.write { db in
+            var tasksTouched = 0
             for itemKey in res.order {
                 guard let group = res.groups[itemKey] else { continue }
                 let lastActive = group.map(\.endedAt).max() ?? nowMs
@@ -118,6 +142,8 @@ public enum TaskGrouper {
                         sql: "UPDATE tasks SET last_active_at = MAX(last_active_at, ?) WHERE id = ?",
                         arguments: [lastActive, taskID])
                 } else {
+                    let groupMs = group.reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
+                    guard groupMs >= minNewTaskMs else { continue }
                     let first = group[0]
                     var task = WorkTask(
                         key: itemKey,
@@ -132,13 +158,14 @@ public enum TaskGrouper {
                 try db.execute(
                     sql: "UPDATE activities SET task_id = ? WHERE id IN (\(placeholders))",
                     arguments: StatementArguments([taskID] + ids))
+                tasksTouched += 1
             }
 
             var logsWritten = 0
             for day in days {
                 logsWritten += try rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
             }
-            return Summary(tasksTouched: res.groups.count, logsWritten: logsWritten)
+            return Summary(tasksTouched: tasksTouched, logsWritten: logsWritten)
         }
     }
 

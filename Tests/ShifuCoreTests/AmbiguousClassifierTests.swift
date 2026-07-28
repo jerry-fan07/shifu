@@ -12,6 +12,8 @@ private struct MockBackend: LLMBackend {
 /// Answers every block mentioned in the prompt and records each call, so
 /// tests can assert how run() chunks work across a small context window.
 private final class RecordingBackend: LLMBackend, @unchecked Sendable {
+    static let topic = "synthetic anchor topic"
+
     let name = "recording"
     let contextWindowTokens: Int
     private let lock = NSLock()
@@ -25,7 +27,7 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
             line.hasPrefix("id=") ? Int64(line.dropFirst(3).prefix(while: \.isNumber)) : nil
         }
         let objects = ids.map {
-            #"{"id": \#($0), "category": "learning", "confidence": 0.9, "topic": "t"}"#
+            #"{"id": \#($0), "category": "learning", "confidence": 0.9, "topic": "\#(Self.topic)"}"#
         }
         return "[\(objects.joined(separator: ","))]"
     }
@@ -119,6 +121,38 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         for prompt in backend.prompts {
             #expect(LLMTokens.estimate(prompt) <= 2_600 - AmbiguousClassifier.responseTokenReserve)
         }
+        // A topic coined in the first batch anchors every later one, so one
+        // effort split across batches cannot come back with two wordings.
+        #expect(!backend.prompts[0].contains("- \(RecordingBackend.topic)"))
+        for prompt in backend.prompts.dropFirst() {
+            #expect(prompt.contains("- \(RecordingBackend.topic)"))
+        }
+    }
+
+    @Test func promptAnchorsOngoingTopicsVerbatim() {
+        let sample = AmbiguousClassifier.BlockSample(
+            id: 1, appBundle: "com.apple.Safari", domain: "united.com",
+            titles: [], textSample: "seat selection")
+        let anchored = AmbiguousClassifier.prompt(
+            for: [sample], ongoingTopics: ["booking flights to tokyo"])
+        #expect(anchored.contains("- booking flights to tokyo"))
+        #expect(anchored.contains("verbatim"))
+        #expect(!AmbiguousClassifier.prompt(for: [sample]).contains("Ongoing tasks"))
+    }
+
+    @Test func ongoingTopicsDedupeBySlugNewestFirst() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            for (topic, endedAt) in [("Debugging Capture Daemon", Int64(1_000_000)),
+                                     ("debugging capture daemon", Int64(2_000_000)),
+                                     ("booking flights", Int64(3_000_000))] {
+                var activity = Activity(startedAt: endedAt - 600_000, endedAt: endedAt,
+                                        appBundle: "com.app", category: .work, topic: topic)
+                try activity.insert(sqlite)
+            }
+        }
+        let topics = try AmbiguousClassifier.ongoingTopics(database: db, before: 4_000_000)
+        #expect(topics == ["booking flights", "debugging capture daemon"])
     }
 
     @Test func runAppliesConfidentVerdictsOnly() async throws {

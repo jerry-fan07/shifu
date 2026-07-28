@@ -234,7 +234,7 @@ A: `SCScreenshotManager` (macOS 14+).
 
 The vault is a work database, not just flashcards:
 
-- **Tasks**: the analyzer groups activities into ongoing tasks by a stable key — the classified topic when there is one, else domain, else app (`TaskGrouper`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names).
+- **Tasks**: the analyzer groups activities into ongoing tasks by a stable key — the classified topic when there is one, else domain, else app (`TaskGrouper`). Keys only recur if topic *wording* recurs, so the classifier prompt is anchored: it lists recent topics and the model repeats one verbatim when a block continues that effort, and topics name the user's intent ("booking flights to tokyo"), not the page passing on screen. A key never seen before mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`) — passing subjects stay task-less (their time still counts in the ledger). Sub-threshold, never-renamed, projectless tasks inactive for a week are pruned (`TaskStore.prune`). Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
 - **Projects**: user-created groups of tasks with time totals — direct goals (a learning goal, a work effort). Assigning a task to a project also scopes its notes into the project's review deck (§5.2).
 - **Vault tab** shows today's compiled log, the most recent tasks with their latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
@@ -385,7 +385,13 @@ Key tables: `observations` (§3.5), `activities` (block, category, topic, confid
   at ≥0.9 precision ≈0.8 even against lexical labels, and the top-scoring
   "false" pairs were in fact true fragmentations (same GitHub page under two
   keys) — with the overlapping-sources filter and user confirmation it fails
-  safe. Decide V3 scope (suggestions-only vs wait) before building.
+  safe. Decide V3 scope (suggestions-only vs wait) before building. (V3
+  shipped suggestions-only. The 2026-07 dogfood explosion — ~100 tasks/day,
+  most under 5 min — traced to the lexical layer itself, not to missing
+  embeddings: unanchored per-block topic wording plus unconditional task
+  minting for one-off domain/app keys. Fixed in §5.3 with prompt-anchored
+  topics, the 5-min substance gate, and prune; auto-assignment stays
+  deferred.)
 - ~~LLM-written narrative work logs~~ — shipped in vault phase V2
   (vault-features.md §2.1): per-(task, day) work notes whose `## Sessions`
   prose regenerates only when the day's activities change (content-hash gate

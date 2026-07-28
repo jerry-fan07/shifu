@@ -9,6 +9,13 @@ public enum AmbiguousClassifier {
     public static let batchLimit = 20
     public static let textSampleBytes = 1_200
     public static let responseTokenReserve = 2_000
+    /// How many recent topics the prompt lists as anchors, and how far back
+    /// they're pulled from. Task keys only recur if topic *wording* recurs
+    /// (TaskGrouper.key slugs the text), so the prompt shows the model what
+    /// wording is already in play instead of letting it coin a fresh phrase
+    /// per block.
+    public static let maxOngoingTopics = 20
+    static let ongoingTopicWindowMs: Int64 = 14 * 86_400_000
     /// Give a stubborn block a few tries at a confident verdict, then stop
     /// re-billing it until its text changes (design.md §4.2, §12). The count
     /// survives the analyzer's idempotent rebuild via LedgerBuilder's carry;
@@ -40,19 +47,23 @@ public enum AmbiguousClassifier {
 
     // MARK: - Prompt (pure, testable)
 
-    static func prompt(for blocks: [BlockSample]) -> String {
+    static func prompt(for blocks: [BlockSample], ongoingTopics: [String] = []) -> String {
         let categories = Category.allCases
             .filter { $0 != .privateTime && $0 != .unclassified }
             .map(\.rawValue).joined(separator: ", ")
         var lines: [String] = [
             "Classify each screen-time block into exactly one category: \(categories).",
-            "Also give a short free-text topic (3-6 words) describing what the user was doing.",
+            "Also give a short topic (3-6 words) naming the user's ongoing task or goal",
+            "(\"booking flights to tokyo\"), not the page or subject passing on screen.",
             "Respond with ONLY a JSON array, one object per block:",
             #"[{"id": 1, "category": "work", "confidence": 0.9, "topic": "debugging capture daemon"}]"#,
-            "Confidence is 0-1. Use low confidence when the evidence is thin.",
-            "",
-            "Blocks:"
+            "Confidence is 0-1. Use low confidence when the evidence is thin."
         ]
+        if !ongoingTopics.isEmpty {
+            lines.append("Ongoing tasks — when a block continues one, repeat its topic verbatim:")
+            lines.append(contentsOf: ongoingTopics.map { "- \($0)" })
+        }
+        lines.append(contentsOf: ["", "Blocks:"])
         for block in blocks {
             var desc = "id=\(block.id) app=\(block.appBundle)"
             if let domain = block.domain { desc += " domain=\(domain)" }
@@ -71,12 +82,16 @@ public enum AmbiguousClassifier {
     /// budget, so small-window backends (Foundation Models: 4k total) never
     /// see an oversized prompt. An over-budget lone sample still gets its own
     /// batch — its text is already capped by pendingSamples.
-    static func batches(_ samples: [BlockSample], promptTokenBudget: Int) -> [[BlockSample]] {
+    static func batches(
+        _ samples: [BlockSample], ongoingTopics: [String] = [], promptTokenBudget: Int
+    ) -> [[BlockSample]] {
         var result: [[BlockSample]] = []
         var current: [BlockSample] = []
         for sample in samples {
             current.append(sample)
-            if current.count > 1, LLMTokens.estimate(prompt(for: current)) > promptTokenBudget {
+            if current.count > 1,
+               LLMTokens.estimate(prompt(for: current, ongoingTopics: ongoingTopics))
+                   > promptTokenBudget {
                 current.removeLast()
                 result.append(current)
                 current = [sample]
@@ -84,6 +99,32 @@ public enum AmbiguousClassifier {
         }
         if !current.isEmpty { result.append(current) }
         return result
+    }
+
+    /// Distinct topics the recent ledger already carries (newest first,
+    /// deduped by slug so two casings of one topic surface once). These are
+    /// the prompt's anchors: the wording that must recur for the block to
+    /// land in an existing task rather than mint a new one.
+    public static func ongoingTopics(
+        database: ShifuDatabase, before: Int64, limit: Int = maxOngoingTopics
+    ) throws -> [String] {
+        let rows = try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT topic, MAX(ended_at) AS last_seen FROM activities
+                WHERE topic IS NOT NULL AND category != 'private' AND ended_at > ?
+                GROUP BY topic ORDER BY last_seen DESC LIMIT ?
+                """, arguments: [before - ongoingTopicWindowMs, limit * 2])
+        }
+        var seenSlugs: Set<String> = []
+        var topics: [String] = []
+        for row in rows {
+            let topic: String = row["topic"]
+            let slug = TaskGrouper.slug(topic)
+            guard !slug.isEmpty, seenSlugs.insert(slug).inserted else { continue }
+            topics.append(topic)
+            if topics.count == limit { break }
+        }
+        return topics
     }
 
     /// Parses the model's JSON (tolerating surrounding prose / code fences).
@@ -155,12 +196,22 @@ public enum AmbiguousClassifier {
         guard !samples.isEmpty else { return 0 }
 
         let promptBudget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        var anchors = try ongoingTopics(database: database, before: to)
+        var anchorSlugs = Set(anchors.map(TaskGrouper.slug))
+        var remaining = samples[...]
         var updated = 0
         // Verdicts apply per batch: a mid-run failure keeps earlier updates
-        // and leaves the rest ambiguous for the next run.
-        for batch in batches(samples, promptTokenBudget: promptBudget) {
+        // and leaves the rest ambiguous for the next run. Batches are cut one
+        // at a time so a topic coined for an early block anchors the later
+        // ones — the same effort in one window must not get two wordings.
+        while !remaining.isEmpty {
+            guard let batch = batches(Array(remaining), ongoingTopics: anchors,
+                                      promptTokenBudget: promptBudget).first
+            else { break }
+            remaining = remaining.dropFirst(batch.count)
             let response = try await backend.complete(
-                prompt: prompt(for: batch), maxTokens: responseTokenReserve)
+                prompt: prompt(for: batch, ongoingTopics: anchors),
+                maxTokens: responseTokenReserve)
             let batchIDs = Set(batch.map(\.id))
             let confident = parseVerdicts(response).filter {
                 batchIDs.contains($0.id) && $0.confidence >= confidenceFloor
@@ -187,6 +238,13 @@ public enum AmbiguousClassifier {
                         arguments: [id])
                 }
                 return applied
+            }
+            for verdict in confident {
+                guard let topic = verdict.topic else { continue }
+                let slug = TaskGrouper.slug(topic)
+                guard !slug.isEmpty, anchorSlugs.insert(slug).inserted else { continue }
+                anchors.insert(topic, at: 0)
+                if anchors.count > maxOngoingTopics { anchors.removeLast() }
             }
         }
         return updated

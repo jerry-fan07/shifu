@@ -169,6 +169,13 @@ The lexical key works but fragments meaning: "debugging capture daemon" and
 "fixing shifud AX observer" are one effort with two topic slugs, so today they
 become two tasks. Fix with embeddings, incrementally and reversibly:
 
+> **Status (2026-07):** §5.1 auto-assignment stays deferred — the NLEmbedding
+> spike showed separation too weak (design.md §12); §5.2–5.3 shipped. The
+> fragmentation itself was fixed at the lexical layer instead: the classifier
+> prompt anchors topic wording to recent topics, new keys must clear a 5-min
+> substance gate before minting a task, and stale sub-threshold tasks are
+> pruned (design.md §5.3).
+
 ### 5.1 Assignment (analyzer, per new activity block)
 
 1. Build a **block signature**: topic + window titles sample + domain, one

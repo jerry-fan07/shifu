@@ -85,6 +85,16 @@ try TaskMerges.writeSignatures(database: database, from: from, to: nowMs)
 
 let vault = VaultStore(database: database)
 
+// Prune noise tasks (design.md §5.3): sub-threshold, never renamed, no
+// project, stale for a week — debris the substance gate now stops at the
+// source. Their time stays in the ledger; logs and notes recompile.
+do {
+    let pruned = try TaskStore.prune(database: database, vault: vault)
+    if pruned > 0 { print("tasks: pruned \(pruned) noise tasks") }
+} catch {
+    print("task prune failed (retries next run): \(error)")
+}
+
 // Knowledge extraction over learning/novel-work blocks (§5.1).
 if let backend {
     do {
