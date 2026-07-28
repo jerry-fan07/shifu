@@ -121,7 +121,7 @@ struct VaultTabView: View {
                 }
             }
 
-            Section("Tasks") {
+            Section(store.taskCountLabel.isEmpty ? "Tasks" : "Tasks · \(store.taskCountLabel)") {
                 // Merge suggestions inline above the tasks they concern
                 // (vault-features.md §5.2): one click merges, never automatic.
                 ForEach(store.mergeSuggestions) { suggestion in
@@ -211,6 +211,12 @@ struct VaultTabView: View {
             }
             .fixedSize()
             .help("How far back the list reaches")
+
+            Picker("Minimum", selection: $store.taskFilter.minimum) {
+                ForEach(TaskMinimum.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .fixedSize()
+            .help("Hide tasks you spent barely any time on")
 
             Picker("Sort", selection: $store.taskFilter.sort) {
                 Text("Most recent").tag(TaskStore.Sort.mostRecent)

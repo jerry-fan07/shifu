@@ -67,13 +67,20 @@ public enum TaskStore {
         /// this instant. 0 means all time, which is also what makes the
         /// clipped `totalMs` below collapse to the lifetime total.
         public var since: Int64
+        /// Drops tasks with less than this much time inside the window. The
+        /// grouper mints a task per distinct subject, so a real roster is
+        /// mostly one-off minutes; without this the list is unreadable
+        /// whatever the range.
+        public var minimumMs: Int64
         public var projectScope: ProjectScope
         public var sort: Sort
         public var limit: Int
 
-        public init(since: Int64 = 0, projectScope: ProjectScope = .any,
+        public init(since: Int64 = 0, minimumMs: Int64 = 0,
+                    projectScope: ProjectScope = .any,
                     sort: Sort = .mostRecent, limit: Int = 12) {
             self.since = since
+            self.minimumMs = minimumMs
             self.projectScope = projectScope
             self.sort = sort
             self.limit = limit
@@ -90,7 +97,52 @@ public enum TaskStore {
     public static func recentTasks(
         database: ShifuDatabase, filter: TaskFilter = TaskFilter()
     ) throws -> [Overview] {
-        // `since` fills the two clip bounds and the recency cutoff.
+        let matching = matchingTasksSQL(filter)
+        // total_ms is an output alias, which SQLite allows ORDER BY to name.
+        let order = switch filter.sort {
+        case .mostRecent: "last_active_at DESC"
+        case .mostTime: "total_ms DESC, last_active_at DESC"
+        }
+
+        return try database.queue.read { db in
+            try Row.fetchAll(
+                db, sql: "SELECT * FROM \(matching.sql) ORDER BY \(order) LIMIT ?",
+                arguments: StatementArguments(matching.arguments + [filter.limit])
+            ).map { row in
+                Overview(
+                    task: WorkTask(
+                        id: row["id"], key: row["key"], name: row["name"],
+                        projectID: row["project_id"], createdAt: row["created_at"],
+                        lastActiveAt: row["last_active_at"]),
+                    projectName: row["project_name"],
+                    totalMs: row["total_ms"],
+                    latestSummary: row["latest_summary"])
+            }
+        }
+    }
+
+    /// How many tasks the filter admits before `limit` truncates. The Task log
+    /// shows this beside the row count: with a few hundred tasks in every
+    /// range, an unlabelled capped list looks identical whatever you pick, and
+    /// the filters read as broken.
+    public static func matchingTaskCount(
+        database: ShifuDatabase, filter: TaskFilter
+    ) throws -> Int {
+        let matching = matchingTasksSQL(filter)
+        return try database.queue.read { db in
+            try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM \(matching.sql)",
+                arguments: StatementArguments(matching.arguments)) ?? 0
+        }
+    }
+
+    /// The filtered set as a subquery, shared by the page and its count so the
+    /// two can't drift. Time is summed inside the window (activities that
+    /// straddle `since` are clipped to it), which is also what `minimumMs`
+    /// measures against.
+    private static func matchingTasksSQL(
+        _ filter: TaskFilter
+    ) -> (sql: String, arguments: [any DatabaseValueConvertible]) {
         var arguments: [any DatabaseValueConvertible] = [
             filter.since, filter.since, filter.since
         ]
@@ -104,38 +156,20 @@ public enum TaskStore {
         case .unassigned:
             projectClause = "AND t.project_id IS NULL"
         }
-        arguments.append(filter.limit)
-        // total_ms is an output alias, which SQLite allows ORDER BY to name.
-        let order = switch filter.sort {
-        case .mostRecent: "t.last_active_at DESC"
-        case .mostTime: "total_ms DESC, t.last_active_at DESC"
-        }
-
-        return try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
-                       p.name AS project_name,
-                       COALESCE((SELECT SUM(a.ended_at - MAX(a.started_at, ?))
-                                 FROM activities a
-                                 WHERE a.task_id = t.id AND a.ended_at > ?), 0) AS total_ms,
-                       (SELECT l.summary FROM task_logs l WHERE l.task_id = t.id
-                        ORDER BY l.day_start DESC LIMIT 1) AS latest_summary
-                FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-                WHERE t.last_active_at >= ? \(projectClause)
-                ORDER BY \(order) LIMIT ?
-                """,
-                arguments: StatementArguments(arguments)
-            ).map { row in
-                Overview(
-                    task: WorkTask(
-                        id: row["id"], key: row["key"], name: row["name"],
-                        projectID: row["project_id"], createdAt: row["created_at"],
-                        lastActiveAt: row["last_active_at"]),
-                    projectName: row["project_name"],
-                    totalMs: row["total_ms"],
-                    latestSummary: row["latest_summary"])
-            }
-        }
+        arguments.append(filter.minimumMs)
+        let sql = """
+            (SELECT t.id, t.key, t.name, t.project_id, t.created_at, t.last_active_at,
+                    p.name AS project_name,
+                    COALESCE((SELECT SUM(a.ended_at - MAX(a.started_at, ?))
+                              FROM activities a
+                              WHERE a.task_id = t.id AND a.ended_at > ?), 0) AS total_ms,
+                    (SELECT l.summary FROM task_logs l WHERE l.task_id = t.id
+                     ORDER BY l.day_start DESC LIMIT 1) AS latest_summary
+             FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+             WHERE t.last_active_at >= ? \(projectClause))
+            WHERE total_ms >= ?
+            """
+        return (sql, arguments)
     }
 
     /// Compiled work log for one local day, most recently worked task first

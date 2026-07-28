@@ -233,6 +233,32 @@ import Testing
         #expect(loose.map(\.task.name) == ["short late task"])
     }
 
+    /// The duration floor drops short tasks, and the match count reports the
+    /// filtered total rather than the truncated page — the Task log's "50 of
+    /// 364" line depends on the two agreeing.
+    @Test func minimumTimeFiltersAndCountIgnoresLimit() throws {
+        let database = try makeDB()
+        for hour in 0..<4 {
+            try insert(database, start: day1.addingTimeInterval(Double(hour) * 3_600),
+                       minutes: 2, topic: "brief task \(hour)")
+        }
+        try insert(database, start: day1.addingTimeInterval(10 * 3_600), minutes: 40,
+                   topic: "the real task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let substantial = TaskStore.TaskFilter(minimumMs: 300_000)
+        let kept = try TaskStore.recentTasks(database: database, filter: substantial)
+        #expect(kept.map(\.task.name) == ["the real task"])
+        #expect(try TaskStore.matchingTaskCount(
+            database: database, filter: substantial) == 1)
+
+        // The count is of everything that matches, not of the page returned.
+        let capped = TaskStore.TaskFilter(limit: 2)
+        #expect(try TaskStore.recentTasks(database: database, filter: capped).count == 2)
+        #expect(try TaskStore.matchingTaskCount(database: database, filter: capped) == 5)
+    }
+
     /// The day log leads with the most recently worked task, not the longest —
     /// the Vault tab's "Today" list is a recency feed.
     @Test func dayLogLeadsWithTheMostRecentTask() throws {

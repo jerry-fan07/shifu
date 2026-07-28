@@ -20,9 +20,16 @@ final class LedgerStore: ObservableObject {
     /// narrowing the Vault tab's list must never touch it — hence the separate
     /// `filteredTasks` below.
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
-    /// The Task log's list, narrowed by `taskFilter`.
+    /// The Task log's list, narrowed by `taskFilter` and capped at
+    /// `taskListLimit`.
     @Published private(set) var filteredTasks: [TaskStore.Overview] = []
+    /// How many tasks the filter admits before that cap — see `taskCountLabel`.
+    @Published private(set) var matchingTaskCount = 0
     @Published var taskFilter = TaskListFilter()
+
+    /// Rows the Task log renders at once. Every row carries an editable name
+    /// field and a project menu, so this is a rendering budget, not a data one.
+    static let taskListLimit = 50
     @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
     @Published private(set) var projectSuggestions: [TaskMerges.PendingProject] = []
 
@@ -195,8 +202,21 @@ final class LedgerStore: ObservableObject {
     /// past midnight rolls over with the day.
     func loadTasks() {
         guard let database = try? db() else { return }
+        let filter = taskFilter.core(limit: Self.taskListLimit)
         filteredTasks = (try? TaskStore.recentTasks(
-            database: database, filter: taskFilter.core(limit: 50))) ?? []
+            database: database, filter: filter)) ?? []
+        matchingTaskCount = (try? TaskStore.matchingTaskCount(
+            database: database, filter: filter)) ?? filteredTasks.count
+    }
+
+    /// "12 tasks", or "50 of 364" when the cap is hiding the rest — without
+    /// this a capped, recency-sorted list looks the same under every range.
+    var taskCountLabel: String {
+        // Before the first load both are 0; say nothing rather than "0 tasks".
+        if matchingTaskCount == 0 && filteredTasks.isEmpty { return "" }
+        return matchingTaskCount > filteredTasks.count
+            ? "\(filteredTasks.count) of \(matchingTaskCount)"
+            : "\(matchingTaskCount) task\(matchingTaskCount == 1 ? "" : "s")"
     }
 
     /// Everything the task detail page shows, in one read.
@@ -386,18 +406,42 @@ enum TaskRange: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-/// The Task log's filter bar (design.md §5.3): how far back, how to order,
-/// which project. Session state — deliberately not persisted, so reopening
-/// the window always shows the unfiltered list.
+/// The floor on time spent, which is what makes a real roster readable: the
+/// grouper mints a task per subject, so most of them are a stray minute.
+enum TaskMinimum: String, CaseIterable, Identifiable, Hashable {
+    case any = "Any length"
+    case oneMinute = "1 min+"
+    case fiveMinutes = "5 min+"
+    case halfHour = "30 min+"
+
+    var id: String { rawValue }
+
+    var ms: Int64 {
+        switch self {
+        case .any: return 0
+        case .oneMinute: return 60_000
+        case .fiveMinutes: return 300_000
+        case .halfHour: return 1_800_000
+        }
+    }
+}
+
+/// The Task log's filter bar (design.md §5.3): how far back, how long, how to
+/// order, which project. Session state — deliberately not persisted, so
+/// reopening the window always shows the unfiltered list.
 struct TaskListFilter: Equatable {
     var range: TaskRange = .all
+    /// Defaults to a floor rather than `.any`: an unfiltered roster is mostly
+    /// stray minutes, and the header's "N of M" keeps the exclusion visible
+    /// rather than silent.
+    var minimum: TaskMinimum = .fiveMinutes
     var sort: TaskStore.Sort = .mostRecent
     var project: TaskStore.ProjectScope = .any
 
     /// Whether the list is showing fewer tasks than exist. Sort reorders
     /// rather than narrows, so it stays out of this — an empty list under a
     /// non-default sort means no data, not an over-tight filter.
-    var narrowsResults: Bool { range != .all || project != .any }
+    var narrowsResults: Bool { range != .all || minimum != .any || project != .any }
 
     /// Whether anything differs from the default — drives the "clear"
     /// affordance, which should also undo a non-default sort.
@@ -407,6 +451,7 @@ struct TaskListFilter: Equatable {
         -> TaskStore.TaskFilter {
         TaskStore.TaskFilter(
             since: range.since(now: now, calendar: calendar),
+            minimumMs: minimum.ms,
             projectScope: project, sort: sort, limit: limit)
     }
 }
