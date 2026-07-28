@@ -8,40 +8,26 @@ struct ThemeRoute: Hashable {
 }
 
 /// The Vault tab's *Themes* mode (design.md §5.3): the user's broad ongoing
-/// initiatives, most recently active first.
+/// initiatives, most recently active first, laid out as a grid of cards
+/// rather than a vertical list.
 struct ThemeListView: View {
     @EnvironmentObject private var store: LedgerStore
 
+    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 340), spacing: 12)]
+
     var body: some View {
-        List {
-            ForEach(store.themes) { theme in
-                NavigationLink(value: ThemeRoute(id: theme.id)) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(theme.name).bold()
-                            Spacer()
-                            if theme.weekMs > 0 {
-                                Text("\(LedgerStore.hours(theme.weekMs)) this week")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(LedgerStore.hours(theme.totalMs))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        if let gist = theme.gist, !gist.isEmpty {
-                            Text(gist)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(store.themes) { theme in
+                    NavigationLink(value: ThemeRoute(id: theme.id)) {
+                        ThemeCardView(theme: theme)
                     }
+                    .buttonStyle(.plain)
                 }
-                .padding(.vertical, 2)
             }
+            .padding(16)
         }
-        .listStyle(.inset)
-        // Overlaid rather than placed as a list row so it centers in the
+        // Overlaid rather than placed inside the grid so it centers in the
         // full content area instead of hugging the top-leading corner.
         .overlay {
             if store.themes.isEmpty {
@@ -53,6 +39,46 @@ struct ThemeListView: View {
             }
         }
         .onAppear { store.refresh() }
+    }
+}
+
+/// One theme as a rectangular card in the Themes grid: name, gist, and
+/// time footer, uniform height so the grid reads as tiles.
+private struct ThemeCardView: View {
+    let theme: ThemeStore.Overview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(theme.name)
+                .font(.headline)
+                .lineLimit(2)
+            if let gist = theme.gist, !gist.isEmpty {
+                Text(gist)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+            HStack(alignment: .firstTextBaseline) {
+                Text(LedgerStore.hours(theme.totalMs))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if theme.weekMs > 0 {
+                    Text("\(LedgerStore.hours(theme.weekMs)) this week")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .font(.caption)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.quaternary, lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
