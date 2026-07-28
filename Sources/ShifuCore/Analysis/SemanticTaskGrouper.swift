@@ -13,6 +13,10 @@ import GRDB
 /// `LedgerBuilder` carries them across rebuilds by span identity, and blocks
 /// the model declines to place burn one of `maxAttempts` credits — mirroring
 /// `AmbiguousClassifier` — so an unchanged window stops billing.
+///
+/// What the model is shown — the weighted roster, the already-grouped blocks
+/// around a batch, and each block's sampled evidence — lives in
+/// `SemanticTaskEvidence.swift`; this file is the pipeline around it.
 public enum SemanticTaskGrouper {
     public static let confidenceFloor = 0.6
     public static let maxAttempts = 3
@@ -25,13 +29,34 @@ public enum SemanticTaskGrouper {
     /// tasks of the last `rosterWindowDays`.
     public static let rosterLimit = 40
     public static let rosterWindowDays = 14
+    /// Roster size on backends too small for the full distribution.
+    public static let compactRosterLimit = 12
+    /// Backends with at least this much context get the full roster history;
+    /// smaller ones (on-device Foundation Models is 4k for prompt *and*
+    /// response, invariant 7) get names and gists only.
+    public static let fullRosterMinContextTokens = 16_000
+    /// Already-grouped blocks shown around a batch as stickiness context.
+    static let neighborLimit = 6
+    static let compactNeighborLimit = 3
+    static let neighborWindowMs: Int64 = 6 * 3_600_000
+    /// Observations sampled per block, spread across its whole span.
+    static let sampleCount = 5
+    static let sourceLimit = 3
+    static let urlSampleLimit = 3
+    static let urlSegmentLimit = 2
+    static let urlSegmentChars = 40
+    static let urlTokenChars = 96
     public static let textSampleChars = 300
     public static let responseTokenReserve = 2_000
     public static let keyPrefix = "sem:"
 
-    /// The evidence for one block, as sent to the model. All of it is
-    /// post-redaction: titles and text come from `observations`, which
-    /// `ObservationRecorder` redacted before disk.
+    /// How much history each roster line carries — see
+    /// `fullRosterMinContextTokens`.
+    public enum RosterDetail: Sendable { case full, compact }
+
+    /// The evidence for one block, as sent to the model. Titles and text come
+    /// from `observations`, which `ObservationRecorder` redacted before disk;
+    /// `urls` are re-redacted on the way out (`urlToken`).
     public struct BlockSample: Sendable {
         public var id: Int64
         public var startedAt: Int64
@@ -40,10 +65,14 @@ public enum SemanticTaskGrouper {
         public var domain: String?
         public var topic: String?
         public var titles: [String]
+        /// Sanitized "host/seg/seg" page identities — `github.com/org/repo`
+        /// says what the domain alone never could.
+        public var urls: [String]
         public var textSample: String
 
         public init(id: Int64, startedAt: Int64, endedAt: Int64, appBundle: String,
-                    domain: String?, topic: String?, titles: [String], textSample: String) {
+                    domain: String?, topic: String?, titles: [String],
+                    urls: [String] = [], textSample: String) {
             self.id = id
             self.startedAt = startedAt
             self.endedAt = endedAt
@@ -51,21 +80,47 @@ public enum SemanticTaskGrouper {
             self.domain = domain
             self.topic = topic
             self.titles = titles
+            self.urls = urls
             self.textSample = textSample
         }
     }
 
-    /// One reusable task offered to the model ("t3: Booking flights — …").
+    /// One reusable task offered to the model ("t3: Booking flights — …"),
+    /// carrying the history that turns the roster from a list into a weighted
+    /// prior. The counters cover `rosterWindowDays`; a task minted mid-run has
+    /// no logged history yet and reports zeroes until the next run.
     public struct RosterEntry: Sendable {
         public var key: String
         public var name: String
         public var gist: String?
+        public var minutes: Int
+        public var daysActive: Int
+        /// Whole days since the task was last worked; 0 is today.
+        public var lastActiveDays: Int
+        /// Domains (else app names) the task's time went to, most first.
+        public var topSources: [String]
 
-        public init(key: String, name: String, gist: String?) {
+        public init(key: String, name: String, gist: String?, minutes: Int = 0,
+                    daysActive: Int = 0, lastActiveDays: Int = 0, topSources: [String] = []) {
             self.key = key
             self.name = name
             self.gist = gist
+            self.minutes = minutes
+            self.daysActive = daysActive
+            self.lastActiveDays = lastActiveDays
+            self.topSources = topSources
         }
+    }
+
+    /// One already-grouped block near a batch, shown read-only so the model
+    /// can see the work the batch sits inside.
+    struct NeighborBlock: Sendable {
+        var startedAt: Int64
+        var endedAt: Int64
+        var appBundle: String
+        var domain: String?
+        var taskKey: String
+        var taskName: String
     }
 
     /// One block → task proposal from the model.
@@ -100,55 +155,7 @@ public enum SemanticTaskGrouper {
         }
     }
 
-    // MARK: - Prompt (pure, testable)
-
-    static func prompt(roster: [RosterEntry], blocks: [BlockSample],
-                       calendar: Calendar = .current) -> String {
-        var lines: [String] = [
-            "Group screen-time blocks into the user's high-level tasks — the goal being",
-            "pursued, phrased as the user would (\"Applying to YC Startup School",
-            "afterparties\", \"Booking flights and planning travel\") — never an app or",
-            "website name.",
-            "",
-            "Existing tasks — reuse one whenever a block continues it:"
-        ]
-        if roster.isEmpty {
-            lines.append("(none yet)")
-        }
-        for (index, entry) in roster.enumerated() {
-            var line = "t\(index + 1): \(entry.name)"
-            if let gist = entry.gist, !gist.isEmpty { line += " — \(gist)" }
-            lines.append(line)
-        }
-        lines.append("")
-        lines.append("Blocks, chronological (id, local time, minutes, app, domain, titles, text):")
-        let times = timeFormatter(calendar)
-        for block in blocks {
-            let minutes = max(1, (block.endedAt - block.startedAt) / 60_000)
-            let start = Date(timeIntervalSince1970: Double(block.startedAt) / 1_000)
-            var desc = "id=\(block.id) \(times.string(from: start)) \(minutes)m"
-            desc += " app=\(shortBundle(block.appBundle))"
-            if let domain = block.domain { desc += " domain=\(domain)" }
-            if let topic = block.topic { desc += " topic=\(topic)" }
-            if !block.titles.isEmpty {
-                desc += " titles=\(block.titles.prefix(4).joined(separator: " | "))"
-            }
-            lines.append(desc)
-            if !block.textSample.isEmpty { lines.append("  text: \(block.textSample)") }
-        }
-        lines.append(contentsOf: [
-            "",
-            "Assign each block to one task: existing (t1…) or new (n1, n2…).",
-            "A new task needs a specific goal-level title (3-8 words) and a one-sentence gist.",
-            "Omit blocks that fit no task (idle browsing, one-off glances).",
-            "Confidence is 0-1; use low confidence when the evidence is thin.",
-            "Respond with ONLY JSON:",
-            #"{"assignments": [{"id": 12, "task": "t1", "confidence": 0.9}],"#,
-            #" "new_tasks": [{"handle": "n1", "title": "Booking flights for the SF trip","#,
-            #"   "gist": "Comparing fares and picking travel dates."}]}"#
-        ])
-        return lines.joined(separator: "\n")
-    }
+    // MARK: - Parsing
 
     /// Parses the model's JSON object (tolerating surrounding prose/fences).
     /// `newEntriesKey` lets ThemeClusterer reuse this for its `"new_themes"`
@@ -180,87 +187,11 @@ public enum SemanticTaskGrouper {
             }
         return Verdict(assignments: assignments, newTasks: newTasks)
     }
-
-    static func shortBundle(_ bundle: String) -> String {
-        bundle.split(separator: ".").last.map(String.init) ?? bundle
-    }
-
-    private static func timeFormatter(_ calendar: Calendar) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE HH:mm"
-        formatter.timeZone = calendar.timeZone
-        return formatter
-    }
 }
 
 // MARK: - Pipeline
 
 extension SemanticTaskGrouper {
-    /// Unassigned, evidence-bearing blocks in the window, oldest first.
-    /// Evidence means a topic, a window title, or captured text — a bare
-    /// metadata block gives the model nothing beyond the app name, which the
-    /// mechanical key already encodes.
-    public static func pendingSamples(
-        database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
-    ) throws -> [BlockSample] {
-        try database.queue.read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, started_at, ended_at, app_bundle, domain, topic
-                FROM activities
-                WHERE ended_at > ? AND started_at < ? AND category != 'private'
-                  AND sem_key IS NULL AND sem_attempts < ?
-                  AND ended_at - started_at >= ?
-                  AND (topic IS NOT NULL OR EXISTS (
-                        SELECT 1 FROM observations o WHERE o.session_id = activities.id
-                          AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
-                ORDER BY started_at DESC LIMIT ?
-                """, arguments: [from, to, maxAttempts, minBlockMs, limit])
-            return rows.map { row -> BlockSample in
-                let id: Int64 = row["id"]
-                let observations = (try? Row.fetchAll(db, sql: """
-                    SELECT window_title, text FROM observations
-                    WHERE session_id = ? AND (window_title IS NOT NULL OR text IS NOT NULL)
-                    LIMIT 5
-                    """, arguments: [id])) ?? []
-                var titles: [String] = []
-                var sample = ""
-                for observation in observations {
-                    if let title: String = observation["window_title"],
-                       !title.isEmpty, !titles.contains(title) {
-                        titles.append(title)
-                    }
-                    if sample.count < textSampleChars, let text: String = observation["text"] {
-                        sample += text.prefix(200) + " "
-                    }
-                }
-                return BlockSample(
-                    id: id, startedAt: row["started_at"], endedAt: row["ended_at"],
-                    appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
-                    titles: titles,
-                    textSample: String(sample.prefix(textSampleChars))
-                        .trimmingCharacters(in: .whitespaces))
-            }
-            .sorted { $0.startedAt < $1.startedAt }
-        }
-    }
-
-    /// The most recently active semantic tasks, offered for reuse so ongoing
-    /// work keeps landing in the same task across runs and days.
-    public static func activeRoster(
-        database: ShifuDatabase, now: Date = Date()
-    ) throws -> [RosterEntry] {
-        let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
-            - Int64(rosterWindowDays) * 86_400_000
-        return try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT key, name, gist FROM tasks
-                WHERE key LIKE 'sem:%' AND last_active_at >= ?
-                ORDER BY last_active_at DESC LIMIT ?
-                """, arguments: [cutoff, rosterLimit]
-            ).map { RosterEntry(key: $0["key"], name: $0["name"], gist: $0["gist"]) }
-        }
-    }
-
     /// Groups the window's unassigned blocks with the backend. Batches are
     /// sized by rendered-prompt tokens (CLAUDE.md invariant 7) and the roster
     /// grows as batches create tasks, so one run converges on shared tasks.
@@ -272,18 +203,27 @@ extension SemanticTaskGrouper {
     ) async throws -> Summary {
         let samples = try pendingSamples(database: database, from: from, to: to)
         guard !samples.isEmpty else { return Summary() }
+        let detail: RosterDetail =
+            backend.contextWindowTokens >= fullRosterMinContextTokens ? .full : .compact
+        // Trimmed once, here rather than in `prompt`: roster indices *are* the
+        // `t<n>` handles `resolve` reads back, so the list the model sees and
+        // the list the verdict resolves against have to be the same list.
         var roster = try activeRoster(database: database, now: now)
+        if detail == .compact { roster = compacted(roster) }
         let budget = max(512, backend.contextWindowTokens - responseTokenReserve)
 
         var summary = Summary()
         var cursor = 0
         while cursor < samples.count {
+            let neighbors = try assignedNeighbors(
+                database: database, around: samples[cursor].startedAt)
             var batch: [BlockSample] = []
             while cursor < samples.count {
                 batch.append(samples[cursor])
                 cursor += 1
                 if batch.count > 1,
                    LLMTokens.estimate(prompt(roster: roster, blocks: batch,
+                                             neighbors: neighbors, detail: detail,
                                              calendar: calendar)) > budget {
                     batch.removeLast()
                     cursor -= 1
@@ -291,7 +231,8 @@ extension SemanticTaskGrouper {
                 }
             }
             let response = try await backend.complete(
-                prompt: prompt(roster: roster, blocks: batch, calendar: calendar),
+                prompt: prompt(roster: roster, blocks: batch, neighbors: neighbors,
+                               detail: detail, calendar: calendar),
                 maxTokens: responseTokenReserve)
             let outcome = try apply(parse(response), batch: batch, roster: roster,
                                     database: database, now: now)
