@@ -107,14 +107,19 @@ public struct ShifuDatabase: Sendable {
 
 /// Typed access to the `settings` table.
 public enum Settings {
-    /// Analysis backend: "auto" (Foundation Models if available, else rules-only),
-    /// "claude" (opt-in cloud, analyzer-only), "openai" (opt-in cloud,
-    /// OpenAI-compatible endpoint — DeepSeek by default), "off" (rules-only).
+    /// Analysis backend: "deepseek" (the default and only LLM backend —
+    /// analyzer-only, inert until an API key is set) or "off" (rules-only).
+    /// Legacy values ("auto", "claude", "openai") are folded into these by
+    /// migration v15.
     public static let analysisBackendKey = "analysis.backend"
-    public static let claudeAPIKeyKey = "claude.api_key"
-    public static let openAIAPIKeyKey = "openai.api_key"
-    public static let openAIBaseURLKey = "openai.base_url"
-    public static let openAIModelKey = "openai.model"
+    public static let deepseekAPIKeyKey = "deepseek.api_key"
+    public static let deepseekBaseURLKey = "deepseek.base_url"
+    /// Fast model (default deepseek-v4-flash): classification, extraction,
+    /// narratives, radar — the high-volume, low-judgment stages.
+    public static let deepseekModelKey = "deepseek.model"
+    /// Reasoning model (default deepseek-v4-pro): semantic task grouping and
+    /// theme clustering, where naming the user's intent is the whole job.
+    public static let deepseekReasoningModelKey = "deepseek.reasoning_model"
     public static let digestHourKey = "digest.hour"
 
     public static func get(_ key: String, database: ShifuDatabase) throws -> String? {

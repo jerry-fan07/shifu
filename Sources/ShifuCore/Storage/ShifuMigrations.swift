@@ -312,6 +312,35 @@ extension ShifuDatabase {
             try db.drop(table: "projects")
         }
 
+        migrator.registerMigration("v15") { db in
+            // DeepSeek is the only LLM backend now (design.md §4.2): the
+            // on-device Foundation Models tier was dropped (4k window,
+            // macOS 26+ only, weak labels) and the Claude tier with it.
+            // Collapse every legacy backend choice to the two that remain —
+            // the API key stays the opt-in, so a machine without one keeps
+            // running rules-only exactly as before.
+            try db.execute(sql: """
+                UPDATE settings SET value = 'deepseek'
+                WHERE key = 'analysis.backend' AND value != 'off'
+                """)
+            // Carry the connection settings over to their deepseek.* names;
+            // the Claude key has no equivalent and is deleted, not orphaned.
+            // A legacy model choice lands in the *reasoning* slot: the single
+            // legacy model handled the judgment-heavy grouping stages, so
+            // that is the slot whose behavior it should keep. The fast slot
+            // picks up the deepseek-v4-flash default.
+            try db.execute(sql: """
+                UPDATE settings SET key = replace(key, 'openai.', 'deepseek.')
+                WHERE key IN ('openai.api_key', 'openai.base_url')
+                """)
+            try db.execute(sql: """
+                UPDATE settings SET key = 'deepseek.reasoning_model'
+                WHERE key = 'openai.model'
+                """)
+            try db.execute(sql:
+                "DELETE FROM settings WHERE key IN ('claude.api_key', 'claude.model')")
+        }
+
         return migrator
     }
 }

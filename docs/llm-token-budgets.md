@@ -2,6 +2,12 @@
 
 Incident write-up + the rule that came out of it (CLAUDE.md invariant 7).
 
+> **Status 2026-07-28:** the Foundation Models backend described below has
+> since been removed — DeepSeek is the only backend (design.md §4.2), capped
+> at 60k tokens in `DeepSeekBackend.contextWindowTokens`. The rule stands
+> unchanged: size every prompt with `LLMTokens.estimate` against the
+> backend's window, never by item count.
+
 ## What happened (2026-07-17)
 
 Every `shifu-analyzer` run on a machine using the on-device backend failed the

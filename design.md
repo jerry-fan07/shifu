@@ -20,7 +20,7 @@ Shifu is a local-first, always-on observer that captures what is on your screen 
 
 1. **Invisible.** The user should never feel Shifu running. No fan spin, no dropped frames, no battery anxiety. Capture must be event-driven, never polling-heavy.
 2. **Minimalist.** In every dimension: a UI with the fewest possible surfaces (one menu bar item, one window, one review card), features that earn their place or don't ship, plain formats over clever ones (Markdown, SQLite), and a codebase small enough to audit. When in doubt, leave it out — every addition must justify itself against this principle.
-3. **Private by default.** All raw captures stay on-device. Nothing leaves the machine unless the user explicitly opts into cloud analysis, and even then only derived text/summaries are sent — never raw pixels.
+3. **Private by default.** All raw captures stay on-device. LLM analysis is cloud-based (DeepSeek — see §4.2), but nothing leaves the machine until the user supplies an API key, and even then only derived, redacted text samples are sent — never raw pixels or raw captures. *(Revised 2026-07: v1 aspired to on-device-only analysis; Apple Foundation Models' 4k window, weak labels, and macOS 26+ gate made that path useless in practice.)*
 4. **Trustworthy.** The user can inspect, export, and delete everything. Sensitive apps and sites are excluded by default. There is a single obvious kill switch.
 5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications.
 
@@ -169,8 +169,7 @@ Contiguous observations are folded into **activity blocks**: same app/domain, ga
 ### 4.2 Classification (tiered, cheap-first)
 
 1. **Rules layer** (instant, covers ~80%): a user-editable mapping of bundle IDs and URL domains → categories. Ships with sensible defaults (`Xcode → work`, `youtube.com → entertainment*`, `mail → admin`, …). `*` marks *ambiguous* defaults that always escalate.
-2. **Local LLM layer**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by a small on-device model (Apple Foundation Models framework where available, or a bundled ~3B quantized model via MLX). Prompt returns `{category, confidence, topic}`.
-3. **Cloud layer (opt-in)**: users may point classification and summarization at the Claude API — or any OpenAI-compatible endpoint (DeepSeek by default; `openai.base_url`/`openai.model` settings) — for better topic labeling and semantic task grouping (§5.3). Only text samples are sent, post-exclusion-filtering, and this is off by default.
+2. **LLM layer (DeepSeek)**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by DeepSeek; prompt returns `{category, confidence, topic}`. Two model slots share one key and endpoint (`deepseek.base_url` accepts any OpenAI-compatible server): the **fast slot** (`deepseek.model`, default `deepseek-v4-flash` — cheap, non-reasoning) runs the high-volume stages — this classification, knowledge extraction, work-note narratives, radar descriptions; the **reasoning slot** (`deepseek.reasoning_model`, default `deepseek-v4-pro`, a thinking model) runs semantic task grouping and theme clustering (§5.3), where naming the user's intent is the whole job. Only redacted, post-exclusion text samples are sent, and only once an API key is set — without a key this layer is skipped and rules-only output stands. *(Revised 2026-07: this tier was originally an on-device model — Apple Foundation Models or bundled MLX — with cloud as an opt-in third tier. The 4k combined window forced tiny batches, labels were weak, and Foundation Models needs macOS 26+; the on-device tier was dropped and DeepSeek promoted to the sole LLM backend.)*
 
 Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`, `communication`, `admin`, `idle`. Every block also gets a free-text `topic` ("debugging shifu capture daemon", "watching F1 highlights") used by the knowledge and automation stages.
 
@@ -297,7 +296,7 @@ Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generou
 
 This section is load-bearing; a screen watcher lives or dies on trust.
 
-- **Local-first, forever.** Raw observations never leave the device. Cloud LLM use is opt-in, text-only, post-filtering, and clearly labeled in settings.
+- **Local-first capture, forever.** Raw observations never leave the device. LLM analysis goes to DeepSeek, but it is text-only, post-filtering and post-redaction, clearly labeled in settings, and inert until the user pastes an API key — the key is the opt-in. "Rules only" turns it off entirely.
 - **No pixel persistence.** Screenshots exist in memory only for the OCR call in the default configuration. (A debug flag can retain them, visibly indicated in the menu bar.)
 - **Exclusion list**, enforced in the daemon *before* capture (not filtered after):
   - Default-excluded apps: password managers, Keychain, system auth dialogs.
@@ -307,7 +306,7 @@ This section is load-bearing; a screen watcher lives or dies on trust.
 - **Encryption at rest**: SQLite via SQLCipher; vault folder optionally encrypted (off by default since users may want Obsidian interop — the tradeoff is stated plainly in settings).
 - **Retention**: raw text 14 days (configurable 1–90); ledger aggregates and confirmed notes indefinitely; one-click "delete everything," and a date-range delete ("forget this afternoon").
 - **Pause semantics**: pause = the AX observers and event taps are torn down, not just ignored. The menu bar glyph makes state unambiguous.
-- **No network access in shifud at all** — only the analyzer can touch the network, and only when cloud analysis is enabled. Enforced via separate binaries so this is auditable.
+- **No network access in shifud at all** — only the analyzer can touch the network, and only to the configured DeepSeek endpoint when an API key is set. Enforced via separate binaries so this is auditable.
 
 ---
 
@@ -371,9 +370,10 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
   keys Accessibility/Screen Recording grants to the code signature, and the
   ad-hoc linker signature orphaned them on every rebuild (toggles stayed ON in
   System Settings while capture degraded to metadata-only).
-- **Bundled MLX local model** (deferred from Phase 3): Apple Foundation Models
-  covers the on-device path on macOS 26+; a ~2 GB bundled model only earns its
-  place if dogfooding shows meaningful demand on older systems.
+- ~~**Bundled MLX local model** (deferred from Phase 3)~~ — mooted 2026-07:
+  the on-device tier was dropped altogether (§4.2) and DeepSeek is the only
+  LLM backend. On-device analysis returns only if a local model ever matches
+  cloud quality at ledger-scale batch sizes.
 - Signed + notarized DMG packaging (needs Developer ID certs; `install-daemon.sh`
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
@@ -523,7 +523,7 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
 ## 13. Open Questions
 
 1. Should the heartbeat interval adapt to category (e.g., 30 s during `work` for finer ledger resolution, 5 min during `entertainment`)?
-2. Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?
+2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2).
 3. Is glow-pulse enough for Work Mode, or is an optional hard mode (block-list with confirm-to-continue) worth its complexity and adversarial feel?
 4. Vault dedupe: how aggressively should near-duplicate knowledge candidates merge across days (same fact re-encountered is itself an SRS signal)?
 5. Should `excluded` time still count toward the ledger as an opaque "private" category (better totals) or vanish entirely (better deniability)? Default proposal: opaque category, toggleable.

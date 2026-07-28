@@ -7,7 +7,7 @@ import SwiftUI
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
     @State private var page = 0
-    @State private var backend = "auto"
+    @State private var backend = "deepseek"
     @State private var apiKey = ""
 
     var body: some View {
@@ -52,7 +52,8 @@ struct OnboardingView: View {
             What it never does:
             • never records keystrokes
             • never saves screenshots — pixels live in memory only for OCR
-            • never sends raw captures anywhere — everything stays on this Mac
+            • never sends raw captures anywhere — analysis sends only redacted \
+            text samples to DeepSeek, and only after you add an API key
             """)
         }
     }
@@ -103,26 +104,21 @@ struct OnboardingView: View {
     private var backendPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Analysis backend").font(.title2).bold()
-            Text("Ambiguous time blocks and knowledge extraction can use a language model.")
+            Text("Task naming, ambiguous-time classification, and knowledge "
+                + "extraction use DeepSeek. Without an API key those stages are "
+                + "skipped and Shifu runs on rules alone.")
             Picker("", selection: $backend) {
-                Text("Local only (on-device Apple model when available)").tag("auto")
-                Text("Claude API — sends text samples to Anthropic, opt-in").tag("claude")
-                Text("DeepSeek / OpenAI-compatible — sends text samples to your endpoint, opt-in")
-                    .tag("openai")
+                Text("DeepSeek — sends redacted text samples once a key is set").tag("deepseek")
+                Text("Rules only — no AI, nothing ever leaves this Mac").tag("off")
             }
             .pickerStyle(.radioGroup)
-            if backend == "claude" {
-                SecureField("Anthropic API key (or set ANTHROPIC_API_KEY)", text: $apiKey)
+            if backend == "deepseek" {
+                SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
-            }
-            if backend == "openai" {
-                SecureField("DeepSeek/OpenAI API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                Text("Endpoint and model default to DeepSeek; change them in Settings.")
+                Text("Defaults: deepseek-v4-flash for classification, deepseek-v4-pro "
+                    + "for task grouping; change either in Settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            if backend != "auto" {
                 Text("Only derived text samples are sent, after exclusions and redaction. Never pixels.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -133,11 +129,8 @@ struct OnboardingView: View {
     private func finish() {
         if let database = try? ShifuDatabase.open(at: ShifuPaths.database) {
             try? Settings.set(Settings.analysisBackendKey, to: backend, database: database)
-            if backend == "claude" && !apiKey.isEmpty {
-                try? Settings.set(Settings.claudeAPIKeyKey, to: apiKey, database: database)
-            }
-            if backend == "openai" && !apiKey.isEmpty {
-                try? Settings.set(Settings.openAIAPIKeyKey, to: apiKey, database: database)
+            if backend == "deepseek" && !apiKey.isEmpty {
+                try? Settings.set(Settings.deepseekAPIKeyKey, to: apiKey, database: database)
             }
         }
         onboarded = true
