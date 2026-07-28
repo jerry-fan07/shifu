@@ -36,17 +36,18 @@ Anything testable is pushed down into `ShifuCore`, which is why `ShifuCore` is
 
 ```
 Sources/ShifuCore/
-  Models/      Observation, Activity, Project/WorkTask/TaskLog  — GRDB records
+  Models/      Observation, Activity, WorkTask/TaskLog  — GRDB records
   Storage/     ShifuDatabase (+ migrations), DatabaseKey, EncryptionMigrator, DeletionTools
   Capture/     ObservationRecorder (the write path), SimHash, DHash, BoundedLRUCache
   Privacy/     Redactor, Exclusions
   Analysis/    Sessionizer, RulesClassifier, AmbiguousClassifier, LedgerBuilder,
-               SemanticTaskGrouper, ThemeClusterer, TaskGrouper, TaskMerges,
+               SemanticTaskGrouper, ThemeClusterer, TaskGrouper, TaskMerges (+TaskAutoMerge),
                PatternMiner, Radar, DigestGenerator, Embedder
   LLM/         LLMBackend protocol, FoundationModelsBackend
                (ClaudeBackend + OpenAIBackend live in shifu-analyzer — invariant 1)
   Vault/       Note, WorkNote, FrontMatter, FSRS, VaultStore, VaultIndexer,
-               VaultSearch, TaskStore, KnowledgeExtractor, *NoteCompiler
+               VaultSearch, TaskStore (+TaskMerging, TaskPrune), ThemeStore,
+               KnowledgeExtractor, WorkNoteCompiler
 ```
 
 ---
@@ -149,7 +150,9 @@ order, and some of that ordering is load-bearing:
    mechanically grouped.
 5. **`TaskGrouper.run`** — groups activities into tasks by a stable key
    (`sem_key` when the semantic pass set one, else `topic:` → `domain:` →
-   `app:`) and rebuilds per-day `task_logs`.
+   `app:`; system shell bundles — lock screen, Dock, Shifu's own UI —
+   never mint or join a task at all, `isSystemBundle`) and rebuilds
+   per-day `task_logs`.
    **Runs before extraction on purpose** so `activities.task_id` exists when
    notes are born and can be stamped into their frontmatter.
 6. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
@@ -167,8 +170,10 @@ order, and some of that ordering is load-bearing:
 9. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
    this syncs the disposable index. Runs *after* task grouping so
    `task_key` → task/project resolution is current.
-10. **Weekly block** (`PatternMiner` → `Radar` → merge/project suggestions →
-    `ProjectNoteCompiler`), then the **daily digest**.
+10. **Weekly block** (`PatternMiner` → `Radar` → merge/theme suggestions),
+    then the **daily digest**. Note `TaskMerges.autoMerge`
+    is *not* in it: it drains the stored suggestion queue rather than minting
+    it, so it runs beside `TaskStore.prune` every pass, and needs no embedder.
 
 Every stage after the ledger is wrapped in its own `do/catch` that prints and
 continues. A failing LLM never blocks the ledger (design.md §10).
@@ -254,17 +259,26 @@ add a new one (see §7).
 | `sem_attempts` | v11 — caps re-billing of blocks the model declines to place, like `llm_attempts` |
 | `theme_key` | v12 — independent LLM theme assignment (`"thm:<slug>"`); carried like `sem_key` |
 | `theme_attempts` | v12 — the theme pass's re-billing cap |
+| `theme_user_set` | v14 — 1 when a *human* filed this block's task (`TaskStore.assignTheme`), 0 when `ThemeClusterer` did. Prune and auto-merge read it |
 
 **`tasks`** (`key` unique — `sem:` from `SemanticTaskGrouper`, else
 `TaskGrouper.key`; `name` is user-renameable; `gist` v11 — LLM one-liner for
-the detail page), **`projects`**, **`task_logs`** (unique on
-`task_id, day_start`) — design.md §5.3.
+the detail page), **`task_logs`** (unique on `task_id, day_start`) —
+design.md §5.3.
+
+Projects are gone as of v14 — `projects`, `tasks.project_id`,
+`project_suggestions`, `vault_index.project_id`, `ProjectNoteCompiler` and the
+`shifu vault projects` verb all went with them. Themes replaced the concept
+whole; see `theme_user_set` below for the one bit that had to survive.
 
 **`themes`** (v12, `key` unique `"thm:<slug>"`) — the high-level clustering
-mode. `name` user-renameable, `gist` the LLM one-liner, `summary` the running
-narrative with `summary_hash` as its regeneration gate (hashed over completed
-days only). Theme *day entries* have no table — they are computed on read
-from `activities.theme_key` (`ThemeStore.detail`).
+mode, and since v13 also what the Task log files tasks under. `name`
+user-renameable, `gist` the LLM one-liner, `summary` the running narrative
+with `summary_hash` as its regeneration gate (hashed over completed days
+only). Theme *day entries* have no table — they are computed on read from
+`activities.theme_key` (`ThemeStore.detail`), and so is a *task's* theme: the
+one its blocks spend the most time in (`TaskStore.dominantThemeSQL`), since
+filing is per block and a task's blocks may straddle themes.
 
 **`rules`** and **`exclusions`** — user overrides, merged over the hardcoded
 seeds in `RulesClassifier` / `Exclusions`. Unique on `(kind, value)` where
@@ -273,14 +287,16 @@ seeds in `RulesClassifier` / `Exclusions`. Unique on `(kind, value)` where
 **`settings`** — key/value. Keys live on `Settings` (`analysis.backend`,
 `claude.api_key`, `openai.api_key`/`base_url`/`model`, `digest.hour`) plus
 ad-hoc ones (`radar.last_mined`, `tasks.merge_threshold`,
-`projects.suggest_threshold`, `claude.model`). Backend/key/model settings are
+`tasks.auto_merge_threshold` — set it above 1 to switch auto-merge off —
+`themes.suggest_threshold`, `claude.model`). Backend/key/model settings are
 `ChoiceSetting`/`TextSetting` entries in `SettingsCatalog`, so the Settings
 window renders them (key fields only for the selected backend).
 
 **`suggestions`** (radar, unique `pattern_key`), **`srs_reviews`** (review log
 for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 (unique ordered pair — keeps dismissals dismissed),
-**`project_suggestions`** (unique `task_id`).
+**`theme_suggestions`** (v13, unique `task_id`; replaced the v9
+`project_suggestions`, dropped in v14).
 
 ### Disposable tables — rebuildable, never authoritative
 
@@ -449,8 +465,8 @@ and project notes can never enter the inbox or review queue.
   rebuild by span identity. If you add expensive derived state, add it to
   `LedgerBuilder.CarriedState` or it will be silently recomputed every hour.
 - **Content-hash gates before LLM calls.** `WorkNoteCompiler` and
-  `ProjectNoteCompiler` regenerate prose only when the underlying content hash
-  changed. Unchanged days cost zero tokens.
+  `ThemeClusterer.refreshNarratives` regenerate prose only when the underlying
+  content hash changed. Unchanged days cost zero tokens.
 - **`ShifuCore` holds the logic; targets hold the wiring.** If you find
   yourself writing a pure function in `shifud` or `ShifuApp`, it probably
   belongs in `ShifuCore` where it can be tested.

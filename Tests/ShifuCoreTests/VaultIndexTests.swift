@@ -135,16 +135,15 @@ import Testing
 
     // MARK: - task_key resolution
 
-    @Test func taskKeyResolvesToTaskAndProjectAtIndexTime() throws {
+    @Test func taskKeyResolvesToTaskAtIndexTime() throws {
         let database = try ShifuDatabase.inMemory()
         let vault = VaultStore(root: try tempVault(), database: database)
         defer { try? FileManager.default.removeItem(at: vault.root) }
 
         let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)
-        let project = try TaskStore.createProject(named: "Shifu", database: database)
         let taskID: Int64 = try database.queue.write { db in
             var task = WorkTask(key: "topic:shifu-storage", name: "shifu storage",
-                                projectID: project.id, createdAt: nowMs, lastActiveAt: nowMs)
+                                createdAt: nowMs, lastActiveAt: nowMs)
             try task.insert(db)
             return task.id ?? db.lastInsertedRowID
         }
@@ -156,9 +155,6 @@ import Testing
         let filtered = try VaultSearch.search(
             "migrations", taskID: taskID, database: database)
         #expect(filtered.count == 1)
-        let byProject = try VaultSearch.search(
-            "migrations", projectID: project.id, database: database)
-        #expect(byProject.count == 1)
         let wrongTask = try VaultSearch.search(
             "migrations", taskID: taskID + 1, database: database)
         #expect(wrongTask.isEmpty)

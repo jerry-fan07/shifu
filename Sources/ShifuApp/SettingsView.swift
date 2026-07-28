@@ -115,7 +115,7 @@ private struct TextSettingRow: View {
     }
 }
 
-/// Add-row + deletable list, mirroring the "New project" pattern in `VaultTabView`.
+/// Add-row + deletable list: type a value, Add appends it, swipe/⌫ removes it.
 private struct DomainListRow: View {
     @EnvironmentObject private var store: SettingsStore
     let setting: DomainListSetting

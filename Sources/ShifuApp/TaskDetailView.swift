@@ -4,7 +4,7 @@ import SwiftUI
 /// One task as a full dashboard page (design.md §5.3): what the task *is*
 /// (LLM gist), day-by-day history with the compiled work-note narratives
 /// inline, where the time went, the knowledge notes captured under it, and
-/// the raw recent activity. Rename and project assignment live here too.
+/// the raw recent activity. Rename and theme assignment live here too.
 struct TaskDetailView: View {
     @EnvironmentObject private var store: LedgerStore
     let taskID: Int64
@@ -12,8 +12,8 @@ struct TaskDetailView: View {
     @State private var detail: TaskStore.Detail?
     @State private var name = ""
     @State private var selectedHit: VaultSearch.Hit?
-    @State private var askNewProject = false
-    @State private var newProjectName = ""
+    @State private var askNewTheme = false
+    @State private var newThemeName = ""
 
     var body: some View {
         Group {
@@ -27,17 +27,17 @@ struct TaskDetailView: View {
         }
         .onAppear(perform: reload)
         .sheet(item: $selectedHit) { hit in NoteReaderView(hit: hit) }
-        .alert("New project", isPresented: $askNewProject) {
-            TextField("Project name", text: $newProjectName)
+        .alert("New theme", isPresented: $askNewTheme) {
+            TextField("Theme name", text: $newThemeName)
             Button("Create & Assign") {
-                let trimmed = newProjectName.trimmingCharacters(in: .whitespaces)
+                let trimmed = newThemeName.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty {
-                    store.createProjectAndAssign(taskID, projectName: trimmed)
+                    store.createThemeAndAssign(taskID, themeName: trimmed)
                     reload()
                 }
-                newProjectName = ""
+                newThemeName = ""
             }
-            Button("Cancel", role: .cancel) { newProjectName = "" }
+            Button("Cancel", role: .cancel) { newThemeName = "" }
         }
     }
 
@@ -130,7 +130,7 @@ struct TaskDetailView: View {
                         reload()
                     }
                 Spacer()
-                projectMenu(detail)
+                themeMenu(detail)
             }
             if let gist = detail.gist, !gist.isEmpty {
                 Text(gist)
@@ -161,20 +161,20 @@ struct TaskDetailView: View {
         .padding(.vertical, 4)
     }
 
-    private func projectMenu(_ detail: TaskStore.Detail) -> some View {
-        Menu(detail.projectName ?? "No project") {
-            Button("No project") {
-                store.assignTask(taskID, toProject: nil)
+    private func themeMenu(_ detail: TaskStore.Detail) -> some View {
+        Menu(detail.themeName ?? "No theme") {
+            Button("No theme") {
+                store.assignTask(taskID, toTheme: nil)
                 reload()
             }
-            ForEach(store.projectSummaries) { summary in
-                Button(summary.project.name) {
-                    store.assignTask(taskID, toProject: summary.project.id)
+            ForEach(store.themes) { theme in
+                Button(theme.name) {
+                    store.assignTask(taskID, toTheme: theme.key)
                     reload()
                 }
             }
             Divider()
-            Button("New project…") { askNewProject = true }
+            Button("New theme…") { askNewTheme = true }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

@@ -16,6 +16,43 @@ public enum TaskGrouper {
     /// gates them by block length and model confidence.
     public static let minNewTaskMs: Int64 = 5 * 60_000
 
+    /// macOS shell surfaces that are never the user's own work: the lock
+    /// screen, the Dock, one-shot system dialogs. They carry no topic and no
+    /// domain, so without this list they bottom out at the `app:` key and
+    /// mint nonsense tasks ("loginwindow") — ones that accrue time daily and
+    /// so stay forever above the prune threshold. Checked through
+    /// `isSystemBundle`, which adds two prefix families a set can't
+    /// enumerate. Grounded in the dogfood ledger rather than exhaustive: a
+    /// missed bundle just means one more junk task until it's added here.
+    public static let systemBundles: Set<String> = [
+        "com.apple.loginwindow",              // lock/login screen
+        "com.apple.dock",
+        "com.apple.systemuiserver",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+        "com.apple.usernotificationcenter",   // one-shot alert dialogs
+        "com.apple.securityagent",            // auth prompts
+        "com.apple.screensaverengine",
+        "com.apple.coreservices.uiagent",     // quarantine/open-with dialogs
+        "com.apple.captivenetworkassistant",  // captive Wi-Fi portal popup
+        "com.apple.problemreporter",          // crash-report dialog
+        "com.apple.accessibility.universalaccessauthwarn",
+        "com.apple.windowmanager",            // Stage Manager shell
+        "com.apple.windowmanager.stagemanageronboarding",
+        "com.apple.inputmethod.ironwood"      // dictation UI
+    ]
+
+    /// True for bundles barred from task grouping entirely: their blocks keep
+    /// their ledger time but never mint or join a task. Covers the
+    /// `systemBundles` set, CaptureEngine's `unknown.<pid>` placeholder for
+    /// processes without a bundle id, and Shifu's own UI (`com.shifu.*`) —
+    /// watching the dashboard isn't work to track.
+    public static func isSystemBundle(_ bundle: String) -> Bool {
+        let normalized = bundle.lowercased()
+        if normalized.hasPrefix("unknown.") || normalized.hasPrefix("com.shifu.") { return true }
+        return systemBundles.contains(normalized)
+    }
+
     /// What one `run` did: distinct task keys assigned in the window, and
     /// day-log rows rewritten across every local day those activities touched.
     public struct Summary: Equatable, Sendable {
@@ -44,10 +81,19 @@ public enum TaskGrouper {
         topic ?? domain ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
     }
 
-    /// True while a task still wears the name run() derived from its key —
-    /// i.e. the user never renamed it. TaskStore.prune only ever deletes
-    /// default-named tasks.
+    /// True while a task still wears the name the machine gave it — i.e. the
+    /// user never renamed it. Every key namespace derives its display name
+    /// from the key (or the key from the name, for `sem:`: the LLM's title
+    /// slugged), so the question is answerable without storing a flag.
+    /// The two callers that must never touch a user's own words rely on it:
+    /// `TaskStore.prune` only deletes default-named tasks, and `TaskMerges`
+    /// only auto-merges default-named ones.
     public static func isDefaultName(_ name: String, forKey key: String) -> Bool {
+        // "sem:booking-flights" ← slug of the LLM title that named the task
+        // (SemanticTaskGrouper.resolve), so a rename breaks the equality.
+        if key.hasPrefix(SemanticTaskGrouper.keyPrefix) {
+            return slug(name) == String(key.dropFirst(SemanticTaskGrouper.keyPrefix.count))
+        }
         if key.hasPrefix("topic:") { return slug(name) == String(key.dropFirst(6)) }
         if key.hasPrefix("domain:") { return name.lowercased() == String(key.dropFirst(7)) }
         if key.hasPrefix("app:") {
@@ -113,7 +159,7 @@ public enum TaskGrouper {
         }
         var groups: [String: [Item]] = [:]
         var keyOrder: [String] = []
-        for item in items {
+        for item in items where !isSystemBundle(item.appBundle) {
             let itemKey = item.semKey
                 ?? key(topic: item.topic, domain: item.domain, appBundle: item.appBundle)
             if groups[itemKey] == nil { keyOrder.append(itemKey) }

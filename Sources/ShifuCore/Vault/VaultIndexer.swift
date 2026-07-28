@@ -173,29 +173,25 @@ public enum VaultIndexer {
             .flatMap { Note.iso.date(from: $0) }
             .map { Int64($0.timeIntervalSince1970 * 1_000) }
             ?? doc.fields["day"].flatMap(dayMs)
-        // task_key resolves against the tasks table at index time, so a later
-        // project assignment is picked up by the next reconcile without
-        // rewriting files (vault-features.md §4).
+        // task_key resolves against the tasks table at index time, so a task
+        // renamed or re-grouped later is picked up by the next reconcile
+        // without rewriting files (vault-features.md §4).
         var taskID: Int64?
-        var projectID: Int64?
         if let taskKey = doc.fields["task_key"] {
-            if let task = try Row.fetchOne(
-                db, sql: "SELECT id, project_id FROM tasks WHERE key = ?", arguments: [taskKey]) {
-                taskID = task["id"]
-                projectID = task["project_id"]
-            }
+            taskID = try Int64.fetchOne(
+                db, sql: "SELECT id FROM tasks WHERE key = ?", arguments: [taskKey])
         }
 
         try db.execute(sql: """
             INSERT INTO vault_index
-                (note_id, path, kind, task_id, project_id, captured, content_hash, mtime)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (note_id, path, kind, task_id, captured, content_hash, mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
                 path = excluded.path, kind = excluded.kind, task_id = excluded.task_id,
-                project_id = excluded.project_id, captured = excluded.captured,
+                captured = excluded.captured,
                 content_hash = excluded.content_hash, mtime = excluded.mtime
             """, arguments: [
-                noteID, relativePath, doc.kind.rawValue, taskID, projectID,
+                noteID, relativePath, doc.kind.rawValue, taskID,
                 captured, contentHash(text), mtime
             ])
         let rowID = try Int64.fetchOne(

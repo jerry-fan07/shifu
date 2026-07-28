@@ -36,6 +36,10 @@ public enum LedgerBuilder {
         var semAttempts: Int
         var themeKey: String?
         var themeAttempts: Int
+        /// Hand filing (v14). Carried like the rest, and for the same reason:
+        /// a rebuild that dropped it would silently un-protect the task from
+        /// prune and auto-merge an hour after the user filed it.
+        var themeUserSet: Bool
     }
 
     /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
@@ -94,12 +98,13 @@ public enum LedgerBuilder {
         let rows = try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, category, topic,
                    confidence, source, extracted, llm_attempts,
-                   sem_key, sem_attempts, theme_key, theme_attempts
+                   sem_key, sem_attempts, theme_key, theme_attempts, theme_user_set
             FROM activities
             WHERE ended_at > ? AND started_at < ?
               AND (source = 'llm' OR extracted = 1 OR llm_attempts > 0
                    OR sem_key IS NOT NULL OR sem_attempts > 0
-                   OR theme_key IS NOT NULL OR theme_attempts > 0)
+                   OR theme_key IS NOT NULL OR theme_attempts > 0
+                   OR theme_user_set = 1)
             """, arguments: [from, to])
         var carried: [SpanKey: CarriedState] = [:]
         for row in rows {
@@ -117,7 +122,8 @@ public enum LedgerBuilder {
                 semKey: row["sem_key"],
                 semAttempts: row["sem_attempts"],
                 themeKey: row["theme_key"],
-                themeAttempts: row["theme_attempts"]
+                themeAttempts: row["theme_attempts"],
+                themeUserSet: row["theme_user_set"]
             )
         }
         return carried
@@ -158,10 +164,12 @@ public enum LedgerBuilder {
                 sql: "UPDATE activities SET sem_key = ?, sem_attempts = ? WHERE id = ?",
                 arguments: [prior.semKey, prior.semAttempts, sessionID])
         }
-        if let prior, prior.themeKey != nil || prior.themeAttempts > 0 {
-            try db.execute(
-                sql: "UPDATE activities SET theme_key = ?, theme_attempts = ? WHERE id = ?",
-                arguments: [prior.themeKey, prior.themeAttempts, sessionID])
+        if let prior, prior.themeKey != nil || prior.themeAttempts > 0 || prior.themeUserSet {
+            try db.execute(sql: """
+                UPDATE activities
+                SET theme_key = ?, theme_attempts = ?, theme_user_set = ? WHERE id = ?
+                """, arguments: [prior.themeKey, prior.themeAttempts,
+                                 prior.themeUserSet, sessionID])
         }
         if !observationIDs.isEmpty {
             let placeholders = databaseQuestionMarks(count: observationIDs.count)

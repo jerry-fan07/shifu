@@ -64,11 +64,9 @@ struct CardsTabView: View {
         HStack {
             Picker("Deck", selection: $store.reviewDeck) {
                 Text("All notes").tag(ReviewDeck.all)
-                ForEach(store.projectSummaries) { summary in
-                    if let projectID = summary.project.id {
-                        Text("Project · \(summary.project.name)")
-                            .tag(ReviewDeck.project(id: projectID, name: summary.project.name))
-                    }
+                ForEach(store.themes) { theme in
+                    Text("Theme · \(theme.name)")
+                        .tag(ReviewDeck.theme(key: theme.key, name: theme.name))
                 }
                 ForEach(store.recentTasks) { overview in
                     Text("Task · \(overview.task.name)")

@@ -159,6 +159,43 @@ public enum ThemeStore {
         return out
     }
 
+    /// Grouping keys of the tasks whose blocks sit in a theme — a theme review
+    /// deck is the union of its tasks' decks.
+    public static func taskKeys(themeKey: String, database: ShifuDatabase) throws -> [String] {
+        try database.queue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT t.key FROM tasks t
+                JOIN activities a ON a.task_id = t.id
+                WHERE a.theme_key = ?
+                """, arguments: [themeKey])
+        }
+    }
+
+    // MARK: - Writes
+
+    /// Mints a theme by hand (or returns the one already under that name), so
+    /// the user isn't limited to the initiatives the clusterer happened to
+    /// find. Keyed like a clustered one — `thm:<slug>` — so the two are
+    /// indistinguishable everywhere downstream, and reusable by the clusterer's
+    /// roster on the next run.
+    @discardableResult
+    public static func create(
+        named name: String, database: ShifuDatabase, now: Date = Date()
+    ) throws -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let key = ThemeClusterer.keyPrefix + TaskGrouper.slug(trimmed)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try database.queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO NOTHING
+                """, arguments: [key, trimmed, nowMs, nowMs])
+        }
+        return key
+    }
+
     public static func rename(themeID: Int64, to name: String, database: ShifuDatabase) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

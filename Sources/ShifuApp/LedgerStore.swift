@@ -32,16 +32,55 @@ final class LedgerStore: ObservableObject {
     @Published var taskFilter = TaskListFilter()
 
     /// Rows the Task log renders at once. Every row carries an editable name
-    /// field and a project menu, so this is a rendering budget, not a data one.
+    /// field and a theme menu, so this is a rendering budget, not a data one.
     static let taskListLimit = 50
-    @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
-    @Published private(set) var projectSuggestions: [TaskMerges.PendingProject] = []
+    /// Merge suggestions shown *inline* at once. A bulk semantic regroup can
+    /// mint hundreds of open suggestions, and rendering them all buries the
+    /// task list they sit above — the filter bar then reads as dead because
+    /// its effect is off screen. The query orders strongest-first, so acting
+    /// on (or dismissing) one surfaces the next, and the rest live one tap
+    /// away in MergeReviewView.
+    static let suggestionLimit = 5
+    /// The full open queues. The Task log renders `suggestionLimit` merge
+    /// suggestions; the Merge review screen renders both queues in full.
+    @Published private(set) var allMergeSuggestions: [TaskMerges.Pending] = []
+    @Published private(set) var allThemeSuggestions: [TaskMerges.PendingTheme] = []
+
+    var mergeSuggestions: [TaskMerges.Pending] {
+        Array(allMergeSuggestions.prefix(Self.suggestionLimit))
+    }
+
+    /// Open suggestions the inline list isn't showing — the count behind
+    /// the "Review all" link. Theme assignments live only on the Merge
+    /// review screen now, so all of them count as hidden.
+    var hiddenSuggestionCount: Int {
+        (allMergeSuggestions.count - mergeSuggestions.count)
+            + allThemeSuggestions.count
+    }
 
     /// Created once; nil when the OS has no sentence model (search stays
     /// bm25-only, silently — vault-features.md §4).
     private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
-    @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
+
+    /// The Today day log, scoped by the two filter dimensions that mean
+    /// something for a single day's log: the minimum-time floor and the
+    /// theme. Range and sort deliberately don't apply — the log is already
+    /// one day, and its most-recent-first order is part of what makes it read
+    /// as a log rather than a task list. Derived, not @Published: it reads
+    /// `todayLogs` and `taskFilter`, both @Published, so SwiftUI recomputes it
+    /// whenever either changes — no `loadTasks()` round trip needed.
+    var filteredTodayLogs: [TaskStore.DayLogEntry] {
+        let floor = taskFilter.minimum.ms
+        return todayLogs.filter { entry in
+            guard entry.durationMs >= floor else { return false }
+            switch taskFilter.theme {
+            case .any: return true
+            case .theme(let key): return entry.themeKey == key
+            case .unassigned: return entry.themeKey == nil
+            }
+        }
+    }
     @Published private(set) var themes: [ThemeStore.Overview] = []
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
@@ -80,10 +119,9 @@ final class LedgerStore: ObservableObject {
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
             loadTasks()
-            mergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
-            projectSuggestions = (try? TaskMerges.pendingProjects(database: database)) ?? []
+            allMergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
+            allThemeSuggestions = (try? TaskMerges.pendingThemes(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
-            projectSummaries = (try? TaskStore.projects(database: database)) ?? []
             themes = (try? ThemeStore.overviews(database: database)) ?? []
         }
         do {
@@ -100,7 +138,7 @@ final class LedgerStore: ObservableObject {
     }
 
     /// refresh(), one runloop turn later. Controls embedded in List rows
-    /// (rename fields, project menus, Merge/Keep/Dismiss buttons) fire while
+    /// (rename fields, theme menus, Merge/Keep/Dismiss buttons) fire while
     /// AppKit is still inside the backing NSTableView's delegate callback;
     /// republishing the list's own data there is a reentrant table operation
     /// (AppKit warns today, will assert eventually). Every store action a row
@@ -190,7 +228,7 @@ final class LedgerStore: ObservableObject {
             kind: .work, taskID: taskID, title: title, database: database)) ?? nil
     }
 
-    // MARK: - Tasks & projects (design.md §5.3)
+    // MARK: - Tasks & themes (design.md §5.3)
 
     /// Re-runs just the Task log's list. Cheap enough to call on every filter
     /// change — `refresh()` would re-read the whole dashboard for nothing.
@@ -244,11 +282,13 @@ final class LedgerStore: ObservableObject {
         refreshSoon()
     }
 
-    func createProjectAndAssign(_ taskID: Int64, projectName: String) {
+    /// "New theme…" from a task row: mint it and file the task there in one
+    /// step, so the theme never exists empty.
+    func createThemeAndAssign(_ taskID: Int64, themeName: String) {
         guard let database = try? db(),
-              let project = try? TaskStore.createProject(named: projectName, database: database),
-              let projectID = project.id else { return }
-        try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
+              let key = try? ThemeStore.create(named: themeName, database: database) ?? nil
+        else { return }
+        try? TaskStore.assignTheme(taskID: taskID, themeKey: key, database: database)
         refreshSoon()
     }
 
@@ -259,21 +299,14 @@ final class LedgerStore: ObservableObject {
         refreshSoon()
     }
 
-    func assignTask(_ taskID: Int64, toProject projectID: Int64?) {
+    func assignTask(_ taskID: Int64, toTheme themeKey: String?) {
         if let database = try? db() {
-            try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
+            try? TaskStore.assignTheme(taskID: taskID, themeKey: themeKey, database: database)
         }
         refreshSoon()
     }
 
-    func createProject(named name: String) {
-        if let database = try? db() {
-            _ = try? TaskStore.createProject(named: name, database: database)
-        }
-        refreshSoon()
-    }
-
-    // MARK: - Merge suggestions (vault-features.md §5.2 — user-confirmed)
+    // MARK: - Merge suggestions (vault-features.md §5.2)
 
     func acceptMerge(_ suggestion: TaskMerges.Pending) {
         if let database = try? db() {
@@ -289,33 +322,35 @@ final class LedgerStore: ObservableObject {
         refreshSoon()
     }
 
-    // MARK: - Project suggestions (vault-features.md §5.3 — one-tap)
-
-    func acceptProjectSuggestion(_ suggestion: TaskMerges.PendingProject) {
+    /// "None of these are duplicates" — clears the open merge queue.
+    func dismissAllMerges() {
         if let database = try? db() {
-            try? TaskMerges.acceptProject(suggestion, database: database, vault: vault)
+            _ = try? TaskMerges.dismissAll(database: database)
         }
         refreshSoon()
     }
 
-    func dismissProjectSuggestion(_ suggestion: TaskMerges.PendingProject) {
+    // MARK: - Theme suggestions (vault-features.md §5.3 — one-tap)
+
+    func acceptThemeSuggestion(_ suggestion: TaskMerges.PendingTheme) {
         if let database = try? db() {
-            try? TaskMerges.dismissProject(suggestionID: suggestion.id, database: database)
+            try? TaskMerges.acceptTheme(suggestion, database: database)
         }
         refreshSoon()
     }
 
-    /// The project's compiled note as a hit for the shared note reader.
-    func projectNoteHit(projectName: String) -> VaultSearch.Hit? {
-        let slug = TaskGrouper.slug(projectName)
-        let vault = self.vault
-        guard let text = try? String(
-            contentsOf: vault.projectNoteURL(slug: slug), encoding: .utf8),
-              let doc = FrontMatter.parse(text), let noteID = doc.fields["id"]
-        else { return nil }
-        return VaultSearch.Hit(
-            noteID: noteID, path: "projects/\(slug.prefix(60)).md", kind: .project,
-            title: projectName, snippet: "", captured: nil)
+    func dismissThemeSuggestion(_ suggestion: TaskMerges.PendingTheme) {
+        if let database = try? db() {
+            try? TaskMerges.dismissTheme(suggestionID: suggestion.id, database: database)
+        }
+        refreshSoon()
+    }
+
+    func dismissAllThemeSuggestions() {
+        if let database = try? db() {
+            _ = try? TaskMerges.dismissAllThemes(database: database)
+        }
+        refreshSoon()
     }
 
     // MARK: - Review decks (design.md §5.2)
@@ -329,9 +364,9 @@ final class LedgerStore: ObservableObject {
             return dueNotes
         case .task(let key, _):
             return dueNotes.filter { TaskStore.matches(note: $0, taskKey: key) }
-        case .project(let projectID, _):
+        case .theme(let themeKey, _):
             let keys = (try? db()).flatMap {
-                try? TaskStore.taskKeys(projectID: projectID, database: $0)
+                try? ThemeStore.taskKeys(themeKey: themeKey, database: $0)
             } ?? []
             return dueNotes.filter { note in
                 keys.contains { TaskStore.matches(note: note, taskKey: $0) }

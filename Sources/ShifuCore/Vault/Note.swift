@@ -117,7 +117,7 @@ public struct Note: Equatable, Sendable, Identifiable {
     }
 
     /// Parses a knowledge-note file. Nil when there's no valid frontmatter
-    /// block, or when the file is another vault kind (work/project notes,
+    /// block, or when the file is another vault kind (work notes,
     /// vault-features.md §2 — they must never enter inbox/review queries).
     public static func parse(_ text: String) -> Note? {
         guard let doc = FrontMatter.parse(text), doc.kind == .knowledge else { return nil }
