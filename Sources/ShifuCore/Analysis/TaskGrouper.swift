@@ -42,11 +42,12 @@ public enum TaskGrouper {
         "com.apple.inputmethod.ironwood"      // dictation UI
     ]
 
-    /// True for bundles barred from task grouping entirely: their blocks keep
-    /// their ledger time but never mint or join a task. Covers the
-    /// `systemBundles` set, CaptureEngine's `unknown.<pid>` placeholder for
-    /// processes without a bundle id, and Shifu's own UI (`com.shifu.*`) —
-    /// watching the dashboard isn't work to track.
+    /// True for bundles barred from task grouping entirely — mechanical and
+    /// semantic alike (`SemanticTaskGrouper.pendingSamples` mirrors this in
+    /// SQL): their blocks keep their ledger time but never mint or join a
+    /// task. Covers the `systemBundles` set, CaptureEngine's `unknown.<pid>`
+    /// placeholder for processes without a bundle id, and Shifu's own UI
+    /// (`com.shifu.*`) — watching the dashboard isn't work to track.
     public static func isSystemBundle(_ bundle: String) -> Bool {
         let normalized = bundle.lowercased()
         if normalized.hasPrefix("unknown.") || normalized.hasPrefix("com.shifu.") { return true }

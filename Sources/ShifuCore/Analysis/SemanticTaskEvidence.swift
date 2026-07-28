@@ -186,22 +186,31 @@ extension SemanticTaskGrouper {
     /// Unassigned, evidence-bearing blocks in the window, oldest first.
     /// Evidence means a topic, a window title, or captured text — a bare
     /// metadata block gives the model nothing beyond the app name, which the
-    /// mechanical key already encodes.
+    /// mechanical key already encodes. System-shell blocks
+    /// (`TaskGrouper.isSystemBundle`) are excluded in SQL, not after: they can
+    /// never join a task, and left in they'd hold candidate slots and burn
+    /// tokens and attempts on lock screens and auth prompts. The two LIKE
+    /// prefixes mirror `isSystemBundle`'s prefix families.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
-        try database.queue.read { db in
+        let denied = TaskGrouper.systemBundles.sorted()
+        return try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, started_at, ended_at, app_bundle, domain, topic
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
                   AND ended_at - started_at >= ?
+                  AND LOWER(app_bundle) NOT LIKE 'unknown.%'
+                  AND LOWER(app_bundle) NOT LIKE 'com.shifu.%'
+                  AND LOWER(app_bundle) NOT IN (\(databaseQuestionMarks(count: denied.count)))
                   AND (topic IS NOT NULL OR EXISTS (
                         SELECT 1 FROM observations o WHERE o.session_id = activities.id
                           AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
                 ORDER BY started_at DESC LIMIT ?
-                """, arguments: [from, to, maxAttempts, minBlockMs, limit])
+                """, arguments: [from, to, maxAttempts, minBlockMs]
+                    + StatementArguments(denied) + [limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let evidence = try blockEvidence(db, blockID: id)
