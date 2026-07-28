@@ -7,12 +7,31 @@ public enum Sessionizer {
     /// A gap of user absence longer than this splits a block.
     public static let gapThresholdMs: Int64 = 120_000
 
+    /// One unclassified run of observations sharing an app and domain.
+    ///
+    /// The sessionizer's output and the classifier's input — it exists only in
+    /// memory, between the two. `LedgerBuilder` turns each block into an
+    /// `Activity` row; nothing persists a `Block` itself.
+    ///
+    /// Blocks are reproduced **deterministically** from the same observations,
+    /// which is what makes the analyzer's rebuild idempotent: an unchanged
+    /// stretch of the day re-sessionizes to byte-identical spans, so the
+    /// rebuild can recognize it and carry derived state forward.
     public struct Block: Equatable, Sendable {
         public var appBundle: String
+        /// Normalized host, or nil for non-browser blocks. Part of the block's
+        /// identity: the same browser on two domains is two blocks.
         public var domain: String?
         public var startedAt: Int64
+        /// Unix ms. May be extended past the last observation's `lastSeen` when
+        /// the user switched away promptly — the interval up to the next
+        /// block's start is credited here rather than being lost.
         public var endedAt: Int64
+        /// Every observation folded in, in order. `LedgerBuilder` writes these
+        /// back as `observations.session_id`.
         public var observationIDs: [Int64]
+        /// Distinct non-empty window titles seen, in first-seen order. Feeds
+        /// the LLM prompt and the durable block signature.
         public var titles: [String]
         /// True when every observation was exclusion-kind (no content captured).
         public var excluded: Bool
@@ -56,11 +75,17 @@ public enum Sessionizer {
                     current = block
                     continue
                 }
-                // Different app/domain or an idle gap: close the block. If the
-                // switch happened promptly, the user was in the old block until
-                // the new one began — credit the interval to the old block.
-                if gap >= 0 && gap < gapThresholdMs {
-                    block.endedAt = obs.startedAt
+                // Different app/domain or an idle gap: close the block at the
+                // moment the next one began, so blocks tile the timeline
+                // instead of overlapping. A positive gap under the threshold
+                // is a prompt switch — the user was in the old block until
+                // then, so the interval is credited here. A negative gap means
+                // per-window dedupe bumped this block's `last_seen` past the
+                // next window's first sighting; trimming is what keeps the
+                // same minute from being billed to two blocks. Only a real
+                // idle gap leaves `endedAt` alone.
+                if gap < gapThresholdMs {
+                    block.endedAt = max(block.startedAt, obs.startedAt)
                 }
                 blocks.append(block)
             }

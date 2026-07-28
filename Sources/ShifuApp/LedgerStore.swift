@@ -20,7 +20,20 @@ final class LedgerStore: ObservableObject {
     /// Start-of-day → number of reviews done that day (heatmap, §5.2).
     @Published private(set) var reviewsByDay: [Date: Int] = [:]
     @Published private(set) var suggestions: [Suggestion] = []
+    /// The unfiltered task roster. The Cards tab's deck picker reads this, so
+    /// narrowing the Vault tab's list must never touch it — hence the separate
+    /// `filteredTasks` below.
     @Published private(set) var recentTasks: [TaskStore.Overview] = []
+    /// The Task log's list, narrowed by `taskFilter` and capped at
+    /// `taskListLimit`.
+    @Published private(set) var filteredTasks: [TaskStore.Overview] = []
+    /// How many tasks the filter admits before that cap — see `taskCountLabel`.
+    @Published private(set) var matchingTaskCount = 0
+    @Published var taskFilter = TaskListFilter()
+
+    /// Rows the Task log renders at once. Every row carries an editable name
+    /// field and a project menu, so this is a rendering budget, not a data one.
+    static let taskListLimit = 50
     @Published private(set) var mergeSuggestions: [TaskMerges.Pending] = []
     @Published private(set) var projectSuggestions: [TaskMerges.PendingProject] = []
 
@@ -29,6 +42,7 @@ final class LedgerStore: ObservableObject {
     private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
     @Published private(set) var projectSummaries: [TaskStore.ProjectSummary] = []
+    @Published private(set) var themes: [ThemeStore.Overview] = []
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
@@ -65,10 +79,12 @@ final class LedgerStore: ObservableObject {
             let dayStart = Int64(
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             recentTasks = (try? TaskStore.recentTasks(database: database)) ?? []
+            loadTasks()
             mergeSuggestions = (try? TaskMerges.pending(database: database)) ?? []
             projectSuggestions = (try? TaskMerges.pendingProjects(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             projectSummaries = (try? TaskStore.projects(database: database)) ?? []
+            themes = (try? ThemeStore.overviews(database: database)) ?? []
         }
         do {
             let start = Calendar.current.startOfDay(for: Date())
@@ -109,16 +125,13 @@ final class LedgerStore: ObservableObject {
         }
     }
 
-    func activities(from: Date, to: Date) -> [Activity] {
-        (try? db().queue.read { sqlite in
-            try Activity
-                .filter(sql: "ended_at > ? AND started_at < ?", arguments: [
-                    Int64(from.timeIntervalSince1970 * 1_000),
-                    Int64(to.timeIntervalSince1970 * 1_000)
-                ])
-                .order(sql: "started_at")
-                .fetchAll(sqlite)
-        }) ?? []
+    /// Time-tab rows with task/theme names resolved for the breakdown lenses.
+    func labeledActivities(from: Date, to: Date) -> [LedgerBuilder.LabeledActivity] {
+        guard let database = try? db() else { return [] }
+        return (try? LedgerBuilder.labeledActivities(
+            database: database,
+            from: Int64(from.timeIntervalSince1970 * 1_000),
+            to: Int64(to.timeIntervalSince1970 * 1_000))) ?? []
     }
 
     // MARK: - Pause (same control file as the CLI)
@@ -132,73 +145,6 @@ final class LedgerStore: ObservableObject {
 
     func resume() {
         try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
-        refresh()
-    }
-
-    // MARK: - Vault (triage + review)
-
-    /// One vault walk feeding inbox, review queue, and the Cards screens.
-    /// Queues are sorted most-urgent first (earliest due date; cards that
-    /// never entered scheduling sort ahead of everything).
-    private func refreshVaultNotes() {
-        let notes = (try? vault.allNotes()) ?? []
-        inboxNotes = notes.filter { $0.state == .inbox }
-        allCards = notes
-            .filter { $0.state == .kept && $0.questionAnswer != nil }
-            .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
-        let now = Date()
-        dueNotes = allCards.filter { $0.srs.map { $0.due <= now } ?? true }
-        // A week of slack so the heatmap's week-aligned first column has
-        // counts for its leading days too.
-        let heatmapStart = Calendar.current.date(
-            byAdding: .day, value: -(HeatmapSpan.days + 7),
-            to: Calendar.current.startOfDay(for: now))!
-        let log = (try? vault.reviewLog(since: heatmapStart)) ?? []
-        reviewsByDay = log.reduce(into: [:]) { counts, date in
-            counts[Calendar.current.startOfDay(for: date), default: 0] += 1
-        }
-    }
-
-    /// How far back the review-activity heatmap looks (26 weeks ≈ 6 months).
-    enum HeatmapSpan {
-        static let weeks = 26
-        static let days = weeks * 7
-    }
-
-    var reviewsToday: Int {
-        reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
-    }
-
-    func keep(_ note: Note) {
-        try? vault.keep(note)
-        refresh()
-    }
-
-    func discard(_ note: Note) {
-        try? vault.discard(note)
-        refresh()
-    }
-
-    func review(_ note: Note, grade: FSRS.Grade) {
-        _ = try? vault.review(note, grade: grade)
-        refresh()
-    }
-
-    /// Persists a card edit (topic + reference + Q/A) from the card editor.
-    /// The file keeps its identity — `VaultStore.save` finds it by id.
-    func updateCard(
-        _ note: Note, topic: String, reference: String, question: String, answer: String
-    ) {
-        var updated = note
-        let trimmedTopic = topic.trimmingCharacters(in: .whitespaces)
-        if !trimmedTopic.isEmpty { updated.topic = trimmedTopic }
-        let hasQA = !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        // Clearing the Q/A demotes the card to a reference note (§5.1).
-        updated.body = hasQA
-            ? Note.composeBody(reference: reference, question: question, answer: answer)
-            : reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = try? vault.save(updated)
         refresh()
     }
 
@@ -235,6 +181,66 @@ final class LedgerStore: ObservableObject {
     }
 
     // MARK: - Tasks & projects (design.md §5.3)
+
+    /// Re-runs just the Task log's list. Cheap enough to call on every filter
+    /// change — `refresh()` would re-read the whole dashboard for nothing.
+    /// `since` is recomputed here rather than stored, so a window left open
+    /// past midnight rolls over with the day.
+    func loadTasks() {
+        guard let database = try? db() else { return }
+        let filter = taskFilter.core(limit: Self.taskListLimit)
+        filteredTasks = (try? TaskStore.recentTasks(
+            database: database, filter: filter)) ?? []
+        matchingTaskCount = (try? TaskStore.matchingTaskCount(
+            database: database, filter: filter)) ?? filteredTasks.count
+    }
+
+    /// "12 tasks", or "50 of 364" when the cap is hiding the rest — without
+    /// this a capped, recency-sorted list looks the same under every range.
+    var taskCountLabel: String {
+        // Before the first load both are 0; say nothing rather than "0 tasks".
+        if matchingTaskCount == 0 && filteredTasks.isEmpty { return "" }
+        return matchingTaskCount > filteredTasks.count
+            ? "\(filteredTasks.count) of \(matchingTaskCount)"
+            : "\(matchingTaskCount) task\(matchingTaskCount == 1 ? "" : "s")"
+    }
+
+    /// Everything the task detail page shows, in one read.
+    func taskDetail(_ taskID: Int64) -> TaskStore.Detail? {
+        guard let database = try? db() else { return nil }
+        return (try? TaskStore.detail(taskID: taskID, database: database)) ?? nil
+    }
+
+    /// The compiled work note for one (task, local day) — the detail page
+    /// expands each history day into its narrative inline.
+    func workNote(dayStart: Int64, taskKey: String) -> WorkNote? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let day = formatter.string(from: Date(timeIntervalSince1970: Double(dayStart) / 1_000))
+        return vault.workNote(day: day, taskKey: taskKey)
+    }
+
+    // MARK: - Themes (design.md §5.3, the high-level mode)
+
+    func themeDetail(_ themeID: Int64) -> ThemeStore.Detail? {
+        guard let database = try? db() else { return nil }
+        return (try? ThemeStore.detail(themeID: themeID, database: database)) ?? nil
+    }
+
+    func renameTheme(_ themeID: Int64, to name: String) {
+        if let database = try? db() {
+            try? ThemeStore.rename(themeID: themeID, to: name, database: database)
+        }
+        refresh()
+    }
+
+    func createProjectAndAssign(_ taskID: Int64, projectName: String) {
+        guard let database = try? db(),
+              let project = try? TaskStore.createProject(named: projectName, database: database),
+              let projectID = project.id else { return }
+        try? TaskStore.assign(taskID: taskID, projectID: projectID, database: database)
+        refresh()
+    }
 
     func renameTask(_ taskID: Int64, to name: String) {
         if let database = try? db() {
@@ -362,18 +368,71 @@ final class LedgerStore: ObservableObject {
     }
 }
 
-/// What the review session pulls cards from (design.md §5.2): everything, one
-/// project's tasks, or a single task.
-enum ReviewDeck: Hashable {
-    case all
-    case project(id: Int64, name: String)
-    case task(key: String, name: String)
+// MARK: - Vault (triage + review)
 
-    var label: String {
-        switch self {
-        case .all: return "All notes"
-        case .project(_, let name): return name
-        case .task(_, let name): return name
+extension LedgerStore {
+    /// One vault walk feeding inbox, review queue, and the Cards screens.
+    /// Queues are sorted most-urgent first (earliest due date; cards that
+    /// never entered scheduling sort ahead of everything).
+    private func refreshVaultNotes() {
+        let notes = (try? vault.allNotes()) ?? []
+        inboxNotes = notes.filter { $0.state == .inbox }
+        allCards = notes
+            .filter { $0.state == .kept && $0.questionAnswer != nil }
+            .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
+        let now = Date()
+        dueNotes = allCards.filter { $0.srs.map { $0.due <= now } ?? true }
+        // A week of slack so the heatmap's week-aligned first column has
+        // counts for its leading days too.
+        let heatmapStart = Calendar.current.date(
+            byAdding: .day, value: -(HeatmapSpan.days + 7),
+            to: Calendar.current.startOfDay(for: now))!
+        let log = (try? vault.reviewLog(since: heatmapStart)) ?? []
+        reviewsByDay = log.reduce(into: [:]) { counts, date in
+            counts[Calendar.current.startOfDay(for: date), default: 0] += 1
         }
+    }
+
+    /// How far back the review-activity heatmap looks (26 weeks ≈ 6 months).
+    enum HeatmapSpan {
+        static let weeks = 26
+        static let days = weeks * 7
+    }
+
+    var reviewsToday: Int {
+        reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
+    }
+
+    func keep(_ note: Note) {
+        try? vault.keep(note)
+        refresh()
+    }
+
+    func discard(_ note: Note) {
+        try? vault.discard(note)
+        refresh()
+    }
+
+    func review(_ note: Note, grade: FSRS.Grade) {
+        _ = try? vault.review(note, grade: grade)
+        refresh()
+    }
+
+    /// Persists a card edit (topic + reference + Q/A) from the card editor.
+    /// The file keeps its identity — `VaultStore.save` finds it by id.
+    func updateCard(
+        _ note: Note, topic: String, reference: String, question: String, answer: String
+    ) {
+        var updated = note
+        let trimmedTopic = topic.trimmingCharacters(in: .whitespaces)
+        if !trimmedTopic.isEmpty { updated.topic = trimmedTopic }
+        let hasQA = !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Clearing the Q/A demotes the card to a reference note (§5.1).
+        updated.body = hasQA
+            ? Note.composeBody(reference: reference, question: question, answer: answer)
+            : reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = try? vault.save(updated)
+        refresh()
     }
 }

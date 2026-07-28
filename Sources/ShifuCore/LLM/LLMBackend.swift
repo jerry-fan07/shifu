@@ -16,6 +16,9 @@ extension LLMBackend {
     public var contextWindowTokens: Int { 200_000 }
 }
 
+/// Prompt sizing (CLAUDE.md invariant 7). Every batched prompt must be sized
+/// with this, never by item count — the on-device Foundation Models window is
+/// only 4k tokens for prompt *and* response combined.
 public enum LLMTokens {
     /// Conservative prompt-size estimate: ≈3 UTF-8 bytes per token, so dense
     /// OCR text can't overflow a real tokenizer's count.
@@ -24,6 +27,9 @@ public enum LLMTokens {
     }
 }
 
+/// Backend failures. Both are non-fatal by design: every analyzer stage that
+/// calls an LLM catches, logs, and leaves its blocks queued for the next run,
+/// so a failing model never blocks the ledger (design.md §10).
 public enum LLMError: Error, CustomStringConvertible {
     case unavailable(String)
     case badResponse(String)

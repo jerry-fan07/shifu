@@ -22,7 +22,16 @@ public enum AmbiguousClassifier {
     /// a changed span resets it to zero, so genuinely new evidence retries.
     public static let maxAttempts = 3
 
+    /// The evidence for one block, as sent to the model.
+    ///
+    /// Everything here has already passed the redaction choke point — it comes
+    /// from `observations.text`, which `ObservationRecorder` redacted before it
+    /// ever reached disk. `textSample` is additionally capped (600 bytes) so a
+    /// batch stays inside a small context window.
     public struct BlockSample: Sendable {
+        /// The `activities.id` this sample describes. Round-trips through the
+        /// prompt as `id=` and comes back in the verdict, which is how a
+        /// response is matched to its block.
         public var id: Int64
         public var appBundle: String
         public var domain: String?
@@ -38,6 +47,13 @@ public enum AmbiguousClassifier {
         }
     }
 
+    /// One parsed classification from the model.
+    ///
+    /// A verdict is a *proposal*, not a decision. `run` discards any whose
+    /// `confidence` is below `confidenceFloor`, and any whose `id` wasn't in
+    /// the batch that was asked about — a hallucinated id can't reach the
+    /// database. Blocks asked about but not confidently answered spend an
+    /// `llm_attempts` credit instead, which is what bounds re-billing.
     public struct Verdict: Equatable, Sendable {
         public var id: Int64
         public var category: Category

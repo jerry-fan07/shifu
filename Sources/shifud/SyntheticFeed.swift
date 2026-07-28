@@ -24,12 +24,22 @@ enum SyntheticFeed {
         var refreshed = 0
         for index in 0..<count {
             let (bundle, title) = apps[index % apps.count]
-            // Every third trigger repeats the previous screen (dedupe path);
-            // others get fresh content of realistic size (~2 KB).
-            let page = (index % 3 == 0) ? index - 1 : index
-            let text = Self.syntheticText(seed: page / apps.count, bundle: bundle)
+            // Every third rotation re-captures the *same* window with
+            // unchanged content, exercising the SimHash refresh path
+            // (design.md §3.3); the rest get fresh content (~2 KB).
+            // It has to be the same window: repeating the previous
+            // *trigger's* content attributes it to the next app in the
+            // rotation, which is a different key and can never dedupe.
+            let rotation = index / apps.count
+            let screenIndex = (rotation % 3 == 2) ? rotation - 1 : rotation
+            let text = Self.syntheticText(seed: screenIndex, bundle: bundle)
             let outcome = try recorder.record(.init(
-                timestamp: Int64(1_700_000_000_000) + Int64(index) * 30_000,
+                // 20 s apart, so one full rotation (apps.count × 20 s) stays
+                // inside `ObservationRecorder.dedupeTTLMs`. Past that the
+                // dedupe state has aged out and the refresh path stops being
+                // exercised at all — the harness asserts a nonzero dedupe
+                // count so that can't regress silently again.
+                timestamp: Int64(1_700_000_000_000) + Int64(index) * 20_000,
                 appBundle: bundle, windowTitle: title,
                 captureKind: .ax, text: text
             ))

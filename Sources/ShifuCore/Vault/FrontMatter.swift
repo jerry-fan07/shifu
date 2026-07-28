@@ -12,6 +12,9 @@ public enum FrontMatter {
         case project
     }
 
+    /// A parsed note file: frontmatter as flat strings, plus the trimmed body.
+    /// Values are never coerced here — nested forms like `srs: {…}` stay
+    /// strings for the caller to interpret (`Note.parseSRS`).
     public struct Document {
         public var fields: [String: String]
         public var body: String

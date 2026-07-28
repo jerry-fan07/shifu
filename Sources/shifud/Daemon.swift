@@ -7,10 +7,10 @@ import ShifuCore
 @MainActor
 final class Daemon: NSObject {
     static let idleThreshold: TimeInterval = 300   // 5 min without HID input
-    static let heartbeatInterval: TimeInterval = 60
     static let titleDebounce: TimeInterval = 0.5
 
     private let engine: CaptureEngine
+    private let database: ShifuDatabase
     private let pauseController = PauseController()
 
     private var workspaceObserverInstalled = false
@@ -22,12 +22,20 @@ final class Daemon: NSObject {
     private var debounceWork: DispatchWorkItem?
     private var capturing = false
 
-    init(engine: CaptureEngine) {
+    /// Last-applied interval values, so `reloadIntervals()` can tell a real
+    /// change from a no-op. Seeded from the catalog defaults.
+    private var currentHeartbeat = TimeInterval(SettingsCatalog.heartbeatSeconds.defaultValue)
+    private var currentAnalyzerInterval =
+        TimeInterval(SettingsCatalog.analysisIntervalSeconds.defaultValue)
+
+    init(engine: CaptureEngine, database: ShifuDatabase) {
         self.engine = engine
+        self.database = database
     }
 
     func start() {
         reportPermissions()
+        AXHelper.installMessagingTimeout(seconds: 1)
         pauseController.onChange = { [weak self] paused in
             guard let self else { return }
             if paused {
@@ -37,9 +45,10 @@ final class Daemon: NSObject {
                 log("resumed — observers reattached")
                 self.startCapture()
             }
+            self.reloadIntervals()
         }
         pauseController.startWatching()
-        scheduleAnalyzer()
+        reloadIntervals()   // builds the analyzer timer; heartbeat waits for startCapture()
         if pauseController.isPaused {
             log("starting paused (pause_until is in the future)")
         } else {
@@ -59,11 +68,7 @@ final class Daemon: NSObject {
         )
         workspaceObserverInstalled = true
 
-        let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { _ in
-            MainActor.assumeIsolated { [weak self] in self?.heartbeatFired() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        heartbeat = timer
+        reloadIntervals()   // rebuilds the heartbeat stopCapture() tore down
 
         if let app = NSWorkspace.shared.frontmostApplication {
             attachAXObserver(to: app)
@@ -98,8 +103,10 @@ final class Daemon: NSObject {
     // MARK: - Heartbeat & idle (§3.1)
 
     private func heartbeatFired() {
+        // Before the idle guard: an idle machine must still pick up new values.
+        reloadIntervals()
         guard Self.secondsSinceLastInput() < Self.idleThreshold else { return }  // idle: suspend
-        guard Date().timeIntervalSince(engine.lastCaptureAt) >= Self.heartbeatInterval - 1 else { return }
+        guard Date().timeIntervalSince(engine.lastCaptureAt) >= currentHeartbeat - 1 else { return }
         engine.captureFrontmost(trigger: "heartbeat")
     }
 
@@ -160,20 +167,57 @@ final class Daemon: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.titleDebounce, execute: work)
     }
 
-    // MARK: - Analyzer scheduling (§2.2)
+    // MARK: - Interval settings (design.md §9)
 
-    /// Spawns shifu-analyzer hourly. A separate process so analysis spikes can
-    /// never make the capture path feel heavy; it self-gates on battery.
-    /// Runs even while paused — it only processes already-captured data.
-    private func scheduleAnalyzer() {
-        let timer = Timer(timeInterval: 3_600, repeats: true) { _ in
-            MainActor.assumeIsolated { [weak self] in self?.runAnalyzer() }
+    /// Applies the user's current interval settings, rebuilding a timer only
+    /// when its value actually changed (or when it doesn't exist yet).
+    ///
+    /// The changed-guard is load-bearing, not an optimization: rebuilding the
+    /// analyzer timer on every heartbeat would reset its hourly countdown each
+    /// minute and it would never fire.
+    ///
+    /// Idempotent, so it's safe to call from anywhere — and it is called from
+    /// four places, because no single one covers every state: `startCapture()`,
+    /// `heartbeatFired()`, the pause edge, and `runAnalyzer()` (the only one
+    /// that still runs while paused).
+    private func reloadIntervals() {
+        let beat = TimeInterval(Settings.value(SettingsCatalog.heartbeatSeconds, database: database))
+        // `capturing` guard: pause is a real teardown (design.md §8) — never
+        // resurrect the heartbeat here while capture is meant to be stopped.
+        if capturing, beat != currentHeartbeat || heartbeat == nil {
+            heartbeat?.invalidate()
+            let timer = Timer(timeInterval: beat, repeats: true) { _ in
+                MainActor.assumeIsolated { [weak self] in self?.heartbeatFired() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            heartbeat = timer
+            if beat != currentHeartbeat { log("heartbeat interval now \(Int(beat))s") }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        analyzerTimer = timer
+        currentHeartbeat = beat
+
+        let cadence = TimeInterval(
+            Settings.value(SettingsCatalog.analysisIntervalSeconds, database: database))
+        if cadence != currentAnalyzerInterval || analyzerTimer == nil {
+            analyzerTimer?.invalidate()
+            let timer = Timer(timeInterval: cadence, repeats: true) { _ in
+                MainActor.assumeIsolated { [weak self] in self?.runAnalyzer() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            analyzerTimer = timer
+            if cadence != currentAnalyzerInterval { log("analysis interval now \(Int(cadence))s") }
+        }
+        currentAnalyzerInterval = cadence
     }
 
+    // MARK: - Analyzer scheduling (§2.2)
+
+    /// Spawns shifu-analyzer on the user's analysis interval. A separate process
+    /// so analysis spikes can never make the capture path feel heavy; it
+    /// self-gates on battery. Runs even while paused — it only processes
+    /// already-captured data, which is also why it re-reads settings here: with
+    /// the heartbeat torn down, this is the only live reload path left.
     private func runAnalyzer() {
+        reloadIntervals()
         if let existing = analyzerProcess, existing.isRunning { return }
         let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let analyzerURL = selfPath.deletingLastPathComponent()

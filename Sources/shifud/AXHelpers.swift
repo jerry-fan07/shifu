@@ -3,6 +3,19 @@ import Foundation
 
 /// Thin wrappers over the C Accessibility API.
 enum AXHelper {
+    /// Caps how long any single AX call may block on an unresponsive app.
+    /// The process default is ~6 s per message; the capture ladder runs on
+    /// the main thread and `extractText` alone can issue thousands of
+    /// messages, so one busy frontmost app could stall the daemon — and
+    /// anything animating on that thread — for seconds. A timed-out call
+    /// fails with `.cannotComplete`, which every helper here already treats
+    /// as "no value": capture degrades a rung (§10) instead of hanging.
+    /// Applied to the system-wide element, so it covers every element this
+    /// process talks to.
+    static func installMessagingTimeout(seconds: Float) {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), seconds)
+    }
+
     static func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {

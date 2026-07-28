@@ -177,6 +177,60 @@ import Testing
         #expect(extractor.calls == 1)
     }
 
+    @Test func rebuildCarriesSemanticAssignmentBySpan() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try seed(db)
+        try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
+
+        // Simulate the semantic and theme passes: the video block joins a
+        // task and a theme, the Xcode block burned placement attempts.
+        let videoID = try #require(try videoActivity(db).id)
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                UPDATE activities
+                SET sem_key = 'sem:learning-swift-actors', theme_key = 'thm:swift-mastery'
+                WHERE id = ?
+                """, arguments: [videoID])
+            try sqlite.execute(sql: """
+                UPDATE activities SET sem_attempts = 2, theme_attempts = 1
+                WHERE app_bundle = 'com.apple.dt.Xcode'
+                """)
+        }
+
+        try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
+
+        let carried = try await db.queue.read { sqlite in
+            (keys: try Row.fetchOne(sqlite, sql: """
+                SELECT sem_key, theme_key FROM activities WHERE domain = 'youtube.com'
+                """).map { ($0["sem_key"] as String?, $0["theme_key"] as String?) },
+             attempts: try Row.fetchOne(sqlite, sql: """
+                SELECT sem_attempts, theme_attempts FROM activities
+                WHERE app_bundle = 'com.apple.dt.Xcode'
+                """).map { ($0["sem_attempts"] as Int, $0["theme_attempts"] as Int) })
+        }
+        #expect(carried.keys?.0 == "sem:learning-swift-actors")
+        #expect(carried.keys?.1 == "thm:swift-mastery")
+        #expect(carried.attempts?.0 == 2)
+        #expect(carried.attempts?.1 == 1)
+
+        // New evidence changes the video block's span — the assignment and
+        // counter reset so the semantic pass revisits it.
+        try await db.queue.write { sqlite in
+            try sqlite.execute(
+                sql: "UPDATE observations SET last_seen = 900_000 WHERE url IS NOT NULL")
+        }
+        try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
+        let reset = try await db.queue.read { sqlite in
+            (semKey: try Row.fetchOne(
+                sqlite, sql: "SELECT sem_key FROM activities WHERE domain = 'youtube.com'")
+                .flatMap { $0["sem_key"] as String? },
+             attempts: try Int.fetchOne(
+                sqlite, sql: "SELECT sem_attempts FROM activities WHERE domain = 'youtube.com'"))
+        }
+        #expect(reset.semKey == nil)
+        #expect(reset.attempts == 0)
+    }
+
     @Test func concreteRuleOutranksCarriedLLMLabel() async throws {
         let db = try ShifuDatabase.inMemory()
         try seed(db)
@@ -205,6 +259,42 @@ import Testing
         #expect(video.source == "user")
         #expect(video.topic == nil)
         #expect(!video.ambiguous)
+    }
+}
+
+@Suite struct LabeledActivityTests {
+    @Test func joinsTaskAndThemeNamesAndFiltersWindow() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (key, name, created_at, last_active_at)
+                VALUES ('sem:sf-flights', 'Booking SF flights', 0, 0)
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES ('thm:travel', 'Travel', 0, 0)
+                """)
+            var labeled = Activity(startedAt: 1_000, endedAt: 601_000,
+                                   appBundle: "com.apple.Safari", domain: "united.com",
+                                   category: .admin)
+            var bare = Activity(startedAt: 700_000, endedAt: 1_300_000,
+                                appBundle: "com.apple.dt.Xcode", category: .work)
+            var outside = Activity(startedAt: 9_000_000, endedAt: 9_600_000,
+                                   appBundle: "com.apple.Safari", category: .work)
+            try labeled.insert(sqlite); try bare.insert(sqlite); try outside.insert(sqlite)
+            try sqlite.execute(sql: """
+                UPDATE activities SET task_id = 1, theme_key = 'thm:travel' WHERE id = ?
+                """, arguments: [labeled.id])
+        }
+
+        let rows = try LedgerBuilder.labeledActivities(database: db, from: 0, to: 2_000_000)
+        #expect(rows.count == 2)
+        #expect(rows[0].source == "united.com")
+        #expect(rows[0].taskName == "Booking SF flights")
+        #expect(rows[0].themeName == "Travel")
+        #expect(rows[1].source == "Xcode")
+        #expect(rows[1].taskName == nil)
+        #expect(rows[1].themeName == nil)
     }
 }
 

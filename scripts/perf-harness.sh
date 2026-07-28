@@ -27,9 +27,18 @@ echo "$OUTPUT"
 
 RSS_MB=$(echo "$OUTPUT" | sed -n 's/.*peak RSS \([0-9.]*\) MB.*/\1/p' | cut -d. -f1)
 CPU_S=$(echo "$OUTPUT" | sed -n 's/.*cpu \([0-9.]*\)s.*/\1/p' | cut -d. -f1)
+DEDUPED=$(echo "$OUTPUT" | sed -n 's/.*, \([0-9]*\) deduped.*/\1/p')
 
-if [ -z "$RSS_MB" ] || [ -z "$CPU_S" ]; then
-    echo "perf-harness: FAIL — could not parse RSS/CPU from output"
+if [ -z "$RSS_MB" ] || [ -z "$CPU_S" ] || [ -z "$DEDUPED" ]; then
+    echo "perf-harness: FAIL — could not parse RSS/CPU/dedupe count from output"
+    exit 1
+fi
+# Coverage guard, not a budget: the SimHash refresh path has to actually run.
+# If the synthetic feed's repeat interval ever drifts past
+# ObservationRecorder.dedupeTTLMs, every trigger becomes an insert and this
+# benchmark quietly stops covering dedupe while still reporting PASS.
+if [ "$DEDUPED" -eq 0 ]; then
+    echo "perf-harness: FAIL — 0 deduped; the SimHash refresh path was never exercised"
     exit 1
 fi
 if [ "$CPU_S" -ge "$CPU_BUDGET_S" ]; then

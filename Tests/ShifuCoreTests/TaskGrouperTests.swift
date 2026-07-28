@@ -245,95 +245,159 @@ import Testing
         #expect(dayLogs.count == 1)
         #expect(dayLogs[0].taskName == "grdb migrations")
     }
-}
 
-@Suite struct TaskPruneTests {
-    private let calendar = Calendar.current
-    private var day1: Date { calendar.startOfDay(for: Date(timeIntervalSince1970: 1_760_000_000)) }
+    /// The recency filter drops tasks last worked before the cutoff, and the
+    /// time beside a surviving row counts only the part inside the window —
+    /// an activity straddling the cutoff is clipped, not counted whole.
+    @Test func filterScopesBothMembershipAndTime() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 60,
+                   topic: "spanning task")
+        try insert(database, start: day2.addingTimeInterval(9 * 3_600), minutes: 30,
+                   topic: "spanning task")
+        try insert(database, start: day1.addingTimeInterval(14 * 3_600), minutes: 45,
+                   topic: "day one only")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2) + 86_400_000,
+                            calendar: calendar)
 
-    private func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1_000) }
+        let all = try TaskStore.recentTasks(database: database)
+        #expect(all.count == 2)
+        let spanningMs = all.first { $0.task.name == "spanning task" }?.totalMs ?? 0
+        #expect(spanningMs == 90 * 60_000)
 
-    /// A legacy task (minted before the substance gate) with one attached
-    /// activity of the given length, last active at `endedAt`.
-    @discardableResult
-    private func seedTask(
-        _ database: ShifuDatabase, key: String, name: String, minutes: Double,
-        projectID: Int64? = nil, endedAt: Int64
-    ) throws -> Int64 {
-        try database.queue.write { db in
-            var task = WorkTask(key: key, name: name, projectID: projectID,
-                                createdAt: endedAt, lastActiveAt: endedAt)
-            try task.insert(db)
-            var activity = Activity(
-                startedAt: endedAt - Int64(minutes * 60_000), endedAt: endedAt,
-                appBundle: "com.apple.Safari",
-                domain: key.hasPrefix("domain:") ? String(key.dropFirst(7)) : nil,
-                category: .work)
-            try activity.insert(db)
-            try db.execute(sql: "UPDATE activities SET task_id = ? WHERE id = ?",
-                           arguments: [task.id, activity.id])
-            var log = TaskLog(taskID: task.id!, dayStart: endedAt - endedAt % 86_400_000,
-                              durationMs: Int64(minutes * 60_000), summary: name)
-            try log.insert(db)
-            return task.id!
-        }
+        let recent = try TaskStore.recentTasks(
+            database: database, filter: .init(since: ms(day2)))
+        #expect(recent.map(\.task.name) == ["spanning task"])
+        #expect(recent[0].totalMs == 30 * 60_000)
+
+        // A cutoff mid-activity keeps only the minutes after it.
+        let midday = ms(day2.addingTimeInterval(9 * 3_600 + 600))
+        let clipped = try TaskStore.recentTasks(
+            database: database, filter: .init(since: midday))
+        #expect(clipped[0].totalMs == 20 * 60_000)
     }
 
-    @Test func prunesOnlyStaleSubThresholdDefaultNamedTasks() throws {
+    /// Sorting by time spent reorders a list that recency orders differently.
+    @Test func filterSortsByTimeSpentAndProject() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 120,
+                   topic: "long early task")
+        try insert(database, start: day1.addingTimeInterval(15 * 3_600), minutes: 20,
+                   topic: "short late task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let byRecency = try TaskStore.recentTasks(database: database)
+        #expect(byRecency.map(\.task.name) == ["short late task", "long early task"])
+        let byTime = try TaskStore.recentTasks(
+            database: database, filter: .init(sort: .mostTime))
+        #expect(byTime.map(\.task.name) == ["long early task", "short late task"])
+
+        // Project scope: one task filed, the other left loose.
+        let project = try TaskStore.createProject(named: "Shifu", database: database)
+        let filed = byTime[0].task.id!
+        try TaskStore.assign(taskID: filed, projectID: project.id, database: database)
+
+        let inProject = try TaskStore.recentTasks(
+            database: database, filter: .init(projectScope: .project(id: project.id!)))
+        #expect(inProject.map(\.task.name) == ["long early task"])
+        #expect(inProject[0].projectName == "Shifu")
+
+        let loose = try TaskStore.recentTasks(
+            database: database, filter: .init(projectScope: .unassigned))
+        #expect(loose.map(\.task.name) == ["short late task"])
+    }
+
+    /// The duration floor drops short tasks, and the match count reports the
+    /// filtered total rather than the truncated page — the Task log's "50 of
+    /// 364" line depends on the two agreeing.
+    @Test func minimumTimeFiltersAndCountIgnoresLimit() throws {
+        let database = try makeDB()
+        // 6 min: over the minting gate (minNewTaskMs), under the 30-min floor.
+        for hour in 0..<4 {
+            try insert(database, start: day1.addingTimeInterval(Double(hour) * 3_600),
+                       minutes: 6, topic: "brief task \(hour)")
+        }
+        try insert(database, start: day1.addingTimeInterval(10 * 3_600), minutes: 40,
+                   topic: "the real task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let substantial = TaskStore.TaskFilter(minimumMs: 1_800_000)
+        let kept = try TaskStore.recentTasks(database: database, filter: substantial)
+        #expect(kept.map(\.task.name) == ["the real task"])
+        #expect(try TaskStore.matchingTaskCount(
+            database: database, filter: substantial) == 1)
+
+        // The count is of everything that matches, not of the page returned.
+        let capped = TaskStore.TaskFilter(limit: 2)
+        #expect(try TaskStore.recentTasks(database: database, filter: capped).count == 2)
+        #expect(try TaskStore.matchingTaskCount(database: database, filter: capped) == 5)
+    }
+
+    /// The day log leads with the most recently worked task, not the longest —
+    /// the Vault tab's "Today" list is a recency feed.
+    @Test func dayLogLeadsWithTheMostRecentTask() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 120,
+                   topic: "long morning task")
+        try insert(database, start: day1.addingTimeInterval(15 * 3_600), minutes: 20,
+                   topic: "short afternoon task")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day1) + 86_400_000,
+                            calendar: calendar)
+
+        let dayLogs = try TaskStore.logs(dayStart: ms(day1), database: database)
+        #expect(dayLogs.map(\.taskName) == ["short afternoon task", "long morning task"])
+    }
+}
+
+@Suite struct TaskDetailTests {
+    @Test func detailGathersHistorySourcesNotesAndRecent() throws {
         let database = try ShifuDatabase.inMemory()
-        let stale = ms(day1)
-        let now = day1.addingTimeInterval(9 * 86_400)
-
-        let junk = try seedTask(database, key: "domain:nytimes.com", name: "nytimes.com",
-                                minutes: 3, endedAt: stale)
-        let renamed = try seedTask(database, key: "topic:skim-rust", name: "Rust research",
-                                   minutes: 3, endedAt: stale)
-        let big = try seedTask(database, key: "domain:github.com", name: "github.com",
-                               minutes: 45, endedAt: stale)
-        try seedTask(database, key: "domain:united.com", name: "united.com",
-                     minutes: 3, endedAt: ms(now) - 3_600_000)
-        let project = try TaskStore.createProject(named: "Trips", database: database)
-        try seedTask(database, key: "domain:kayak.com", name: "kayak.com",
-                     minutes: 3, projectID: project.id, endedAt: stale)
-
         try database.queue.write { db in
+            try db.execute(sql: "INSERT INTO projects (name, created_at) VALUES ('Travel', 0)")
             try db.execute(sql: """
-                INSERT INTO task_merge_suggestions (task_a, task_b, cosine, status, created_at)
-                VALUES (?, ?, 0.95, 'new', 0), (?, ?, 0.95, 'dismissed', 0)
-                """, arguments: [junk, big, renamed, big])
+                INSERT INTO tasks (key, name, gist, project_id, created_at, last_active_at)
+                VALUES ('sem:sf-trip', 'Planning the SF trip', 'Flights and lodging.', 1, 0, 99)
+                """)
+            for (index, domain) in ["united.com", "united.com", "airbnb.com"].enumerated() {
+                var activity = Activity(
+                    startedAt: Int64(index) * 3_600_000,
+                    endedAt: Int64(index) * 3_600_000 + 600_000,
+                    appBundle: "com.apple.Safari", domain: domain, category: .admin,
+                    topic: index == 2 ? "picking a rental" : nil)
+                try activity.insert(db)
+                try db.execute(sql: "UPDATE activities SET task_id = 1 WHERE id = ?",
+                               arguments: [activity.id])
+            }
             try db.execute(sql: """
-                INSERT INTO project_suggestions (task_id, project_id, cosine, status, created_at)
-                VALUES (?, ?, 0.9, 'new', 0)
-                """, arguments: [junk, project.id])
+                INSERT INTO task_logs (task_id, day_start, duration_ms, summary)
+                VALUES (1, 0, 1800000, 'united.com — comparing fares'),
+                       (1, 86400000, 600000, 'airbnb.com — picking a rental')
+                """)
+            try db.execute(sql: """
+                INSERT INTO vault_index
+                    (note_id, path, kind, task_id, captured, content_hash, mtime)
+                VALUES ('01NOTE', '2026/07/27-baggage-rules.md', 'knowledge', 1, 500, 1, 1)
+                """)
+            let rowid = try Int64.fetchOne(db, sql: "SELECT id FROM vault_index")!
+            try db.execute(sql: "INSERT INTO vault_fts (rowid, title, body) VALUES (?, ?, ?)",
+                           arguments: [rowid, "Baggage rules", "carry-on limits"])
         }
 
-        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
-        #expect(pruned == 1)
+        let detail = try #require(try TaskStore.detail(taskID: 1, database: database))
+        #expect(detail.task.name == "Planning the SF trip")
+        #expect(detail.gist == "Flights and lodging.")
+        #expect(detail.projectName == "Travel")
+        #expect(detail.totalMs == 3 * 600_000)
+        #expect(detail.days.map(\.dayStart) == [86_400_000, 0])   // newest first
+        #expect(detail.sources.map(\.source) == ["united.com", "airbnb.com"])
+        #expect(detail.sources[0].ms == 1_200_000)
+        #expect(detail.notes.map(\.title) == ["Baggage rules"])
+        #expect(detail.recent.count == 3)
+        #expect(detail.recent[0].topic == "picking a rental")     // newest first
 
-        let keys = try database.queue.read { db in
-            try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
-        }
-        #expect(keys == ["domain:github.com", "domain:kayak.com",
-                         "domain:united.com", "topic:skim-rust"])
-
-        // The activity survives task-less; the junk task's log cascaded away.
-        let state = try database.queue.read { db in
-            (orphans: try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM activities WHERE task_id IS NULL
-                """) ?? -1,
-             junkLogs: try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM task_logs WHERE task_id = \(junk)
-                """) ?? -1,
-             merges: try String.fetchAll(db, sql: "SELECT status FROM task_merge_suggestions"),
-             projects: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_suggestions") ?? -1)
-        }
-        #expect(state.orphans == 1)
-        #expect(state.junkLogs == 0)
-        #expect(state.merges == ["dismissed"])  // only the open pair naming junk died
-        #expect(state.projects == 0)
-
-        // Re-running finds nothing left to prune.
-        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar) == 0)
+        #expect(try TaskStore.detail(taskID: 99, database: database) == nil)
     }
 }
 

@@ -6,14 +6,18 @@ import GRDB
 /// Idempotent over a window, like LedgerBuilder: tasks are keyed stably, day
 /// logs are recomputed from scratch for every day the window touches.
 public enum TaskGrouper {
-    /// A key never seen before earns a task row only once the window shows
-    /// this much time behind it. Passing subjects — a glanced-at domain, a
-    /// topic worded once — stay unassigned instead of minting a permanent
-    /// task; the idempotent window re-runs grouping, so a key that keeps
-    /// accruing time mints and picks up its earlier blocks retroactively.
-    /// Keys with an existing task always attach, however small the block.
+    /// A mechanical key never seen before earns a task row only once the
+    /// window shows this much time behind it. Passing subjects — a glanced-at
+    /// domain, a topic worded once — stay unassigned instead of minting a
+    /// permanent task; the idempotent window re-runs grouping, so a key that
+    /// keeps accruing time mints and picks up its earlier blocks
+    /// retroactively. Keys with an existing task always attach, however small
+    /// the block, and `sem:` keys are exempt — SemanticTaskGrouper already
+    /// gates them by block length and model confidence.
     public static let minNewTaskMs: Int64 = 5 * 60_000
 
+    /// What one `run` did: distinct task keys assigned in the window, and
+    /// day-log rows rewritten across every local day those activities touched.
     public struct Summary: Equatable, Sendable {
         public var tasksTouched: Int
         public var logsWritten: Int
@@ -24,6 +28,8 @@ public enum TaskGrouper {
     /// Stable grouping key for an activity: the topic when classification
     /// produced one (tasks span days because the topic recurs), else the
     /// domain, else the app. Prefixed so the three namespaces never collide.
+    /// A semantic assignment (`activities.sem_key`, design.md §5.3) outranks
+    /// all three — see `run`, which checks it before calling this.
     public static func key(topic: String?, domain: String?, appBundle: String) -> String {
         if let topic {
             let slug = Self.slug(topic)
@@ -80,6 +86,7 @@ public enum TaskGrouper {
         var appBundle: String
         var domain: String?
         var topic: String?
+        var semKey: String?
     }
 
     private struct GroupedItems {
@@ -93,20 +100,22 @@ public enum TaskGrouper {
     ) throws -> GroupedItems {
         let items: [Item] = try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, started_at, ended_at, app_bundle, domain, topic
+                SELECT id, started_at, ended_at, app_bundle, domain, topic, sem_key
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND category != 'private'
                 ORDER BY started_at
                 """, arguments: [from, to]
             ).map { row in
                 Item(id: row["id"], startedAt: row["started_at"], endedAt: row["ended_at"],
-                     appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"])
+                     appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
+                     semKey: row["sem_key"])
             }
         }
         var groups: [String: [Item]] = [:]
         var keyOrder: [String] = []
         for item in items {
-            let itemKey = key(topic: item.topic, domain: item.domain, appBundle: item.appBundle)
+            let itemKey = item.semKey
+                ?? key(topic: item.topic, domain: item.domain, appBundle: item.appBundle)
             if groups[itemKey] == nil { keyOrder.append(itemKey) }
             groups[itemKey, default: []].append(item)
         }
@@ -142,13 +151,23 @@ public enum TaskGrouper {
                         sql: "UPDATE tasks SET last_active_at = MAX(last_active_at, ?) WHERE id = ?",
                         arguments: [lastActive, taskID])
                 } else {
-                    let groupMs = group.reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
-                    guard groupMs >= minNewTaskMs else { continue }
+                    // Substance gate for mechanical keys only: a vanished
+                    // semantic task is re-minted regardless, since its blocks
+                    // already cleared SemanticTaskGrouper's own floor.
+                    if !itemKey.hasPrefix(SemanticTaskGrouper.keyPrefix) {
+                        let groupMs = group.reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
+                        guard groupMs >= minNewTaskMs else { continue }
+                    }
                     let first = group[0]
+                    // Semantic tasks are pre-created (with their LLM title) by
+                    // SemanticTaskGrouper; this branch only fires for them if
+                    // that row vanished, so fall back to a humanized slug.
+                    let name = itemKey.hasPrefix(SemanticTaskGrouper.keyPrefix)
+                        ? SemanticTaskGrouper.humanize(key: itemKey)
+                        : displayName(topic: first.topic, domain: first.domain,
+                                      appBundle: first.appBundle)
                     var task = WorkTask(
-                        key: itemKey,
-                        name: displayName(topic: first.topic, domain: first.domain,
-                                          appBundle: first.appBundle),
+                        key: itemKey, name: name,
                         createdAt: nowMs, lastActiveAt: lastActive)
                     try task.insert(db)
                     taskID = task.id ?? db.lastInsertedRowID
