@@ -143,8 +143,13 @@ final class WorkModeController {
         offTaskSince = since
         guard Date().timeIntervalSince(since) >= Self.gracePeriod,
               Date().timeIntervalSince(lastPulseAt) >= Self.pulseSpacing else { return }
-        lastPulseAt = Date()
-        log("work mode: off-task (\(reason)) — glow pulse")
-        overlay.pulse()
+        // Only a pulse that actually showed counts against `pulseSpacing`. A
+        // skip (e.g. Mission Control up, §4.4) leaves `lastPulseAt` untouched so
+        // the next off-task capture — a heartbeat away — retries, rather than
+        // swallowing the nudge for a whole spacing window.
+        if overlay.pulse() {
+            lastPulseAt = Date()
+            log("work mode: off-task (\(reason)) — glow pulse")
+        }
     }
 }

@@ -73,58 +73,86 @@ private struct DashboardTabBar: View {
     }
 }
 
-/// *Time* tab: stacked bars, day/week toggle, block drill-down. A second
-/// segmented lens picks what the stacks break down by — category, theme, or
-/// task (design.md §7, §5.3). System fonts and colors throughout (§7).
+/// *Time* tab: two modes over the same window (design.md §7).
+/// *Summary* answers "where did my time go" — a Screen Time–style ranked
+/// breakdown; *Timeline* answers "when" — the stacked bars and the block list.
+/// A day/week span and a lens (category, theme, or task — §5.3) apply to both.
+/// System fonts and colors throughout (§7).
 struct TimeTabView: View {
     enum Span: String, CaseIterable { case day = "Day", week = "Week" }
-    enum Lens: String, CaseIterable {
-        case category = "Category"
-        case theme = "Theme"
-        case task = "Task"
-    }
+    enum Mode: String, CaseIterable { case summary = "Summary", timeline = "Timeline" }
 
     @EnvironmentObject private var store: LedgerStore
     @State private var span: Span = .day
-    @State private var lens: Lens = .category
+    @State private var lens: TimeLens = .category
+    @State private var mode: Mode = .summary
 
-    static let categoryColors: KeyValuePairs<String, Color> = [
-        "work": .blue, "learning": .green, "entertainment": .orange,
-        "social": .pink, "communication": .teal, "admin": .gray,
-        "private": .secondary, "unclassified": Color.gray.opacity(0.4)
-    ]
     /// Theme/task lenses collapse everything beyond the biggest N groups into
-    /// "Other", so the legend stays readable over a busy week.
+    /// "Other", so the breakdown and the legend stay readable over a busy week.
     static let maxGroups = 7
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        // One read per body pass, shared by the chart, the breakdown, and the
+        // block list — each used to open its own query.
+        let (from, to) = range
+        let activities = store.labeledActivities(from: from, to: to)
+        let slices = TimeBreakdown.slices(
+            activities, lens: lens, from: from, to: to,
+            limit: lens == .category ? nil : Self.maxGroups)
+
+        return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+                .help("Where the time went, or when it happened")
                 Picker("", selection: $span) {
                     ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 160)
+                .frame(width: 140)
+                Spacer(minLength: 8)
                 Picker("", selection: $lens) {
-                    ForEach(Lens.allCases, id: \.self) { Text($0.rawValue) }
+                    ForEach(TimeLens.allCases, id: \.self) { Text($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 240)
-                .help("What the bars break down by")
+                .help("What the time is grouped by")
             }
 
-            chart
-                .frame(minHeight: 220)
-
-            Divider()
-
-            Text(span == .day ? "Blocks today" : "Blocks this week")
-                .font(.headline)
-            blockList
+            switch mode {
+            case .summary:
+                TimeBreakdownView(
+                    slices: slices, lens: lens,
+                    previousMs: previousTotalMs,
+                    periodLabel: span == .day ? "today" : "this week",
+                    comparisonLabel: span == .day ? "yesterday" : "the previous 7 days")
+            case .timeline:
+                timeline(activities: activities, slices: slices)
+            }
         }
         .padding(20)
         .frame(minWidth: 640, minHeight: 560)
         .onAppear { store.refresh() }
+    }
+
+    @ViewBuilder
+    private func timeline(
+        activities: [LedgerBuilder.LabeledActivity], slices: [TimeSlice]
+    ) -> some View {
+        chart(activities: activities, slices: slices)
+            .frame(minHeight: 200)
+        if !slices.isEmpty {
+            TimeLegendStrip(slices: slices, lens: lens)
+        }
+
+        Divider()
+
+        Text(span == .day ? "Blocks today" : "Blocks this week")
+            .font(.headline)
+        blockList(activities)
     }
 
     private var range: (from: Date, to: Date) {
@@ -139,6 +167,21 @@ struct TimeTabView: View {
         }
     }
 
+    /// Tracked time over the same-length window immediately before this one —
+    /// yesterday up to this hour, or the 7 days before these 7. Read lazily:
+    /// only the Summary mode's delta line asks for it.
+    private var previousTotalMs: Int64 {
+        let (from, to) = range
+        let shift = span == .day ? -1 : -7
+        let cal = Calendar.current
+        guard let previousFrom = cal.date(byAdding: .day, value: shift, to: from),
+              let previousTo = cal.date(byAdding: .day, value: shift, to: to)
+        else { return 0 }
+        return TimeBreakdown.total(
+            store.labeledActivities(from: previousFrom, to: previousTo),
+            from: previousFrom, to: previousTo)
+    }
+
     private struct Bucket: Identifiable {
         let id = UUID()
         let label: String
@@ -147,38 +190,19 @@ struct TimeTabView: View {
         let order: Int
     }
 
-    /// The lens's label for one activity.
-    private func groupLabel(_ activity: LedgerBuilder.LabeledActivity) -> String {
-        switch lens {
-        case .category: return activity.category
-        case .theme: return activity.themeName ?? "No theme"
-        case .task: return activity.taskName ?? "No task"
-        }
-    }
-
-    /// The biggest groups by total time in the window (theme/task lenses);
-    /// everything else collapses into "Other".
-    private func topGroups(_ activities: [LedgerBuilder.LabeledActivity]) -> Set<String> {
-        guard lens != .category else { return [] }
-        var totals: [String: Int64] = [:]
-        for activity in activities {
-            totals[groupLabel(activity), default: 0] += activity.durationMs
-        }
-        return Set(totals.sorted { $0.value > $1.value }
-            .prefix(Self.maxGroups).map(\.key))
-    }
-
-    private var buckets: [Bucket] {
+    /// The same buckets the bars are stacked from, folded into the groups the
+    /// breakdown already ranked (so both modes agree on what "Other" holds).
+    private func buckets(
+        _ activities: [LedgerBuilder.LabeledActivity], groups: Set<String>
+    ) -> [Bucket] {
         let (from, to) = range
-        let activities = store.labeledActivities(from: from, to: to)
-        let top = topGroups(activities)
         let cal = Calendar.current
         let dayZero = cal.startOfDay(for: from)
         // bucket label → (chronological order, group → ms)
         var sums: [String: (order: Int, byGroup: [String: Int64])] = [:]
         for activity in activities {
-            let raw = groupLabel(activity)
-            let group = lens == .category || top.contains(raw) ? raw : "Other"
+            let raw = lens.label(activity)
+            let group = groups.contains(raw) ? raw : TimeBreakdown.otherLabel
             let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
             var cursor = max(start, from)
             let end = min(Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000), to)
@@ -216,19 +240,24 @@ struct TimeTabView: View {
         .sorted { $0.order < $1.order }
     }
 
-    @ViewBuilder private var chart: some View {
-        let data = buckets
+    @ViewBuilder
+    private func chart(
+        activities: [LedgerBuilder.LabeledActivity], slices: [TimeSlice]
+    ) -> some View {
+        let data = buckets(activities, groups: Set(slices.map(\.name)))
         if data.isEmpty {
             ContentUnavailableView(
                 "No activity yet",
                 systemImage: "chart.bar",
                 description: Text("The analyzer runs hourly. Data appears once shifud has been watching for a while.")
             )
-        } else if lens == .category {
-            barChart(data)
-                .chartForegroundStyleScale(Self.categoryColors)
         } else {
-            barChart(data)   // themes/tasks: automatic palette, top-N + Other
+            barChart(data)
+                // Explicit domain + range rather than Charts' automatic palette:
+                // the bars, the legend strip, and the Summary donut have to name
+                // the same color for the same group.
+                .chartForegroundStyleScale(
+                    domain: slices.map(\.name), range: slices.map(\.color))
         }
     }
 
@@ -241,6 +270,7 @@ struct TimeTabView: View {
                 )
                 .foregroundStyle(by: .value(lens.rawValue, bucket.group))
             }
+            .chartLegend(.hidden)   // replaced by TimeLegendStrip, which carries totals
             .chartXAxis {
                 AxisMarks(values: axisLabels(in: data, width: proxy.size.width)) {
                     AxisGridLine()
@@ -265,17 +295,14 @@ struct TimeTabView: View {
         return labels.enumerated().compactMap { $0.offset.isMultiple(of: step) ? $0.element : nil }
     }
 
-    private var blockList: some View {
-        let (from, to) = range
-        let activities = store.labeledActivities(from: from, to: to)
-            .sorted { $0.startedAt > $1.startedAt }
-        return List(activities, id: \.id) { activity in
+    private func blockList(_ activities: [LedgerBuilder.LabeledActivity]) -> some View {
+        List(activities.sorted { $0.startedAt > $1.startedAt }, id: \.id) { activity in
             HStack {
                 Text(Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000),
                      format: .dateTime.hour().minute())
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                Text(lens == .category ? activity.source : groupLabel(activity))
+                Text(lens == .category ? activity.source : lens.label(activity))
                     .lineLimit(1)
                 if lens != .category {
                     Text(activity.source)

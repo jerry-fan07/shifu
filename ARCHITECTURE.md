@@ -196,6 +196,9 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Theme clustering (the high-level mode) + running narratives | [`Analysis/ThemeClusterer.swift`](Sources/ShifuCore/Analysis/ThemeClusterer.swift) |
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift) |
+| The Time tab's modes, span and lens | [`ShifuApp/DashboardView.swift`](Sources/ShifuApp/DashboardView.swift) — `TimeTabView` |
+| How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
+| The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
 | Cloud LLM endpoints (Claude / DeepSeek-compatible) | [`shifu-analyzer/ClaudeBackend.swift`](Sources/shifu-analyzer/ClaudeBackend.swift), [`shifu-analyzer/OpenAIBackend.swift`](Sources/shifu-analyzer/OpenAIBackend.swift) |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
 | What is never captured at all | [`Privacy/Exclusions.swift`](Sources/ShifuCore/Privacy/Exclusions.swift) |
