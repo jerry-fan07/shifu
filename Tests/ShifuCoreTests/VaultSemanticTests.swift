@@ -114,9 +114,9 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(!plain.isEmpty)
     }
 
-    // MARK: - Project notes (§2.2)
-
-    private func seedProject(_ database: ShifuDatabase) throws -> Int64 {
+    /// The same two blocks, filed under a theme instead — the shape the theme
+    /// suggester learns a centroid from.
+    private func seedTheme(_ database: ShifuDatabase) throws -> String {
         try database.queue.write { db in
             for (topic, hour) in [("capture daemon", 9.0), ("capture daemon", 14.0)] {
                 var activity = Activity(
@@ -127,48 +127,21 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
             }
         }
         try TaskGrouper.run(database: database, from: ms(day1), to: ms(day2))
-        let project = try TaskStore.createProject(named: "Shifu", database: database)
+        let key = try #require(try ThemeStore.create(named: "Shifu development",
+                                                     database: database))
         let taskID = try database.queue.read { db in
             try Int64.fetchOne(db, sql: "SELECT id FROM tasks LIMIT 1")!
         }
-        try TaskStore.assign(taskID: taskID, projectID: project.id, database: database)
-        return project.id!
+        try TaskStore.assignTheme(taskID: taskID, themeKey: key, database: database)
+        return key
     }
 
-    @Test func projectNoteIsDeterministicAndHashGated() async throws {
+    // MARK: - Task → theme suggestions (§5.3)
+
+    @Test func themeSuggestionAcceptAndDismissPersist() throws {
         let database = try ShifuDatabase.inMemory()
-        let vault = try makeVault(database)
-        let projectID = try seedProject(database)
-        let backend = CountingBackend()
-
-        _ = try await ProjectNoteCompiler.run(database: database, vault: vault,
-                                              backend: backend, now: day2)
-        #expect(backend.calls == 1)
-        let url = vault.projectNoteURL(slug: "shifu")
-        let first = try String(contentsOf: url, encoding: .utf8)
-        #expect(first.contains("## Tasks"))
-        #expect(first.contains("## Status"))
-        #expect(first.contains("h all time"))
-
-        // Unchanged logs ⇒ status carried, zero further LLM calls, same bytes.
-        _ = try await ProjectNoteCompiler.run(database: database, vault: vault,
-                                              backend: backend, now: day2)
-        #expect(backend.calls == 1)
-        #expect(try String(contentsOf: url, encoding: .utf8) == first)
-
-        // Deterministic compile keeps the carried status too.
-        try ProjectNoteCompiler.compileDeterministic(
-            projectID: projectID, database: database, vault: vault, now: day2)
-        #expect(try String(contentsOf: url, encoding: .utf8) == first)
-    }
-
-    // MARK: - Task → project suggestions (§5.3)
-
-    @Test func projectSuggestionAcceptAndDismissPersist() throws {
-        let database = try ShifuDatabase.inMemory()
-        let vault = try makeVault(database)
-        let projectID = try seedProject(database)
-        // A second, unassigned task semantically near the project.
+        let themeKey = try seedTheme(database)
+        // A second, unthemed task semantically near the theme.
         try database.queue.write { db in
             var activity = Activity(
                 startedAt: ms(day1.addingTimeInterval(16 * 3_600)),
@@ -180,34 +153,31 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         try TaskMerges.writeSignatures(database: database, from: ms(day1), to: ms(day2))
 
         let embedder = StubEmbedder(vectors: ["capture daemon": [1, 0]])
-        #expect(try TaskMerges.suggestProjects(
+        #expect(try TaskMerges.suggestThemes(
             database: database, embedder: embedder, now: day2) == 1)
-        let pending = try TaskMerges.pendingProjects(database: database)
+        let pending = try TaskMerges.pendingThemes(database: database)
         #expect(pending.count == 1)
-        #expect(pending[0].projectName == "Shifu")
+        #expect(pending[0].themeName == "Shifu development")
         #expect(pending[0].taskName == "capture daemon leak")
 
         // Dismiss is remembered (unique task_id).
-        try TaskMerges.dismissProject(suggestionID: pending[0].id, database: database)
-        #expect(try TaskMerges.suggestProjects(
+        try TaskMerges.dismissTheme(suggestionID: pending[0].id, database: database)
+        #expect(try TaskMerges.suggestThemes(
             database: database, embedder: embedder, now: day2) == 0)
-        #expect(try TaskMerges.pendingProjects(database: database).isEmpty)
+        #expect(try TaskMerges.pendingThemes(database: database).isEmpty)
 
         // Reset to test accept: flip the row back to new.
         try database.queue.write { db in
-            try db.execute(sql: "UPDATE project_suggestions SET status = 'new'")
+            try db.execute(sql: "UPDATE theme_suggestions SET status = 'new'")
         }
-        let reopened = try TaskMerges.pendingProjects(database: database)[0]
-        try TaskMerges.acceptProject(reopened, database: database, vault: vault)
+        let reopened = try TaskMerges.pendingThemes(database: database)[0]
+        try TaskMerges.acceptTheme(reopened, database: database)
 
-        let assigned = try database.queue.read { db in
-            try Int64.fetchOne(db, sql: """
-                SELECT project_id FROM tasks WHERE key = 'topic:capture-daemon-leak'
-                """)
-        }
-        #expect(assigned == projectID)
-        // Accept recompiled the project note with both tasks listed.
-        let text = try String(contentsOf: vault.projectNoteURL(slug: "shifu"), encoding: .utf8)
-        #expect(text.contains("capture daemon leak"))
+        // Accepting files the task's blocks, which is what the list reads.
+        let filed = try TaskStore.recentTasks(
+            database: database, filter: .init(themeScope: .theme(key: themeKey)))
+        #expect(filed.map(\.task.name).sorted() == ["capture daemon", "capture daemon leak"])
+        // Accepted, so it stops being offered.
+        #expect(try TaskMerges.pendingThemes(database: database).isEmpty)
     }
 }

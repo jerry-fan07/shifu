@@ -119,7 +119,6 @@ public enum WorkNoteCompiler {
         var topic: String?
         var taskKey: String
         var taskName: String
-        var projectName: String?
     }
 
     /// Stable identity of one activity for the regeneration gate. Never row
@@ -136,7 +135,6 @@ public enum WorkNoteCompiler {
         var taskID: Int64
         var taskKey: String
         var taskName: String
-        var projectName: String?
         var durationMs: Int64 = 0
         var sources: [String] = []
         var topics: [String] = []
@@ -159,11 +157,9 @@ public enum WorkNoteCompiler {
         try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT a.id, a.task_id, a.started_at, a.ended_at, a.app_bundle,
-                       a.domain, a.topic, t.key AS task_key, t.name AS task_name,
-                       p.name AS project_name
+                       a.domain, a.topic, t.key AS task_key, t.name AS task_name
                 FROM activities a
                 JOIN tasks t ON t.id = a.task_id
-                LEFT JOIN projects p ON p.id = t.project_id
                 WHERE a.ended_at > ? AND a.started_at < ? AND a.category != 'private'
                 ORDER BY a.started_at
                 """, arguments: [day.start, day.end]
@@ -173,7 +169,7 @@ public enum WorkNoteCompiler {
                     startedAt: row["started_at"], endedAt: row["ended_at"],
                     appBundle: row["app_bundle"], domain: row["domain"],
                     topic: row["topic"], taskKey: row["task_key"],
-                    taskName: row["task_name"], projectName: row["project_name"])
+                    taskName: row["task_name"])
             }
             var samples: [Int64: String] = [:]
             for row in rows {
@@ -209,8 +205,7 @@ public enum WorkNoteCompiler {
             if perTask[row.taskID] == nil {
                 order.append(row.taskID)
                 perTask[row.taskID] = TaskAgg(
-                    taskID: row.taskID, taskKey: row.taskKey,
-                    taskName: row.taskName, projectName: row.projectName)
+                    taskID: row.taskID, taskKey: row.taskKey, taskName: row.taskName)
             }
             var agg = perTask[row.taskID]!
             agg.durationMs += min(row.endedAt, day.end) - max(row.startedAt, day.start)
@@ -255,7 +250,6 @@ public enum WorkNoteCompiler {
                 durationMs: agg.durationMs,
                 sources: agg.sources,
                 sessions: sessions(from: agg.spans, formatter: times),
-                project: agg.projectName.map(TaskGrouper.slug),
                 contentHash: hash,
                 summary: TaskGrouper.summaryLine(sources: agg.sources, topics: agg.topics),
                 sessionsProse: carried,

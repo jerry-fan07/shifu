@@ -27,7 +27,6 @@ public struct WorkNote: Equatable, Sendable {
     public var durationMs: Int64
     public var sources: [String]
     public var sessions: [Session]
-    public var project: String?     // project slug, if the task is assigned
     /// Hash of (sorted activity ids + per-activity text-sample hashes): when
     /// unchanged, the `## Sessions` prose carries over verbatim — zero tokens
     /// spent on unchanged days.
@@ -39,7 +38,7 @@ public struct WorkNote: Equatable, Sendable {
     public init(
         id: String = Note.ulid(), taskKey: String, taskName: String, day: String,
         durationMs: Int64, sources: [String] = [], sessions: [Session] = [],
-        project: String? = nil, contentHash: Int64 = 0, summary: String,
+        contentHash: Int64 = 0, summary: String,
         sessionsProse: String? = nil, capturedLinks: [String] = []
     ) {
         self.id = id
@@ -49,7 +48,6 @@ public struct WorkNote: Equatable, Sendable {
         self.durationMs = durationMs
         self.sources = sources
         self.sessions = sessions
-        self.project = project
         self.contentHash = contentHash
         self.summary = summary
         self.sessionsProse = sessionsProse
@@ -70,7 +68,6 @@ public struct WorkNote: Equatable, Sendable {
                 .joined(separator: ", ")
             front.append("sessions: [\(spans)]")
         }
-        if let project { front.append("project: \(project)") }
         front.append("content_hash: \(contentHash)")
         front.append("---")
 
@@ -100,7 +97,6 @@ public struct WorkNote: Equatable, Sendable {
             durationMs: fields["duration_ms"].flatMap(Int64.init) ?? 0,
             sources: fields["sources"].map(parseInlineList) ?? [],
             sessions: fields["sessions"].map(parseSessions) ?? [],
-            project: fields["project"],
             contentHash: fields["content_hash"].flatMap(Int64.init) ?? 0,
             summary: body.summary,
             sessionsProse: body.prose,

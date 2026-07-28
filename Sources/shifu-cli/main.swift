@@ -18,10 +18,9 @@ usage: shifu <command>
   review         spaced-repetition session over due vault notes
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
-  vault search <query> [--task <name>] [--project <name>] [--kind <kind>] [--since <7d>] [--exact]
+  vault search <query> [--task <name>] [--kind <kind>] [--since <7d>] [--exact]
                  hybrid (semantic + full-text) search; --exact for full-text only
   vault reindex  rebuild the vault search index from the Markdown files
-  vault projects recompile the per-project status notes
   encrypt        encrypt the database with SQLCipher (key in Keychain)
 """
 
@@ -294,7 +293,6 @@ struct VaultSearchOptions {
     var query: [String] = []
     var kind: FrontMatter.Kind?
     var taskID: Int64?
-    var projectID: Int64?
     var since: Date?
     var exact = false
 }
@@ -319,7 +317,7 @@ func parseVaultSearchOptions(_ arguments: [String], db: ShifuDatabase) throws ->
         switch arg {
         case "--kind":
             guard let value = rest.next().flatMap(FrontMatter.Kind.init(rawValue:)) else {
-                print("--kind takes knowledge, work, or project")
+                print("--kind takes knowledge or work")
                 exit(1)
             }
             options.kind = value
@@ -328,11 +326,6 @@ func parseVaultSearchOptions(_ arguments: [String], db: ShifuDatabase) throws ->
                 rest.next(),
                 sql: "SELECT id FROM tasks WHERE name = ? COLLATE NOCASE OR key = ?", columns: 2,
                 miss: "no task named that — see the Vault tab for names", db: db)
-        case "--project":
-            options.projectID = try lookupID(
-                rest.next(),
-                sql: "SELECT id FROM projects WHERE name = ? COLLATE NOCASE", columns: 1,
-                miss: "no project named that", db: db)
         case "--since":
             guard let spec = rest.next(), let interval = parseForgetRangeSpec(spec) else {
                 print("--since takes a range like 2h, 7d")
@@ -351,13 +344,13 @@ func parseVaultSearchOptions(_ arguments: [String], db: ShifuDatabase) throws ->
 func commandVaultSearch(_ arguments: [String], db: ShifuDatabase) throws {
     let options = try parseVaultSearchOptions(arguments, db: db)
     guard !options.query.isEmpty else {
-        print("usage: shifu vault search <query> [--task] [--project] [--kind] [--since]")
+        print("usage: shifu vault search <query> [--task] [--kind] [--since]")
         exit(1)
     }
     // Hybrid (bm25 ∪ cosine) by default; --exact forces bm25-only (V4).
     let hits = try VaultSearch.search(
         options.query.joined(separator: " "), kind: options.kind, taskID: options.taskID,
-        projectID: options.projectID, since: options.since, database: db,
+        since: options.since, database: db,
         embedder: options.exact ? nil : SentenceEmbedder())
     guard !hits.isEmpty else {
         print("no matches")
@@ -380,18 +373,6 @@ func commandVault(_ arguments: [String]) throws {
             + "\(summary.unchanged) unchanged")
     case "search":
         try commandVaultSearch(Array(arguments.dropFirst()), db: db)
-    case "projects":
-        // On-demand deterministic recompile (vault-features.md §2.2); the
-        // LLM status paragraph is the analyzer's weekly job.
-        let vault = VaultStore(database: db)
-        var compiled = 0
-        for summary in try TaskStore.projects(database: db) {
-            guard let projectID = summary.project.id else { continue }
-            try ProjectNoteCompiler.compileDeterministic(
-                projectID: projectID, database: db, vault: vault)
-            compiled += 1
-        }
-        print("compiled \(compiled) project notes under vault/projects/")
     case "bench":
         // Perf-harness hook (vault-features.md §V8), not user-facing: build a
         // synthetic vault under SHIFU_HOME, then time a no-change reconcile
@@ -399,7 +380,7 @@ func commandVault(_ arguments: [String]) throws {
         let count = arguments.dropFirst().first.flatMap(Int.init) ?? 10_000
         try commandVaultBench(count: count, db: db)
     default:
-        print("usage: shifu vault search <query> … | reindex | projects")
+        print("usage: shifu vault search <query> … | reindex")
     }
 }
 

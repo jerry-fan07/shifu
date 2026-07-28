@@ -223,24 +223,24 @@ A: `SCScreenshotManager` (macOS 14+).
 - Scheduler: **FSRS** (modern, better-calibrated than SM-2; a Swift implementation is small). SRS state lives in the note's frontmatter so the folder stays self-contained.
 - Review UI: a SwiftUI card session launched from the menu bar ("Review · 7 due") or the *Cards* tab, plus a `shifu review` CLI for terminal users. Space reveals, 1–4 grades (with next-interval previews); cards can be edited (E), skipped (S), or deleted mid-session, and "Again" cards rotate to the back of the session queue. Card text renders inline/fenced code and $LaTeX$ natively via `CardMarkup` (no web views).
 - **Cards home** (dashboard *Cards* tab): review-activity calendar heatmap (from `srs_reviews`), per-card urgency overview (overdue / due today / new / soon / scheduled), and the deck picker. Inbox triage and the review session are separate screens pushed from here.
-- **Decks** (dashboard *Cards* tab): the session pulls from a selectable deck — all notes, one project, or one task (§5.3). Notes match a task by grouping key (topic slug, with containment fallback for topic keys).
+- **Decks** (dashboard *Cards* tab): the session pulls from a selectable deck — all notes, one theme, or one task (§5.3). Notes match a task by grouping key (topic slug, with containment fallback for topic keys).
 - Target session length: < 5 minutes/day. The digest nags gently if the due queue exceeds a threshold.
 
-### 5.3 Tasks, projects & work logs (vault-features.md)
+### 5.3 Tasks, themes & work logs (vault-features.md)
 
 > Vault second-brain phases V1–V4 shipped per vault-implementation.md: FTS5
 > search index, per-(task, day) work notes, user-confirmed merge suggestions
-> (assignment deferred — §12), project notes, and hybrid bm25 ∪ cosine
+> (assignment deferred — §12) and hybrid bm25 ∪ cosine
 > search. Deferred follow-ons stay logged in vault-features.md §10.
 
 The vault is a work database, not just flashcards:
 
-- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence (titles, topics, text samples) plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, projectless tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
+- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence (titles, topics, text samples) plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, never hand-filed tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. System shell surfaces — the lock screen, the Dock, one-shot dialogs, Shifu's own UI, bundle-less `unknown.<pid>` processes — are denylisted from grouping outright (`TaskGrouper.isSystemBundle`): they carry no topic or domain, so they'd bottom out at the `app:` key and mint permanent nonsense tasks ("loginwindow") that accrue time daily and never go stale; their blocks keep ledger time but never mint or join a task, and prune reaps ones minted before the list existed regardless of size, recency, or theme filing (the denylist starves them of new blocks anyway) — only a rename spares one. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
-- **Projects**: user-created groups of tasks with time totals — direct goals (a learning goal, a work effort). Assigning a task to a project also scopes its notes into the project's review deck (§5.2).
-- **Vault tab** shows today's compiled log (most recently worked task first), the task list with its latest log line, and projects with time spent. Inbox triage lives on the *Cards* tab with the decks.
-- **Task log filters**: a filter bar pinned above the log — range (today / 7 days / 30 days / all time), minimum time spent (default 5 min+), order (most recent / most time), and project (all / one / unfiled). The range doubles as the window the time column counts, so a row's hours always match the range on screen. The section header carries "N of M" because the list is capped at 50 rows: a roster runs to hundreds of tasks, most of them a stray minute, and a capped recency-sorted list looks identical under every range without it. The bar never touches the *Today* day log or the *Cards* deck picker, both of which read the unfiltered roster. Session state, not persisted.
-- **Task detail page**: every task row opens as a full dashboard page (`TaskDetailView`): the LLM gist of what the task *is*, day-by-day history with the work-note narratives (§2.1 of vault-features.md) expandable inline, where the time went per source, the knowledge notes captured under the task, recent activity blocks, inline rename, and project assignment (including creating a new project in place).
+- **Themes** (replaced projects, v14): the broad initiatives blocks cluster into (`ThemeClusterer`), which is also what the user files a task under by hand. Filing is per block, so a task's theme is the one its time mostly sits in; filing one from the Task log writes all of that task's blocks and sets `theme_user_set`, the bit prune and auto-merge read as "the user judged this". A theme's tasks also form a review deck (§5.2).
+- **Vault tab** shows today's compiled log (most recently worked task first) and the task list with its latest log line, behind a Themes / Task log toggle. Inbox triage lives on the *Cards* tab with the decks.
+- **Task log filters**: a filter bar pinned above the log — range (today / 7 days / 30 days / all time), minimum time spent (default 5 min+), order (most recent / most time), and theme (all / one / unfiled). The range doubles as the window the time column counts, so a row's hours always match the range on screen. The section header carries "N of M" because the list is capped at 50 rows: a roster runs to hundreds of tasks, most of them a stray minute, and a capped recency-sorted list looks identical under every range without it. Minimum time and theme also scope the *Today* day log; range and sort don't — that log is already a single day, and its most-recent-first order is part of what makes it a log rather than a task list. The *Cards* deck picker still reads the unfiltered roster. Session state, not persisted.
+- **Task detail page**: every task row opens as a full dashboard page (`TaskDetailView`): the LLM gist of what the task *is*, day-by-day history with the work-note narratives (§2.1 of vault-features.md) expandable inline, where the time went per source, the knowledge notes captured under the task, recent activity blocks, inline rename, and theme assignment (including creating a new theme in place).
 - **Themes — the second clustering mode**: `ThemeClusterer` runs an *independent* LLM clustering of the same blocks into 3–8 broad initiatives spanning weeks ("YC Startup School", "Shifu development", "Travel") — one level above tasks, assigned per block (`activities.theme_key`, `"thm:"` namespace), so a task's blocks may straddle themes. Same engine discipline as semantic tasks: roster reuse (30-day window), confidence floor, `theme_attempts` cap, rebuild carry, fail-soft. Each theme keeps an LLM **running narrative** ("the story so far"), regenerated only when the hash of its *completed* days changes — at most one generation per active theme per day. The Vault tab gains a segmented **Themes / Task log** toggle; a theme's page shows the narrative, computed per-day history (no parallel log table — days derive from `theme_key` on read), the tasks its time flowed through (linking to their pages), and recent activity. Themes are renameable; renames stick.
 
 ---
@@ -283,7 +283,7 @@ actions:    [Draft the automation with Claude Code] [Dismiss] [Snooze 30d]
 Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generous whitespace, system fonts and colors, no badges or gamification, no settings page longer than one screen. Three surfaces total:
 
 - **Menu bar item** (the only always-visible surface): status glyph (watching / paused / excluded app), Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Dashboard, Quit & Stop Capture.
-- **Dashboard window**: four tabs — *Time*, *Vault* (today's work log, tasks, projects — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **Dashboard window**: four tabs — *Time*, *Vault* (today's work log, tasks, themes — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
 - **The Time tab** carries one window (Day / Week) and one lens (Category / Theme / Task, §5.3) across two modes:
   - *Summary* — where the time went. A hero total with its change against the same window before it, a donut, and one row per group: color, name, duration, share, a proportional bar, expanding into the apps and domains inside it, its block count, and the hour it peaked. This is what makes "3 h 10 m of today was work, and 40 m of that was Chrome" a thing you can read at a glance.
   - *Timeline* — when it happened. Stacked bars over the hours or days, plus the block list. Its legend carries each group's total, so the strip under the chart is a breakdown rather than a color key.
@@ -322,7 +322,7 @@ This section is load-bearing; a screen watcher lives or dies on trust.
   logs/               # daemon logs, size-capped
 ```
 
-Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `projects` / `task_logs` (§5.3), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences).
+Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `themes` / `task_logs` (§5.3), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences).
 
 User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Work Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched.
 
@@ -412,7 +412,14 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
   goal-level tasks, sidestepping the weak-embedder problem entirely.
   Embedding-based centroid assignment stays deferred; the merge-suggestion
   half remains useful for consolidating pre-existing mechanical tasks into
-  their semantic successors. The same dogfood explosion (977 tasks in ten
+  their semantic successors.
+  **Update (2026-07-28):** that consolidation now runs itself —
+  `TaskMerges.autoMerge` (vault-features.md §5.2) folds the fragment end of the
+  suggestion queue at 0.9 and substantial pairs only at 0.97, never across a
+  user-typed name or a hand-filed theme boundary. It exists because the suggestion-only
+  design produced 679 open pairs against 1,183 tasks: precision was never the
+  binding constraint, triage throughput was. The queue's remainder moved off the
+  Vault tab into `MergeReviewView`, with a bulk dismiss. The same dogfood explosion (977 tasks in ten
   days, 620 under 5 min) also traced to the *mechanical* layer: unanchored
   per-block topic wording plus unconditional task minting for one-off
   domain/app keys — fixed in §5.3 with prompt-anchored topics, the 5-min
@@ -445,7 +452,7 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
     where nobody grepping for the concept will find it. Move to its own file
     under `Storage/` next to `DeletionTools`, which shares its concern.
   - `ShifuApp/LedgerStore.swift` (326 lines) is the app's single read model for
-    pause, vault, tasks, projects, radar, and search, with 16 repetitions of
+    pause, vault, tasks, themes, radar, and search, with 16 repetitions of
     `try? db()` swallowing errors into empty state. Feature-scoped stores would
     help, but the UI layer has no test coverage, so this one waits for a reason
     beyond tidiness.

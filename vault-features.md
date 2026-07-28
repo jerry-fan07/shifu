@@ -4,7 +4,7 @@
 **Status:** Draft v2 (replaces the v1 stub; extends design.md §5)
 **Scope:** evolves the vault from a flashcard folder + task list into a queryable
 second brain: everything the user worked on, distilled into Markdown, clustered
-into tasks by meaning, rolled up into projects.
+into tasks by meaning, rolled up into themes.
 
 ---
 
@@ -19,8 +19,7 @@ did, learned, and worked toward*. Three properties define it:
 2. **Queryable** — full-text (later semantic) search across everything, from the
    CLI and the Vault tab. "What did I read about SQLite WAL?" has an answer.
 3. **Organized by meaning** — sessions cluster into tasks by what they're
-   *about*, not just which app was frontmost; tasks roll up into user-defined
-   projects.
+   *about*, not just which app was frontmost; tasks roll up into themes.
 
 Everything here runs in `shifu-analyzer` or the UI. `shifud` is untouched — no
 new capture, no new daemon code paths (invariant 1).
@@ -31,8 +30,9 @@ new capture, no new daemon code paths (invariant 1).
 - `TaskGrouper`: lexical task keys (`topic:` → `domain:` → `app:`), renameable
   tasks, idempotent per-day `task_logs` with deterministic "where — what"
   summaries (§5.3).
-- User-created projects with task assignment, time totals, project review decks.
-- Vault tab: today's compiled log, recent tasks, projects.
+- Task filing with time totals and per-theme review decks (originally
+  user-created projects; §5.3 replaced them with themes).
+- Vault tab: today's compiled log, recent tasks, themes.
 
 This spec builds on that baseline; nothing shipped is thrown away.
 
@@ -47,10 +47,9 @@ frontmatter, all readable in Obsidian, all indexed for search (§4).
 ~/Shifu/vault/
   YYYY/MM/*.md              # knowledge notes (existing layout, unchanged)
   work/YYYY/MM/DD-<task-slug>.md   # work notes: one per task per local day
-  projects/<project-slug>.md       # project notes: one per project, recompiled
 ```
 
-Frontmatter gains a `kind: knowledge | work | project` field (absent = 
+Frontmatter gains a `kind: knowledge | work` field (absent = 
 `knowledge`, so existing notes need no migration).
 
 ### 2.1 Work notes
@@ -99,13 +98,14 @@ Xcode, github.com — debugging capture daemon; reading SCK docs
   activity ids + text sample), so re-analysis doesn't burn tokens rewriting
   identical prose.
 
-### 2.2 Project notes
+### 2.2 Project notes — **superseded (v14)**
 
-One per project, recompiled by the analyzer (weekly by default, and on demand
-from the UI): total and recent time, active tasks with their latest work-note
-links, and a short LLM status paragraph ("where this effort stands"). This is
-the project's "separate vault" from the v1 stub — not a second folder tree, but
-a compiled index note that makes the project navigable from any editor.
+Shipped, then removed with the project layer. One note per project, recompiled
+weekly with an LLM status paragraph. Themes replaced projects (§5.3) and have
+no note of their own: a theme's running narrative lives in `themes.summary`
+and renders on the theme page, so there is no file to recompile and no weekly
+token spend. Reinstate this as a *theme* note only if the vault needs it on
+disk; the DB already holds the prose.
 
 ### 2.3 Knowledge notes
 
@@ -122,7 +122,6 @@ activities (per analyzer window)
   ├─► TaskGrouper ──► task assignment + task_logs        (existing)
   ├─► KnowledgeExtractor ──► knowledge notes → inbox     (existing)
   └─► WorkNoteCompiler ──► work notes (§2.1)             (new)
-            └─► weekly ──► ProjectNoteCompiler (§2.2)    (new)
 ```
 
 `WorkNoteCompiler` runs after `TaskGrouper` in the same analyzer pass, reading
@@ -145,12 +144,12 @@ the freshly assigned `activities.task_id` rows. Constraints:
 The Markdown tree stays the source of truth; SQLite gets a **disposable index**
 so the vault is queryable without ever locking users into the DB.
 
-- `vault_index` table: path, note id, kind, task_id, project_id, captured,
+- `vault_index` table: path, note id, kind, task_id, captured,
   content hash. Plus an FTS5 table over (title, body) with bm25 ranking.
 - Incrementally maintained by `VaultStore.save` and a reconcile pass in each
   analyzer run (mtime + hash catches external edits from Obsidian et al.).
   `shifu vault reindex` rebuilds from zero; deleting the index loses nothing.
-- **CLI:** `shifu vault search <query> [--task] [--project] [--kind] [--since]`
+- **CLI:** `shifu vault search <query> [--task] [--kind] [--since]`
   → ranked snippets with file paths.
 - **UI:** a search field on the Vault tab; results open the note in-place, with
   "Reveal in Finder" for editing elsewhere.
@@ -200,21 +199,70 @@ Properties this preserves:
   path — it's the same fallback line. All `TaskGrouper` tests keep passing
   with embeddings stubbed out.
 
-### 5.2 Merge suggestions (never auto-merge)
+### 5.2 Merge suggestions and auto-merge
 
 Two tasks whose centroids reach cosine ≥ 0.9 with overlapping sources generate
-a **merge suggestion** in the Vault tab: "These look like one task — merge?"
-User confirms → activities re-point, work notes re-key on next rebuild, the
-survivor keeps the user-chosen name. Dismissals are remembered (same policy as
-Radar §6.2). Merging silently would destroy user naming and history — it stays
-manual, permanently.
+a **merge suggestion**: "These look like one task — merge?" User confirms →
+activities re-point, work notes re-key on next rebuild, the survivor keeps the
+user-chosen name. Dismissals are remembered (same policy as Radar §6.2).
 
-### 5.3 Task → project suggestions
+**Auto-merge.** The original rule here was "never auto-merge — merging silently
+would destroy user naming and history". Dogfooding falsified the premise rather
+than the concern: on 1,183 tasks the weekly pass had opened **679** suggestions,
+and 582 of them had a side with under five minutes on it. A queue that long is
+not a queue — it buries the task list and nobody drains it. So `TaskMerges.autoMerge`
+now folds the unambiguous end of it, keeping the *guarantee* the rule was
+protecting rather than the rule:
 
-The same vectors give project suggestions for free: an unassigned task whose
-centroid sits near a project's task centroids gets a one-tap "Add to *Shifu*?"
-row. Manual assignment remains the primary path; suggestions are a shortcut,
-not an autopilot.
+| Pair | Bar to fold automatically |
+|---|---|
+| Smaller side under `TaskGrouper.minNewTaskMs` (5 min) — a **fragment** | the ordinary 0.9 suggestion threshold |
+| Both sides substantial | `tasks.auto_merge_threshold`, default **0.97** |
+
+and never, at any score:
+
+- either task carries a name the **user typed** (`TaskGrouper.isDefaultName` —
+  which now answers the question for `sem:` keys too, since a semantic task's
+  key is the slug of the LLM title that named it);
+- the two sit in **different projects** — filing them apart by hand is a
+  judgement that they are different work;
+- the pair was **dismissed**.
+
+Folding a fragment is the conservative option, not the risky one: `TaskStore.prune`
+already *deletes* a default-named sub-five-minute task once it goes quiet, and a
+merge keeps its time in the ledger instead of orphaning it. Chains collapse to one
+survivor (the longest-running member), but only fragments ride a chain — a
+substantial task must have scored ≥ 0.97 against that survivor directly, so two
+real tasks are never joined through a chain of scraps. The pass repeats until it
+folds nothing, and the whole batch shares one log rebuild and one work-note
+recompile. Measured on the dogfood DB: 679 open pairs → 92, 161 tasks folded
+(159 of them fragments), 0.07 s.
+
+### 5.3 Task → theme suggestions
+
+The same vectors give theme suggestions for free: an unthemed task whose
+centroid sits near a theme's task centroids gets a one-tap "Add to *Shifu
+development*?" row. Manual assignment remains the primary path; suggestions
+are a shortcut, not an autopilot.
+
+Themes replaced projects outright (v14: the `projects` table, project notes
+and their compiler, and the `--project` search filter are all gone). Projects
+were user-created folders a task was filed into by hand; themes are the same
+idea arrived at from the other end —
+the clusterer proposes the initiatives, the user corrects them. A task's theme
+is derived, not stored: filing is per block (`activities.theme_key`), and a
+task's theme is the one its time mostly sits in. Picking one from the Task
+log's row menu writes *all* of that task's blocks, so the label always matches
+the choice; clearing one burns `theme_attempts` so the next clusterer run
+can't quietly undo it.
+
+Hand filing also sets `activities.theme_user_set`, and that — not theme
+membership — is what prune and auto-merge treat as "the user judged this".
+Membership can't do the job: the clusterer themes nearly every block, so
+gating on it would switch both mechanisms off. Measured on the dogfood DB at
+15% clustered, prune reaps 167 tasks with the marker vs 172 with no gate at
+all; gating on plain membership would have decayed toward 0 as clustering
+caught up.
 
 ---
 
@@ -224,10 +272,14 @@ Stays one screen (design principle 2). Top to bottom:
 
 1. **Search field** (§4) — the tab's headline feature once this ships.
 2. **Today** — compiled log, as today, but each row now opens its work note.
-3. **Tasks** — recent tasks with latest log line; pending merge suggestions
-   appear inline here (accept / dismiss).
+3. **Tasks** — recent tasks with latest log line; the strongest few merge
+   suggestions appear inline here (accept / dismiss), capped at
+   `LedgerStore.suggestionLimit`. Everything past the cap is a
+   "Review N more suggestions" row into **Merge review** (`MergeReviewView`) —
+   the one screen this tab is allowed to grow, because a queue that outnumbers
+   the task list can't be triaged inline and needs a bulk *Dismiss all*.
 4. **Projects** — time totals; each opens its project note; pending
-   task-assignment suggestions inline.
+   task-assignment suggestions inline (also capped, same review screen).
 
 Spaced repetition stays on the *Cards* tab (§5.2) — decks now select by
 explicit `task_key`/project instead of slug matching.

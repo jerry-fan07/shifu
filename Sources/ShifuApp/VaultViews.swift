@@ -3,7 +3,7 @@ import SwiftUI
 
 /// *Vault* tab (design.md §5.3), two modes behind a segmented toggle:
 /// *Themes* — the broad initiatives your time clusters into — and the
-/// *Task log* — today's compiled work log, recent tasks, and projects.
+/// *Task log* — today's compiled work log and recent tasks.
 /// Rows navigate to full pages (ThemeDetailView / TaskDetailView).
 struct VaultTabView: View {
     enum Mode: String, CaseIterable {
@@ -13,7 +13,6 @@ struct VaultTabView: View {
 
     @EnvironmentObject private var store: LedgerStore
     @State private var mode: Mode = .themes
-    @State private var newProjectName = ""
     @State private var selectedHit: VaultSearch.Hit?
 
     private var isSearching: Bool {
@@ -39,6 +38,9 @@ struct VaultTabView: View {
             }
             .navigationDestination(for: ThemeRoute.self) { route in
                 ThemeDetailView(themeID: route.id)
+            }
+            .navigationDestination(for: SuggestionsRoute.self) { _ in
+                MergeReviewView()
             }
         }
     }
@@ -98,8 +100,11 @@ struct VaultTabView: View {
                 if store.todayLogs.isEmpty {
                     Text("No work logged yet today — the analyzer compiles logs hourly.")
                         .foregroundStyle(.secondary)
+                } else if store.filteredTodayLogs.isEmpty {
+                    Text("Nothing today matches these filters.")
+                        .foregroundStyle(.secondary)
                 }
-                ForEach(store.todayLogs) { entry in
+                ForEach(store.filteredTodayLogs, id: \.rowID) { entry in
                     // Opens the task's full page (design.md §5.3).
                     NavigationLink(value: entry.taskID) {
                         HStack(alignment: .firstTextBaseline) {
@@ -122,9 +127,11 @@ struct VaultTabView: View {
             }
 
             Section(store.taskCountLabel.isEmpty ? "Tasks" : "Tasks · \(store.taskCountLabel)") {
-                // Merge suggestions inline above the tasks they concern
-                // (vault-features.md §5.2): one click merges, never automatic.
-                ForEach(store.mergeSuggestions) { suggestion in
+                // The strongest few merge suggestions inline, above the tasks
+                // they concern (vault-features.md §5.2). The certain ones were
+                // already merged by the analyzer; the rest of the queue is one
+                // tap away rather than pushing the task list off screen.
+                ForEach(store.mergeSuggestions, id: \.rowID) { suggestion in
                     HStack(alignment: .firstTextBaseline) {
                         Image(systemName: "arrow.triangle.merge")
                             .foregroundStyle(.secondary)
@@ -136,56 +143,22 @@ struct VaultTabView: View {
                     }
                     .padding(.vertical, 2)
                 }
+                if store.hiddenSuggestionCount > 0 {
+                    NavigationLink(value: SuggestionsRoute()) {
+                        Text("Review \(store.hiddenSuggestionCount) more suggestion"
+                            + "\(store.hiddenSuggestionCount == 1 ? "" : "s")")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if store.filteredTasks.isEmpty {
                     Text(store.taskFilter.narrowsResults
                         ? "No tasks match these filters."
                         : "Tasks appear once the analyzer has grouped some activity.")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(store.filteredTasks) { overview in
+                ForEach(store.filteredTasks, id: \.rowID) { overview in
                     TaskRowView(overview: overview)
-                }
-            }
-
-            Section("Projects") {
-                // One-tap task → project suggestions (vault-features.md §5.3).
-                ForEach(store.projectSuggestions) { suggestion in
-                    HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: "folder.badge.plus")
-                            .foregroundStyle(.secondary)
-                        Text("Add **\(suggestion.taskName)** to *\(suggestion.projectName)*?")
-                            .font(.callout)
-                        Spacer()
-                        Button("Add") { store.acceptProjectSuggestion(suggestion) }
-                        Button("Dismiss") { store.dismissProjectSuggestion(suggestion) }
-                    }
-                    .padding(.vertical, 2)
-                }
-                ForEach(store.projectSummaries) { summary in
-                    // Row opens the compiled project note (vault-features.md §2.2).
-                    Button {
-                        selectedHit = store.projectNoteHit(projectName: summary.project.name)
-                    } label: {
-                        HStack {
-                            Text(summary.project.name)
-                            Spacer()
-                            Text("\(summary.taskCount) tasks")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(LedgerStore.hours(summary.totalMs))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                HStack {
-                    TextField("New project", text: $newProjectName)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(addProject)
-                    Button("Add", action: addProject)
-                        .disabled(newProjectName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
@@ -196,47 +169,40 @@ struct VaultTabView: View {
         }
     }
 
-    /// Range · sort · project, over the Tasks section only — the Today
-    /// section stays the compiled day log, and the Cards deck picker keeps the
-    /// full roster (LedgerStore.recentTasks). Labelled because it sits above
-    /// the whole page, where an unlabelled bar would read as filtering all of it.
+    /// Range · minimum · sort · theme. Minimum and theme also scope the
+    /// *Today* day log (see `LedgerStore.filteredTodayLogs`); range and sort
+    /// don't — that log is already one day, and its recency order is what makes
+    /// it a log. The Cards deck picker keeps the full roster
+    /// (LedgerStore.recentTasks). Labelled because it sits above the whole page,
+    /// where an unlabelled bar would read as filtering all of it.
     private var filterBar: some View {
         HStack(spacing: 8) {
             Text("Tasks")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Picker("Range", selection: $store.taskFilter.range) {
-                ForEach(TaskRange.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .fixedSize()
-            .help("How far back the list reaches")
+            FilterMenu(
+                options: TaskRange.allCases.map { ($0.rawValue, $0) },
+                selection: $store.taskFilter.range)
+                .help("How far back the list reaches")
 
-            Picker("Minimum", selection: $store.taskFilter.minimum) {
-                ForEach(TaskMinimum.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .fixedSize()
-            .help("Hide tasks you spent barely any time on")
+            FilterMenu(
+                options: TaskMinimum.allCases.map { ($0.rawValue, $0) },
+                selection: $store.taskFilter.minimum)
+                .help("Hide tasks you spent barely any time on")
 
-            Picker("Sort", selection: $store.taskFilter.sort) {
-                Text("Most recent").tag(TaskStore.Sort.mostRecent)
-                Text("Most time").tag(TaskStore.Sort.mostTime)
-            }
-            .fixedSize()
-            .help("Order by when it was worked, or how much time it took")
+            FilterMenu(
+                options: [("Most recent", TaskStore.Sort.mostRecent),
+                          ("Most time", TaskStore.Sort.mostTime)],
+                selection: $store.taskFilter.sort)
+                .help("Order by when it was worked, or how much time it took")
 
-            Picker("Project", selection: $store.taskFilter.project) {
-                Text("All projects").tag(TaskStore.ProjectScope.any)
-                Text("No project").tag(TaskStore.ProjectScope.unassigned)
-                ForEach(store.projectSummaries) { summary in
-                    if let projectID = summary.project.id {
-                        Text(summary.project.name)
-                            .tag(TaskStore.ProjectScope.project(id: projectID))
-                    }
-                }
-            }
-            .fixedSize()
-            .help("Narrow to one project")
+            FilterMenu(
+                options: [("All themes", TaskStore.ThemeScope.any),
+                          ("No theme", TaskStore.ThemeScope.unassigned)]
+                    + store.themes.map { ($0.name, TaskStore.ThemeScope.theme(key: $0.key)) },
+                selection: $store.taskFilter.theme)
+                .help("Narrow to the tasks whose time sits in one theme")
 
             if store.taskFilter.isNarrowed {
                 Button("Clear") { store.taskFilter = TaskListFilter() }
@@ -244,19 +210,10 @@ struct VaultTabView: View {
             }
             Spacer()
         }
-        .pickerStyle(.menu)
-        .labelsHidden()
         .font(.caption)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .onChange(of: store.taskFilter) { _, _ in store.loadTasks() }
-    }
-
-    private func addProject() {
-        let name = newProjectName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        store.createProject(named: name)
-        newProjectName = ""
     }
 }
 
@@ -305,8 +262,37 @@ struct NoteReaderView: View {
     }
 }
 
-/// One task row: inline rename, latest log line, project assignment, and
+/// One task row: inline rename, latest log line, theme assignment, and
 /// navigation to the task's full page.
+/// One filter dimension as a pull-down. A `Menu` of buttons rather than a
+/// menu-style `Picker`: on macOS 26 the Picker's menu neither commits a
+/// clicked item to the binding nor tracks it afterwards, so the filter bar
+/// read as dead — plain menu buttons use the same NSMenu machinery as the
+/// menu bar items, which do fire.
+private struct FilterMenu<Option: Hashable>: View {
+    let options: [(label: String, value: Option)]
+    @Binding var selection: Option
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.value) { option in
+                Button {
+                    selection = option.value
+                } label: {
+                    if option.value == selection {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            Text(options.first { $0.value == selection }?.label ?? "")
+        }
+        .fixedSize()
+    }
+}
+
 private struct TaskRowView: View {
     @EnvironmentObject private var store: LedgerStore
     let overview: TaskStore.Overview
@@ -332,7 +318,7 @@ private struct TaskRowView: View {
                 Text(LedgerStore.hours(overview.totalMs))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                projectMenu
+                themeMenu
             }
             if let summary = overview.latestSummary {
                 Text(summary)
@@ -346,15 +332,18 @@ private struct TaskRowView: View {
         .onChange(of: overview.task.name) { _, updated in name = updated }
     }
 
-    private var projectMenu: some View {
-        Menu(overview.projectName ?? "No project") {
-            Button("No project") {
-                if let taskID = overview.task.id { store.assignTask(taskID, toProject: nil) }
+    /// The task's theme, and the menu to move it. What it shows is the theme
+    /// its time mostly sits in — picking one here files *all* of the task's
+    /// blocks there, so the label always matches what was chosen.
+    private var themeMenu: some View {
+        Menu(overview.themeName ?? "No theme") {
+            Button("No theme") {
+                if let taskID = overview.task.id { store.assignTask(taskID, toTheme: nil) }
             }
-            ForEach(store.projectSummaries) { summary in
-                Button(summary.project.name) {
+            ForEach(store.themes) { theme in
+                Button(theme.name) {
                     if let taskID = overview.task.id {
-                        store.assignTask(taskID, toProject: summary.project.id)
+                        store.assignTask(taskID, toTheme: theme.key)
                     }
                 }
             }

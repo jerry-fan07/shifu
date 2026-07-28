@@ -188,7 +188,8 @@ import Testing
         try await db.queue.write { sqlite in
             try sqlite.execute(sql: """
                 UPDATE activities
-                SET sem_key = 'sem:learning-swift-actors', theme_key = 'thm:swift-mastery'
+                SET sem_key = 'sem:learning-swift-actors', theme_key = 'thm:swift-mastery',
+                    theme_user_set = 1
                 WHERE id = ?
                 """, arguments: [videoID])
             try sqlite.execute(sql: """
@@ -201,8 +202,10 @@ import Testing
 
         let carried = try await db.queue.read { sqlite in
             (keys: try Row.fetchOne(sqlite, sql: """
-                SELECT sem_key, theme_key FROM activities WHERE domain = 'youtube.com'
-                """).map { ($0["sem_key"] as String?, $0["theme_key"] as String?) },
+                SELECT sem_key, theme_key, theme_user_set FROM activities
+                WHERE domain = 'youtube.com'
+                """).map { ($0["sem_key"] as String?, $0["theme_key"] as String?,
+                            $0["theme_user_set"] as Bool) },
              attempts: try Row.fetchOne(sqlite, sql: """
                 SELECT sem_attempts, theme_attempts FROM activities
                 WHERE app_bundle = 'com.apple.dt.Xcode'
@@ -210,6 +213,9 @@ import Testing
         }
         #expect(carried.keys?.0 == "sem:learning-swift-actors")
         #expect(carried.keys?.1 == "thm:swift-mastery")
+        // Hand filing must survive the rebuild too, or prune and auto-merge
+        // stop protecting the task an hour after the user filed it.
+        #expect(carried.keys?.2 == true)
         #expect(carried.attempts?.0 == 2)
         #expect(carried.attempts?.1 == 1)
 

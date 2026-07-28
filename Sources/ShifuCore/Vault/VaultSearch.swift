@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// Full-text search over the vault index (vault-features.md §4): bm25-ranked,
-/// filterable by kind/task/project/date. Hybrid semantic ranking is V4.
+/// filterable by kind/task/date. Hybrid semantic ranking is V4.
 public enum VaultSearch {
     /// One search result. Points at a file rather than carrying its content —
     /// the Markdown tree is the source of truth, so readers re-read from
@@ -71,7 +71,7 @@ public enum VaultSearch {
         var conditions: [String] = []
         var arguments: [DatabaseValueConvertible] = []
 
-        init(kind: FrontMatter.Kind?, taskID: Int64?, projectID: Int64?, since: Date?) {
+        init(kind: FrontMatter.Kind?, taskID: Int64?, since: Date?) {
             if let kind {
                 conditions.append("vi.kind = ?")
                 arguments.append(kind.rawValue)
@@ -79,10 +79,6 @@ public enum VaultSearch {
             if let taskID {
                 conditions.append("vi.task_id = ?")
                 arguments.append(taskID)
-            }
-            if let projectID {
-                conditions.append("vi.project_id = ?")
-                arguments.append(projectID)
             }
             if let since {
                 conditions.append("vi.captured >= ?")
@@ -99,13 +95,12 @@ public enum VaultSearch {
         _ query: String,
         kind: FrontMatter.Kind? = nil,
         taskID: Int64? = nil,
-        projectID: Int64? = nil,
         since: Date? = nil,
         limit: Int = 20,
         database: ShifuDatabase,
         embedder: (any Embedder)? = nil
     ) throws -> [Hit] {
-        let filters = Filters(kind: kind, taskID: taskID, projectID: projectID, since: since)
+        let filters = Filters(kind: kind, taskID: taskID, since: since)
         let poolSize = max(limit, 20)
         let lexical = try bm25Hits(query, filters: filters, limit: poolSize, database: database)
         guard let queryVector = embedder?.embed(query) else {
