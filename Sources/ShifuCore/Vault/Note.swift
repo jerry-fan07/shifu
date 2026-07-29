@@ -4,8 +4,11 @@ import Foundation
 /// The vault stays readable and portable without Shifu — Obsidian-compatible.
 public struct Note: Equatable, Sendable, Identifiable {
     /// Triage state. Nothing enters the review queue unconfirmed (design.md
-    /// §5.1) — the LLM proposes, the user disposes. A discarded note is
-    /// deleted rather than given a third state.
+    /// §5.1) — where unconfirmed means *not user-requested*. Automatic
+    /// extraction proposes and the user disposes, so its notes start `inbox`;
+    /// a deck's cards were requested by name and are born `kept`, the request
+    /// itself being the confirmation. A discarded note is deleted rather than
+    /// given a third state.
     public enum State: String, Sendable {
         case inbox      // candidate awaiting keep/discard triage
         case kept       // confirmed; in the review queue if it has a Q/A

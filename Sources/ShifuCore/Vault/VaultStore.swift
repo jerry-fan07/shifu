@@ -177,7 +177,9 @@ public struct VaultStore: Sendable {
         return nil
     }
 
-    // MARK: - Triage (§5.1: nothing enters the review queue unconfirmed)
+    // MARK: - Triage (§5.1) — the inbox path. Deck cards skip it: they are
+    // written `kept` and FSRS-seeded by DeckStore, the request being the
+    // confirmation this step exists to collect.
 
     public func keep(_ note: Note) throws {
         var kept = note
