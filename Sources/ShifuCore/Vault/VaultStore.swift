@@ -71,6 +71,15 @@ public struct VaultStore: Sendable {
 
     // MARK: - Work notes (vault-features.md §2.1)
 
+    /// File-name slug of a task *key* (stable across renames), so file
+    /// identity survives display renames. Shared by work notes and the
+    /// per-task overview document so both name the same task the same way.
+    public static func taskSlug(_ taskKey: String) -> String {
+        let suffix = taskKey.split(separator: ":", maxSplits: 1)
+            .last.map(String.init) ?? taskKey
+        return String(TaskGrouper.slug(suffix).prefix(40))
+    }
+
     /// `work/YYYY/MM/DD-<task-slug>.md`. The slug comes from the task *key*
     /// (stable across renames), so file identity survives display renames.
     public func workNoteURL(day: String, taskKey: String) -> URL {
@@ -78,14 +87,12 @@ public struct VaultStore: Sendable {
         let year = parts.isEmpty ? "0000" : parts[0]
         let month = parts.count > 1 ? parts[1] : "00"
         let dayNum = parts.count > 2 ? parts[2] : "00"
-        let suffix = taskKey.split(separator: ":", maxSplits: 1)
-            .last.map(String.init) ?? taskKey
-        let slug = TaskGrouper.slug(suffix)
+        let slug = Self.taskSlug(taskKey)
         return root
             .appendingPathComponent("work", isDirectory: true)
             .appendingPathComponent(year, isDirectory: true)
             .appendingPathComponent(month, isDirectory: true)
-            .appendingPathComponent("\(dayNum)-\(slug.prefix(40)).md")
+            .appendingPathComponent("\(dayNum)-\(slug).md")
     }
 
     public func workNote(day: String, taskKey: String) -> WorkNote? {
@@ -130,6 +137,34 @@ public struct VaultStore: Sendable {
         return files.filter {
             $0.pathExtension == "md" && $0.lastPathComponent.hasPrefix("\(parts[2])-")
         }
+    }
+
+    // MARK: - Task overviews (vault-features.md §2.1)
+
+    /// `tasks/<task-slug>.md` — one living document per task, flat rather than
+    /// date-foldered: there is only ever one, and it is replaced in place.
+    public func taskOverviewURL(taskKey: String) -> URL {
+        root
+            .appendingPathComponent("tasks", isDirectory: true)
+            .appendingPathComponent("\(Self.taskSlug(taskKey)).md")
+    }
+
+    public func taskOverview(taskKey: String) -> TaskOverview? {
+        let file = taskOverviewURL(taskKey: taskKey)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return TaskOverview.parse(text)
+    }
+
+    @discardableResult
+    public func saveOverview(_ overview: TaskOverview) throws -> URL {
+        let target = taskOverviewURL(taskKey: overview.taskKey)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try overview.serialize().write(to: target, atomically: true, encoding: .utf8)
+        if let database {
+            try VaultIndexer.indexFile(at: target, root: root, database: database)
+        }
+        return target
     }
 
     func existingURL(id: String) -> URL? {

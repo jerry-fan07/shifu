@@ -17,6 +17,9 @@ public struct Note: Equatable, Sendable, Identifiable {
     public var sourceURL: String?
     public var topic: String
     public var taskKey: String?    // grouping key of the source activity's task (§5.3)
+    /// The deck this card was built for (`deck:<slug>`, §5.2). Nil for the
+    /// automatic reference notes — only a deck the user asked for stamps one.
+    public var deck: String?
     public var confidence: Double?
     public var state: State
     public var seenCount: Int
@@ -26,8 +29,8 @@ public struct Note: Equatable, Sendable, Identifiable {
     public init(
         id: String = Note.ulid(), captured: Date = Date(), sourceApp: String? = nil,
         sourceURL: String? = nil, topic: String, taskKey: String? = nil,
-        confidence: Double? = nil, state: State = .inbox, seenCount: Int = 1,
-        srs: FSRS.State? = nil, body: String
+        deck: String? = nil, confidence: Double? = nil, state: State = .inbox,
+        seenCount: Int = 1, srs: FSRS.State? = nil, body: String
     ) {
         self.id = id
         self.captured = captured
@@ -35,6 +38,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         self.sourceURL = sourceURL
         self.topic = topic
         self.taskKey = taskKey
+        self.deck = deck
         self.confidence = confidence
         self.state = state
         self.seenCount = seenCount
@@ -101,6 +105,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         if let sourceURL { front.append("source_url: \(sourceURL)") }
         front.append("topic: \(topic)")
         if let taskKey { front.append("task_key: \(taskKey)") }
+        if let deck { front.append("deck: \(deck)") }
         if let confidence { front.append("confidence: \(String(format: "%.2f", confidence))") }
         front.append("state: \(state.rawValue)")
         if seenCount > 1 { front.append("seen_count: \(seenCount)") }
@@ -131,6 +136,7 @@ public struct Note: Equatable, Sendable, Identifiable {
             sourceURL: fields["source_url"],
             topic: topic,
             taskKey: fields["task_key"],
+            deck: fields["deck"],
             confidence: fields["confidence"].flatMap(Double.init),
             state: fields["state"].flatMap(State.init(rawValue:)) ?? .kept,
             seenCount: fields["seen_count"].flatMap(Int.init) ?? 1,

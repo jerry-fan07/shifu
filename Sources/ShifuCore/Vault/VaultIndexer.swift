@@ -191,7 +191,7 @@ public enum VaultIndexer {
                 captured = excluded.captured,
                 content_hash = excluded.content_hash, mtime = excluded.mtime
             """, arguments: [
-                noteID, relativePath, doc.kind.rawValue, taskID,
+                noteID, relativePath, doc.rawKind, taskID,
                 captured, contentHash(text), mtime
             ])
         let rowID = try Int64.fetchOne(
