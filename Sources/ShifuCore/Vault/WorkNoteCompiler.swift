@@ -302,7 +302,8 @@ public enum WorkNoteCompiler {
         var text = prompt(taskName: pending.note.taskName, day: pending.note.day,
                           sessions: pending.note.sessions, samples: samples)
         while !samples.isEmpty,
-              LLMTokens.estimate(text) + narrativeResponseTokens > backend.contextWindowTokens {
+              LLMTokens.estimate(text) + backend.responseReserve(narrativeResponseTokens)
+              > backend.contextWindowTokens {
             samples = String(samples.prefix(samples.count * 2 / 3))
             text = prompt(taskName: pending.note.taskName, day: pending.note.day,
                           sessions: pending.note.sessions, samples: samples)

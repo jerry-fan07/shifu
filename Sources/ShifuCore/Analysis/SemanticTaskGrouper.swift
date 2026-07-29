@@ -210,7 +210,8 @@ extension SemanticTaskGrouper {
         // the list the verdict resolves against have to be the same list.
         var roster = try activeRoster(database: database, now: now)
         if detail == .compact { roster = compacted(roster) }
-        let budget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        let budget = max(
+            512, backend.contextWindowTokens - backend.responseReserve(responseTokenReserve))
 
         var summary = Summary()
         var cursor = 0
