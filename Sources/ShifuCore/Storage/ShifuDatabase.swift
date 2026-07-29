@@ -137,6 +137,20 @@ public enum Settings {
             )
         }
     }
+
+    /// The configured API key, or nil when the backend is off or no key is
+    /// set — the opt-in that turns every LLM stage on (§8). Lives here rather
+    /// than beside the backend because two binaries need the same answer for
+    /// different reasons: the analyzer builds a backend from the key, and the
+    /// app greys out the actions that can't work without one. A key present
+    /// here is not a promise the endpoint answers; it is the difference
+    /// between "will try" and "cannot".
+    public static func llmAPIKey(database: ShifuDatabase) throws -> String? {
+        guard try get(analysisBackendKey, database: database) != "off" else { return nil }
+        let key = try ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]
+            ?? get(deepseekAPIKeyKey, database: database)
+        return (key?.isEmpty ?? true) ? nil : key
+    }
 }
 
 // MARK: - Catalog-typed access

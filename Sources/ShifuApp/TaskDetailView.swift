@@ -146,6 +146,7 @@ struct TaskDetailView: View {
                     Image(systemName: "sparkles")
                 }
                 Spacer()
+                deckControl(detail)
                 Button {
                     if let hit = store.latestWorkNote(taskID: taskID, title: detail.task.name) {
                         selectedHit = hit
@@ -159,6 +160,33 @@ struct TaskDetailView: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    /// The manual route to a deck (§5.2) — and the escape hatch from a
+    /// dismissed or declined suggestion, which are otherwise permanent.
+    /// Once a deck exists this becomes its live state: the card count is
+    /// derived on every read, never stored, because review-time pruning would
+    /// make a stored one wrong within a session.
+    @ViewBuilder private func deckControl(_ detail: TaskStore.Detail) -> some View {
+        if let deck = store.deck(taskKey: detail.task.key) {
+            switch deck.status {
+            case .ready:
+                Label("Deck · \(deck.cardCount) cards", systemImage: "rectangle.stack")
+            case .pending, .building:
+                Label("Deck building…", systemImage: "rectangle.stack")
+            }
+        } else if store.hasLLMBackend {
+            Button {
+                store.createDeck(taskKey: detail.task.key, title: detail.task.name)
+            } label: {
+                Label("Create flashcard deck", systemImage: "rectangle.stack.badge.plus")
+            }
+            .buttonStyle(.borderless)
+        } else {
+            // Nothing could build the deck, and a pending one with no builder
+            // would read as "Building…" forever.
+            Label("Deck needs DeepSeek (Settings)", systemImage: "rectangle.stack")
+        }
     }
 
     private func themeMenu(_ detail: TaskStore.Detail) -> some View {

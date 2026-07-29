@@ -82,20 +82,38 @@ final class LedgerStore: ObservableObject {
         }
     }
     @Published private(set) var themes: [ThemeStore.Overview] = []
+    /// Decks the user has asked for (§5.2), newest first — the picker's own
+    /// group, and the "Building…" rows on the Cards screen.
+    @Published private(set) var decks: [DeckStore.Deck] = []
+    /// Deck proposals waiting for Create/Dismiss.
+    @Published private(set) var deckSuggestions: [DeckStore.PendingSuggestion] = []
+    /// Whether an LLM backend is configured at all. Building a deck needs one,
+    /// and a deck requested without one would sit "Building…" forever — so the
+    /// actions that mint decks are gated on this rather than failing later.
+    @Published private(set) var hasLLMBackend = false
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
     @Published private(set) var lastError: String?
 
-    private var vault: VaultStore { VaultStore(database: try? db()) }
+    /// Surfaces a failure on the UI's error line. Internal (and a method
+    /// rather than a settable property) so the extensions split out of this
+    /// file for length can report too.
+    func report(_ error: any Error) { lastError = "\(error)" }
+
+    var vault: VaultStore { VaultStore(database: try? db()) }
 
     var isPaused: Bool { pausedUntil.map { $0 > Date() } ?? false }
 
     private var database: ShifuDatabase?
     private var analyzerProcess: Process?
+    /// Held separately from `analyzerProcess` so a deck build and the
+    /// on-demand full analysis never cancel each other out of the "already
+    /// running" check. Stored here because extensions can't hold state.
+    var deckBuildProcess: Process?
     private var lastAnalyzerRun = Date.distantPast
 
-    private func db() throws -> ShifuDatabase {
+    func db() throws -> ShifuDatabase {
         if let database { return database }
         try ShifuPaths.ensureHomeExists()
         let opened = try ShifuDatabase.open(at: ShifuPaths.database)
@@ -123,6 +141,9 @@ final class LedgerStore: ObservableObject {
             allThemeSuggestions = (try? TaskMerges.pendingThemes(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             themes = (try? ThemeStore.overviews(database: database)) ?? []
+            decks = (try? DeckStore.decks(database: database)) ?? []
+            deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
+            hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
         }
         do {
             let start = Calendar.current.startOfDay(for: Date())
@@ -143,7 +164,7 @@ final class LedgerStore: ObservableObject {
     /// republishing the list's own data there is a reentrant table operation
     /// (AppKit warns today, will assert eventually). Every store action a row
     /// can trigger goes through this; menu-bar actions stay synchronous.
-    private func refreshSoon() {
+    func refreshSoon() {
         Task { @MainActor [weak self] in self?.refresh() }
     }
 
@@ -180,20 +201,6 @@ final class LedgerStore: ObservableObject {
             database: database,
             from: Int64(from.timeIntervalSince1970 * 1_000),
             to: Int64(to.timeIntervalSince1970 * 1_000))) ?? []
-    }
-
-    // MARK: - Pause (same control file as the CLI)
-
-    func pause(until: Date) {
-        try? ShifuPaths.ensureHomeExists()
-        try? String(Int(until.timeIntervalSince1970))
-            .write(to: ShifuPaths.pauseFile, atomically: true, encoding: .utf8)
-        refresh()
-    }
-
-    func resume() {
-        try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
-        refresh()
     }
 
     // MARK: - Vault search (vault-features.md §4)
@@ -362,6 +369,8 @@ final class LedgerStore: ObservableObject {
         switch deck {
         case .all:
             return dueNotes
+        case .deck(let key, _):
+            return dueNotes.filter { $0.deck == key }
         case .task(let key, _):
             return dueNotes.filter { TaskStore.matches(note: $0, taskKey: key) }
         case .theme(let themeKey, _):
@@ -386,16 +395,6 @@ final class LedgerStore: ObservableObject {
         refreshSoon()
     }
 
-    func toggleWorkMode() {
-        try? ShifuPaths.ensureHomeExists()
-        if workModeOn {
-            try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
-        } else {
-            try? Data().write(to: ShifuPaths.workModeFile)
-        }
-        refresh()
-    }
-
     /// "4.2 h work · 1.1 h learning" — top categories, menu bar line (§7).
     var todaySummaryLine: String {
         let top = todayTotals
@@ -411,73 +410,15 @@ final class LedgerStore: ObservableObject {
         let hrs = Double(ms) / 3_600_000
         return hrs >= 1 ? String(format: "%.1f h", hrs) : "\(ms / 60_000) min"
     }
-}
 
-// MARK: - Vault (triage + review)
-
-extension LedgerStore {
-    /// One vault walk feeding inbox, review queue, and the Cards screens.
-    /// Queues are sorted most-urgent first (earliest due date; cards that
-    /// never entered scheduling sort ahead of everything).
+    /// Republishes every vault-derived queue. The walk itself lives in the
+    /// vault extension; only the assignment is here, because these properties
+    /// are `private(set)` and an extension in another file can't write them.
     private func refreshVaultNotes() {
-        let notes = (try? vault.allNotes()) ?? []
-        inboxNotes = notes.filter { $0.state == .inbox }
-        allCards = notes
-            .filter { $0.state == .kept && $0.questionAnswer != nil }
-            .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
-        let now = Date()
-        dueNotes = allCards.filter { $0.srs.map { $0.due <= now } ?? true }
-        // A week of slack so the heatmap's week-aligned first column has
-        // counts for its leading days too.
-        let heatmapStart = Calendar.current.date(
-            byAdding: .day, value: -(HeatmapSpan.days + 7),
-            to: Calendar.current.startOfDay(for: now))!
-        let log = (try? vault.reviewLog(since: heatmapStart)) ?? []
-        reviewsByDay = log.reduce(into: [:]) { counts, date in
-            counts[Calendar.current.startOfDay(for: date), default: 0] += 1
-        }
-    }
-
-    /// How far back the review-activity heatmap looks (26 weeks ≈ 6 months).
-    enum HeatmapSpan {
-        static let weeks = 26
-        static let days = weeks * 7
-    }
-
-    var reviewsToday: Int {
-        reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
-    }
-
-    func keep(_ note: Note) {
-        try? vault.keep(note)
-        refreshSoon()
-    }
-
-    func discard(_ note: Note) {
-        try? vault.discard(note)
-        refreshSoon()
-    }
-
-    func review(_ note: Note, grade: FSRS.Grade) {
-        _ = try? vault.review(note, grade: grade)
-        refreshSoon()
-    }
-
-    /// Persists a card edit (topic + reference + Q/A) from the card editor.
-    /// The file keeps its identity — `VaultStore.save` finds it by id.
-    func updateCard(
-        _ note: Note, topic: String, reference: String, question: String, answer: String
-    ) {
-        var updated = note
-        let trimmedTopic = topic.trimmingCharacters(in: .whitespaces)
-        if !trimmedTopic.isEmpty { updated.topic = trimmedTopic }
-        let hasQA = !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        // Clearing the Q/A demotes the card to a reference note (§5.1).
-        updated.body = hasQA
-            ? Note.composeBody(reference: reference, question: question, answer: answer)
-            : reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = try? vault.save(updated)
-        refreshSoon()
+        let snapshot = vaultSnapshot()
+        inboxNotes = snapshot.inbox
+        allCards = snapshot.cards
+        dueNotes = snapshot.due
+        reviewsByDay = snapshot.reviewsByDay
     }
 }

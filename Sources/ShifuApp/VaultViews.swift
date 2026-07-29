@@ -268,7 +268,10 @@ struct NoteReaderView: View {
 /// clicked item to the binding nor tracks it afterwards, so the filter bar
 /// read as dead — plain menu buttons use the same NSMenu machinery as the
 /// menu bar items, which do fire.
-private struct FilterMenu<Option: Hashable>: View {
+/// A menu of options with a checkmark on the current one. Deliberately not a
+/// menu-style `Picker`: those don't commit their selection on this machine's
+/// macOS, so every "pick one of these" control in the app is built this way.
+struct FilterMenu<Option: Hashable>: View {
     let options: [(label: String, value: Option)]
     @Binding var selection: Option
 

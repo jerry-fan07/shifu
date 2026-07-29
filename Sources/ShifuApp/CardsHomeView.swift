@@ -19,6 +19,7 @@ struct CardsTabView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     statsRow
+                    suggestionsSection
                     activitySection
                     deckRow
                     cardsSection
@@ -58,22 +59,58 @@ struct CardsTabView: View {
         }
     }
 
+    // MARK: - Deck suggestions (design.md §5.2)
+
+    /// Proposed decks and the decks still filling in. Cards are user-requested
+    /// now, so this section is where most of them start: the samples are real
+    /// cards, which is what makes the offer judgeable rather than a guess.
+    @ViewBuilder private var suggestionsSection: some View {
+        let building = store.decks.filter { $0.status != .ready }
+        if !store.deckSuggestions.isEmpty || !building.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Suggested decks")
+                    .font(.headline)
+                ForEach(store.deckSuggestions) { suggestion in
+                    DeckSuggestionCard(suggestion: suggestion)
+                }
+                ForEach(building) { deck in
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Building “\(deck.title)”…")
+                        Text("finishes with the next analysis if DeepSeek is unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Deck + navigation
+
+    /// Decks first, then themes, then tasks: a deck is a thing the user asked
+    /// for, the other two are filters over whatever happens to be there.
+    /// Only `ready` decks appear — picking one mid-build would show a
+    /// half-empty deck and read as a bug.
+    private var deckOptions: [(label: String, value: ReviewDeck)] {
+        var options: [(label: String, value: ReviewDeck)] = [("All notes", .all)]
+        options += store.decks.filter { $0.status == .ready }.map {
+            ("Deck · \($0.title)", ReviewDeck.deck(key: $0.key, name: $0.title))
+        }
+        options += store.themes.map {
+            ("Theme · \($0.name)", ReviewDeck.theme(key: $0.key, name: $0.name))
+        }
+        options += store.recentTasks.map {
+            ("Task · \($0.task.name)",
+             ReviewDeck.task(key: $0.task.key, name: $0.task.name))
+        }
+        return options
+    }
 
     private var deckRow: some View {
         HStack {
-            Picker("Deck", selection: $store.reviewDeck) {
-                Text("All notes").tag(ReviewDeck.all)
-                ForEach(store.themes) { theme in
-                    Text("Theme · \(theme.name)")
-                        .tag(ReviewDeck.theme(key: theme.key, name: theme.name))
-                }
-                ForEach(store.recentTasks) { overview in
-                    Text("Task · \(overview.task.name)")
-                        .tag(ReviewDeck.task(key: overview.task.key, name: overview.task.name))
-                }
-            }
-            .frame(maxWidth: 320)
+            FilterMenu(options: deckOptions, selection: $store.reviewDeck)
             Spacer()
             Button {
                 path.append(.inbox)
@@ -140,6 +177,53 @@ struct CardsTabView: View {
                 }
             }
         }
+    }
+}
+
+/// One proposed deck: what it would be called, which task it came out of,
+/// and its sample cards — the samples being the whole point, since they are
+/// the deck's real first cards rather than a preview of them.
+private struct DeckSuggestionCard: View {
+    @EnvironmentObject private var store: LedgerStore
+    let suggestion: DeckStore.PendingSuggestion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(suggestion.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text("from task \(suggestion.taskName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if store.hasLLMBackend {
+                    Button("Create") { store.acceptDeckSuggestion(suggestion) }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    // Without a key the build could never run, and the deck
+                    // would sit "Building…" forever (§5.2).
+                    Text("Needs DeepSeek (Settings)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Dismiss") { store.dismissDeckSuggestion(suggestion) }
+            }
+            ForEach(Array(suggestion.samples.enumerated()), id: \.offset) { _, card in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(card.topic)
+                        .font(.caption.weight(.medium))
+                        .frame(width: 110, alignment: .leading)
+                    Text(CardMarkup.plainText(card.question))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -289,134 +373,5 @@ private struct CardListRow: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(status.color.opacity(0.12), in: Capsule())
-    }
-}
-
-/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One green
-/// hue, light→dark with count (sequential ramp); zero-days sit on the
-/// recessive surface. Tooltips carry the exact numbers.
-struct ReviewHeatmapView: View {
-    let counts: [Date: Int]
-    var now: Date = Date()
-
-    private static let cellSize: CGFloat = 12
-    private static let gap: CGFloat = 3
-
-    var body: some View {
-        let weeks = weekStarts()
-        VStack(alignment: .leading, spacing: 4) {
-            monthLabels(weeks: weeks)
-            HStack(alignment: .top, spacing: Self.gap) {
-                weekdayLabels
-                ForEach(weeks, id: \.self) { weekStart in
-                    weekColumn(weekStart)
-                }
-            }
-            legend
-        }
-    }
-
-    /// Start of each displayed week, oldest first, current week last. Columns
-    /// run Monday→Sunday like the rest of the app.
-    private func weekStarts() -> [Date] {
-        let calendar = Calendar.current
-        let thisWeek = calendar.startOfWeek(for: now)
-        return (0..<LedgerStore.HeatmapSpan.weeks).compactMap { offset in
-            calendar.date(
-                byAdding: .weekOfYear,
-                value: offset - (LedgerStore.HeatmapSpan.weeks - 1),
-                to: thisWeek)
-        }
-    }
-
-    private func weekColumn(_ weekStart: Date) -> some View {
-        let calendar = Calendar.current
-        return VStack(spacing: Self.gap) {
-            ForEach(0..<7, id: \.self) { dayOffset in
-                if let day = calendar.date(byAdding: .day, value: dayOffset, to: weekStart),
-                   day <= now {
-                    let count = counts[calendar.startOfDay(for: day)] ?? 0
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(Self.rampColor(count))
-                        .frame(width: Self.cellSize, height: Self.cellSize)
-                        .help("\(count) review\(count == 1 ? "" : "s") · "
-                            + day.formatted(.dateTime.month(.abbreviated).day()))
-                } else {
-                    Color.clear
-                        .frame(width: Self.cellSize, height: Self.cellSize)
-                }
-            }
-        }
-    }
-
-    /// Month abbreviation over each column that starts a new month; labels
-    /// overflow their column like GitHub's.
-    private func monthLabels(weeks: [Date]) -> some View {
-        let calendar = Calendar.current
-        return HStack(alignment: .top, spacing: Self.gap) {
-            Color.clear.frame(width: 26, height: 1)   // over the weekday gutter
-            ForEach(Array(weeks.enumerated()), id: \.offset) { index, weekStart in
-                let month = calendar.component(.month, from: weekStart)
-                let previous = index > 0
-                    ? calendar.component(.month, from: weeks[index - 1]) : 0
-                ZStack(alignment: .topLeading) {
-                    Color.clear.frame(width: Self.cellSize, height: 12)
-                    if index > 0, month != previous {
-                        Text(weekStart.formatted(.dateTime.month(.abbreviated)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                    }
-                }
-            }
-        }
-    }
-
-    private var weekdayLabels: some View {
-        let calendar = Calendar.current.mondayFirst
-        let symbols = calendar.veryShortStandaloneWeekdaySymbols
-        return VStack(spacing: Self.gap) {
-            // Every other row, so the labels don't crowd: Mon, Wed, Fri.
-            ForEach(0..<7, id: \.self) { row in
-                Text(row.isMultiple(of: 2)
-                     ? symbols[(calendar.firstWeekday - 1 + row) % 7] : "")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 23, height: Self.cellSize)
-            }
-        }
-    }
-
-    private var legend: some View {
-        HStack(spacing: 3) {
-            Text("\(counts.values.reduce(0, +)) reviews in the last "
-                + "\(LedgerStore.HeatmapSpan.weeks) weeks")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Less")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            ForEach([0, 1, 3, 6, 10], id: \.self) { step in
-                RoundedRectangle(cornerRadius: 2.5)
-                    .fill(Self.rampColor(step))
-                    .frame(width: 10, height: 10)
-            }
-            Text("More")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Quantized sequential ramp: one hue, intensity tracks count, and it
-    /// adapts to light/dark because it's an opacity over the surface.
-    static func rampColor(_ count: Int) -> Color {
-        switch count {
-        case 0: return Color.primary.opacity(0.06)
-        case 1...2: return .green.opacity(0.30)
-        case 3...5: return .green.opacity(0.55)
-        case 6...9: return .green.opacity(0.80)
-        default: return .green
-        }
     }
 }
