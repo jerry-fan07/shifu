@@ -248,6 +248,19 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
         }
     }
 
+    // Deck proposals (§5.2), same weekly cadence: cards are user-requested
+    // now, so without this the feature waits on the user thinking to ask.
+    // The fast slot — judging one task against its own evidence is a labeling
+    // call, and the caps inside bound it to two per run. Fail-soft: an
+    // unevaluated task simply waits for next week.
+    if let backend {
+        do {
+            let proposed = try await DeckSuggester.run(database: database, backend: backend)
+            if proposed > 0 { print("decks: \(proposed) deck suggestions") }
+        } catch {
+            print("deck suggester failed (retry next week): \(error)")
+        }
+    }
 }
 
 // Daily digest at/after the configured hour (default 18:00, §4.3).

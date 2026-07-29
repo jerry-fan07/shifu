@@ -51,9 +51,25 @@ public enum CardCandidates {
         }
     }
 
+    /// The response's outermost JSON *object*, for prompts that answer with a
+    /// verdict wrapping the cards (`DeckSuggester`'s `{"worth": …}`). Same
+    /// escape repairs, same fall back to the untouched text.
+    public static func verdict(_ response: String) -> [String: Any]? {
+        guard let start = response.firstIndex(of: "{"),
+              let end = response.lastIndex(of: "}"), start < end
+        else { return nil }
+        let raw = String(response[start...end])
+        return dictionary(repairingLaTeXEscapes(raw)) ?? dictionary(raw)
+    }
+
     private static func objects(_ json: String) -> [[String: Any]]? {
         guard let data = json.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+    }
+
+    private static func dictionary(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     /// Backslashes that open LaTeX rather than a JSON escape (§5.2). Models
