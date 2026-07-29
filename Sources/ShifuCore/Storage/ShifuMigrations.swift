@@ -341,6 +341,38 @@ extension ShifuDatabase {
                 "DELETE FROM settings WHERE key IN ('claude.api_key', 'claude.model')")
         }
 
+        migrator.registerMigration("v16") { db in
+            // Radar now judges *tasks*, not domains (design.md §6.1): a
+            // suggestion carries the model's own sizing of the work, so the
+            // honest "setup ≈30 min" the UI shows is a stored fact rather
+            // than a mechanical guess, and `teach` carries the one capability
+            // the user may not know exists — the point of the tab.
+            try db.alter(table: "suggestions") { table in
+                table.add(column: "setup_minutes", .double)
+                table.add(column: "teach", .text)
+            }
+            // Every existing *description* is domain-altitude debris
+            // ("google.com visited 255× → set up Google Analytics 4"), and
+            // suggestions are derived state, re-mined weekly — so the text
+            // goes and the queue starts clean.
+            //
+            // Dismissal memory is the one thing worth carrying, and it only
+            // carries where a key still means the same thing: `freq:<domain>`
+            // survives the rewrite unchanged (same prefix, same detector, same
+            // 10-visits-a-day threshold), so a user who dismissed one keeps
+            // having dismissed it. `ngram:`, `alt:` and the old `freq:<app>`
+            // keys the miner can no longer mint go, along with every open row.
+            try db.execute(sql: """
+                DELETE FROM suggestions
+                WHERE status = 'new' OR pattern_key NOT LIKE 'freq:%.%'
+                """)
+            // What survives is a dismissal, not advice: clear the old text so
+            // a resurfaced row is judged fresh by the new describer.
+            try db.execute(sql: """
+                UPDATE suggestions SET title = NULL, suggestion = NULL, confidence = NULL
+                """)
+        }
+
         return migrator
     }
 }

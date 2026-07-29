@@ -31,20 +31,31 @@ the first metadata-rich run on the FM backend.
   `FoundationModelsBackend` overrides to 4,096).
 - `LLMTokens.estimate` gives a conservative prompt-size estimate
   (≈3 UTF-8 bytes per token) so dense OCR text can't out-tokenize the guess.
-- `AmbiguousClassifier.batches` chunks samples so each rendered prompt fits
+- `LLMTokens.batches(_:budget:render:)` is the shared greedy batcher: grow a
+  batch, render the real prompt, split when the render exceeds
   `contextWindowTokens − responseTokenReserve` (2,000 tokens reserved for the
-  JSON response). Verdicts apply **per batch**: a mid-run failure keeps earlier
-  updates and leaves the rest ambiguous for the next run.
+  JSON response). `AmbiguousClassifier.batches` and `Radar.batches` are one
+  line each over it. Verdicts apply **per batch**: a mid-run failure keeps
+  earlier updates and leaves the rest for the next run.
 
-`KnowledgeExtractor` (text capped at 2,500 chars) and `Radar.describe`
-(≤10 one-line suggestions) produce bounded prompts that fit in 4k, so they
-stay single-shot.
+`KnowledgeExtractor` (text capped at 2,500 chars) produces a bounded prompt
+that fits in 4k, so it stays single-shot.
+
+**`Radar.describe` lost its exemption in 2026-07** (design.md §6.2). It used
+to send ≤10 one-line patterns; it now sends up to 12 *dossiers*, each carrying
+day-log lines, sampled window titles and a 300-char text sample, under a fixed
+framing and tool catalog that is itself ~1k tokens. So it batches like the
+classifier, through the same `LLMTokens.batches`, against a reserve of 2,500 —
+larger than the classifier's, because each verdict carries prose rather than a
+handle and a number.
 
 ## Rule for new call sites
 
 Any new prompt sent through `LLMBackend.complete` must fit the backend's
 `contextWindowTokens`. If the prompt scales with data volume, chunk it with a
-token-aware batcher (see `AmbiguousClassifier.batches`), never by item count.
+token-aware batcher (`LLMTokens.batches`), never by item count.
 Regression coverage lives in `AmbiguousClassifierTests`
 (`runSplitsAcrossSmallContextWindow` forces multi-batch behavior through a
-2,600-token mock window).
+2,600-token mock window) and `RadarTests`
+(`describeSplitsBatchesUnderSmallContextWindow`, which sizes its mock window
+from the rendered framing so the test can't drift when the prompt grows).

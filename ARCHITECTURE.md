@@ -41,8 +41,9 @@ Sources/ShifuCore/
   Capture/     ObservationRecorder (the write path), SimHash, DHash, BoundedLRUCache
   Privacy/     Redactor, Exclusions
   Analysis/    Sessionizer, RulesClassifier, AmbiguousClassifier, LedgerBuilder,
-               SemanticTaskGrouper, ThemeClusterer, TaskGrouper, TaskMerges (+TaskAutoMerge),
-               PatternMiner, Radar, DigestGenerator, Embedder
+               SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
+               TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
+               Radar (+RadarDescriber), DigestGenerator, Embedder
   LLM/         LLMBackend protocol + LLMTokens
                (DeepSeekBackend, the only implementation, lives in shifu-analyzer — invariant 1)
   Vault/       Note, WorkNote, FrontMatter, FSRS, VaultStore, VaultIndexer,
@@ -216,7 +217,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | What gets extracted into notes | [`Vault/KnowledgeExtractor.swift`](Sources/ShifuCore/Vault/KnowledgeExtractor.swift) |
 | Per-task-day work notes | [`Vault/WorkNoteCompiler.swift`](Sources/ShifuCore/Vault/WorkNoteCompiler.swift) |
 | Search ranking / hybrid retrieval | [`Vault/VaultSearch.swift`](Sources/ShifuCore/Vault/VaultSearch.swift) |
-| Automation suggestions | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift), [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
+| Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
+| The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
 | Work Mode nudge behavior | [`shifud/WorkModeController.swift`](Sources/shifud/WorkModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
 | A user-tunable setting (key, default, bounds, UI copy) | [`Storage/SettingsCatalog.swift`](Sources/ShifuCore/Storage/SettingsCatalog.swift) — see §7 |
 | The Settings window itself | [`ShifuApp/SettingsView.swift`](Sources/ShifuApp/SettingsView.swift), [`ShifuApp/SettingsStore.swift`](Sources/ShifuApp/SettingsStore.swift) — usually you do **not** need to touch these |
@@ -231,7 +233,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v12 in
+The schema is defined *only* as migrations v1–v16 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -303,7 +305,10 @@ window renders them (connection fields only when the backend isn't "off").
 Migration v15 folded the legacy `claude.*`/`openai.*` keys and backend
 choices into these.
 
-**`suggestions`** (radar, unique `pattern_key`), **`srs_reviews`** (review log
+**`suggestions`** (radar, unique `pattern_key` — `task:<task_key>` or
+`freq:<domain>`; v16 adds `setup_minutes` and `teach`, and `suggestion IS NULL`
+means "mined but not yet judged", which `Radar.active` hides),
+**`srs_reviews`** (review log
 for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 (unique ordered pair — keeps dismissals dismissed),
 **`theme_suggestions`** (v13, unique `task_id`; replaced the v9
@@ -349,7 +354,7 @@ This is where each is actually enforced, and what would catch a regression.
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
 | 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
-| 7 | LLM prompts are token-budgeted | `AmbiguousClassifier.batches` and `SemanticTaskGrouper.run`'s batch loop size by `LLMTokens.estimate`, never item count; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget` |
+| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches` and `Radar.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
 **Invariants 4 and 5 have no automated guard** because both live in `shifud`,
@@ -405,8 +410,8 @@ orphan good data.
 
 ## 7. Extension recipes
 
-**Add a database migration.** Append `migrator.registerMigration("v13")` in
-`ShifuDatabase.migrator`. Never edit v1–v12 — they have run on real machines.
+**Add a database migration.** Append `migrator.registerMigration("v17")` in
+`ShifuDatabase.migrator`. Never edit v1–v16 — they have run on real machines.
 Additive column changes want `.notNull().defaults(to:)` so existing rows stay
 valid.
 

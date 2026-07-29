@@ -3,7 +3,8 @@ import ShifuCore
 import SwiftUI
 
 /// *Radar* tab (design.md §6.2): ranked automation suggestions with
-/// Dismiss / Snooze / copy-automation-prompt actions.
+/// Copy / Snooze / Dismiss actions. Only described, gated rows ever reach here
+/// (`Radar.active`) — a mined row on its own is evidence, not advice.
 struct RadarTabView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var copiedID: Int64?
@@ -12,42 +13,55 @@ struct RadarTabView: View {
         Group {
             if store.suggestions.isEmpty {
                 ContentUnavailableView(
-                    "No suggestions yet", systemImage: "dot.radiowaves.left.and.right",
-                    description: Text("The pattern miner runs weekly. Repetitive workflows show up here.")
+                    "Nothing worth automating yet", systemImage: "dot.radiowaves.left.and.right",
+                    description: Text("Shifu reviews your recurring tasks weekly and only "
+                        + "suggests automating one when it would plainly pay for itself.")
                 )
             } else {
                 List(store.suggestions, id: \.patternKey) { suggestion in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(suggestion.title ?? suggestion.evidence)
-                            .font(.headline)
-                        Text(suggestion.evidence)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let body = suggestion.suggestion {
-                            Text(body)
-                                .font(.callout)
-                        }
-                        HStack(spacing: 12) {
-                            Button(copiedID == suggestion.id ? "Copied ✓" : "Copy automation prompt") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(
-                                    suggestion.automationPrompt, forType: .string)
-                                copiedID = suggestion.id
-                            }
-                            Button("Snooze 30d") { store.snooze(suggestion) }
-                            Button("Dismiss") { store.dismiss(suggestion) }
-                            Spacer()
-                            Text("≈\(Int(suggestion.estMinutesSavedWeekly)) min/week")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.link)
-                    }
-                    .padding(.vertical, 6)
+                    row(suggestion)
                 }
                 .listStyle(.inset)
             }
         }
         .padding(20)
+    }
+
+    @ViewBuilder
+    private func row(_ suggestion: Suggestion) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(suggestion.title ?? suggestion.evidence)
+                .font(.headline)
+            // The dossier line the suggestion was judged from: hours, days,
+            // when it happens, where the time went.
+            Text(suggestion.evidence)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let body = suggestion.suggestion {
+                Text(body)
+                    .font(.callout)
+            }
+            if let teach = suggestion.teach {
+                Label(teach, systemImage: "lightbulb")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Button(copiedID == suggestion.id ? "Copied ✓" : "Copy brief") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(
+                        suggestion.automationPrompt, forType: .string)
+                    copiedID = suggestion.id
+                }
+                Button("Snooze 30d") { store.snooze(suggestion) }
+                Button("Dismiss") { store.dismiss(suggestion) }
+                Spacer()
+                Text(suggestion.sizingLabel)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.link)
+        }
+        .padding(.vertical, 6)
     }
 }

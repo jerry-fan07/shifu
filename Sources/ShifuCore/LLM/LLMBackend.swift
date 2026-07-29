@@ -26,6 +26,31 @@ public enum LLMTokens {
     public static func estimate(_ text: String) -> Int {
         text.utf8.count / 3 + 1
     }
+
+    /// Greedy token-sized batching, shared by every batched prompt: grow a
+    /// batch, render the *real* prompt, and split when the render exceeds
+    /// `budget`. Sizing by the rendered prompt rather than by item count is
+    /// the invariant (CLAUDE.md 7) — an item's cost is its titles and OCR
+    /// text, which no fixed count can bound.
+    ///
+    /// An over-budget lone item still gets its own batch: splitting further is
+    /// impossible, and the callers cap each item's evidence at the source.
+    public static func batches<Item>(
+        _ items: [Item], budget: Int, render: ([Item]) -> String
+    ) -> [[Item]] {
+        var result: [[Item]] = []
+        var current: [Item] = []
+        for item in items {
+            current.append(item)
+            if current.count > 1, estimate(render(current)) > budget {
+                current.removeLast()
+                result.append(current)
+                current = [item]
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
+    }
 }
 
 /// Backend failures. Both are non-fatal by design: every analyzer stage that
