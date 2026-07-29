@@ -121,6 +121,29 @@ import Testing
         #expect(counts.logs == 1)
     }
 
+    /// A timezone change re-keys day boundaries: rows written under the old
+    /// zone sit at a different midnight inside the same day, match their own
+    /// 24 h window, and double-count the day unless the rebuild purges them.
+    @Test func rebuildPurgesLogsStrandedByTimezoneChange() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 45,
+                   topic: "shifu vault")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2), calendar: calendar)
+        // A leftover row from a run under a zone 3 h ahead: same day, same
+        // task, day_start at that zone's midnight.
+        try database.queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO task_logs (task_id, day_start, duration_ms, summary) "
+                    + "VALUES (1, ?, 2700000, 'stale duplicate')",
+                arguments: [ms(day1) + 3 * 3_600_000])
+        }
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2), calendar: calendar)
+        let logs = try database.queue.read { try TaskLog.order(sql: "day_start").fetchAll($0) }
+        #expect(logs.count == 1)
+        #expect(logs[0].dayStart == ms(day1))
+        #expect(logs[0].durationMs == 45 * 60_000)
+    }
+
     @Test func midnightSpanSplitsAcrossDayLogs() throws {
         let database = try makeDB()
         // 23:30 day1 → 00:30 day2.
