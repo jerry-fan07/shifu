@@ -213,7 +213,7 @@ struct VaultTabView: View {
         .font(.caption)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .onChange(of: store.taskFilter) { _, _ in store.loadTasks() }
+        .onChange(of: store.taskFilter) { _, _ in store.loadTasksSoon() }
     }
 }
 
