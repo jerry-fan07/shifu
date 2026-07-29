@@ -142,9 +142,11 @@ import Testing
     }
 }
 
-@Suite struct KnowledgeExtractorTests {
+/// The shared card-JSON shape and its LaTeX repairs — exercised here rather
+/// than through any one of the three prompts that answer in it.
+@Suite struct CardCandidatesTests {
     @Test func parsesCandidates() {
-        let candidates = KnowledgeExtractor.parseCandidates("""
+        let candidates = CardCandidates.parse("""
         [{"topic": "GRDB WAL", "note": "GRDB queues serialize writes.",
           "question": "How does GRDB serialize?", "answer": "DatabaseQueue.", "confidence": 0.9}]
         """)
@@ -154,14 +156,14 @@ import Testing
     }
 
     @Test func emptyArrayMeansNothingWorthKeeping() {
-        #expect(KnowledgeExtractor.parseCandidates("[]").isEmpty)
-        #expect(KnowledgeExtractor.parseCandidates("no json at all").isEmpty)
+        #expect(CardCandidates.parse("[]").isEmpty)
+        #expect(CardCandidates.parse("no json at all").isEmpty)
     }
 
     /// `\(` is not a JSON escape, so an un-doubled backslash used to fail the
     /// whole array and lose every candidate in the batch.
     @Test func rawLaTeXInJSONStillParses() {
-        let candidates = KnowledgeExtractor.parseCandidates(
+        let candidates = CardCandidates.parse(
             #"[{"topic": "cone", "note": "\(a^T x \ge c\|x\|\)", "confidence": 0.9}]"#)
         #expect(candidates.count == 1)
         #expect(candidates[0].note == #"\(a^T x \ge c\|x\|\)"#)
@@ -170,7 +172,7 @@ import Testing
     /// `\frac` is worse than a parse failure: JSON reads `\f` as a formfeed and
     /// silently eats the "f", so the card renders as "rac{a}{b}".
     @Test func commandsThatLookLikeEscapesSurviveIntact() {
-        let candidates = KnowledgeExtractor.parseCandidates(
+        let candidates = CardCandidates.parse(
             #"[{"topic": "t", "note": "\frac{a}{b} with \theta", "confidence": 0.9}]"#)
         #expect(candidates.first?.note == #"\frac{a}{b} with \theta"#)
     }
@@ -178,17 +180,19 @@ import Testing
     /// The repair only knows LaTeX commands, so a real `\n` between sentences
     /// stays a newline — `\next` is not a command CardMarkup renders.
     @Test func genuineJSONEscapesAreLeftAlone() {
-        let candidates = KnowledgeExtractor.parseCandidates(
+        let candidates = CardCandidates.parse(
             #"[{"topic": "t", "note": "One.\nTwo, \"quoted\", 50% done.", "confidence": 0.9}]"#)
         #expect(candidates.first?.note == "One.\nTwo, \"quoted\", 50% done.")
     }
 
     @Test func correctlyEscapedLaTeXIsNotDoubleEscaped() {
-        let candidates = KnowledgeExtractor.parseCandidates(
+        let candidates = CardCandidates.parse(
             #"[{"topic": "t", "note": "Good \\(x\\) here", "confidence": 0.9}]"#)
         #expect(candidates.first?.note == #"Good \(x\) here"#)
     }
+}
 
+@Suite struct KnowledgeExtractorTests {
     @Test func promptAsksForLaTeXWithDoubledBackslashes() {
         let prompt = KnowledgeExtractor.prompt(
             context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
