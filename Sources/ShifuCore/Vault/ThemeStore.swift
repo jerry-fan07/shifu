@@ -173,36 +173,94 @@ public enum ThemeStore {
 
     // MARK: - Writes
 
-    /// Mints a theme by hand (or returns the one already under that name), so
-    /// the user isn't limited to the initiatives the clusterer happened to
-    /// find. Keyed like a clustered one — `thm:<slug>` — so the two are
-    /// indistinguishable everywhere downstream, and reusable by the clusterer's
-    /// roster on the next run.
+    /// Mints a theme by hand (or returns the one already under that name).
+    /// This is *the* way a theme comes into being: the clusterer only files
+    /// blocks into themes that already exist and writes what it would like to
+    /// found to `ThemeProposals` (v17). Accepting a proposal lands here too,
+    /// under the key it was proposed with, so the two are indistinguishable
+    /// everywhere downstream.
+    ///
+    /// A key the user had ruled out is un-ruled by creating it: the matching
+    /// dismissed proposal is cleared, so its evidence is live again.
     @discardableResult
     public static func create(
-        named name: String, database: ShifuDatabase, now: Date = Date()
+        named name: String, gist: String? = nil,
+        database: ShifuDatabase, now: Date = Date()
     ) throws -> String? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let key = ThemeClusterer.keyPrefix + TaskGrouper.slug(trimmed)
+        let slug = TaskGrouper.slug(trimmed)
+        guard !trimmed.isEmpty, !slug.isEmpty else { return nil }
+        let key = ThemeClusterer.keyPrefix + slug
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         try database.queue.write { db in
             try db.execute(sql: """
-                INSERT INTO themes (key, name, created_at, last_active_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO themes (key, name, gist, created_at, last_active_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO NOTHING
-                """, arguments: [key, trimmed, nowMs, nowMs])
+                """, arguments: [key, trimmed, clean(gist), nowMs, nowMs])
+            try db.execute(sql: "DELETE FROM theme_proposals WHERE key = ?", arguments: [key])
         }
         return key
     }
 
     public static func rename(themeID: Int64, to name: String, database: ShifuDatabase) throws {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        try update(themeID: themeID, name: name, gist: nil, database: database)
+    }
+
+    /// Edits a theme in place. `name` renames when non-empty; `gist` replaces
+    /// the one-line description, and an empty string clears it. Passing nil
+    /// for either leaves that field alone, so a rename can't wipe a gist.
+    ///
+    /// The key never moves — it is what `activities.theme_key` files blocks
+    /// under, so renaming "Travel" to "Summer trip" must not orphan its
+    /// history. That also means the clusterer keeps recognizing the theme.
+    public static func update(
+        themeID: Int64, name: String?, gist: String?, database: ShifuDatabase
+    ) throws {
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         try database.queue.write { db in
-            try db.execute(sql: "UPDATE themes SET name = ? WHERE id = ?",
-                           arguments: [trimmed, themeID])
+            if let trimmedName, !trimmedName.isEmpty {
+                try db.execute(sql: "UPDATE themes SET name = ? WHERE id = ?",
+                               arguments: [trimmedName, themeID])
+            }
+            if let gist {
+                try db.execute(sql: "UPDATE themes SET gist = ? WHERE id = ?",
+                               arguments: [clean(gist), themeID])
+            }
         }
+    }
+
+    /// Deletes a theme and unfiles its blocks. The time itself is untouched —
+    /// only the filing goes, exactly as clearing a task's theme does.
+    ///
+    /// Two things make the deletion stick. `theme_attempts` is burned on the
+    /// freed blocks so the next clusterer run can't quietly re-file them, and
+    /// the key is recorded as a dismissed proposal so it can't come back as a
+    /// suggestion either — deleting a theme is the strongest "not this" the
+    /// user can say, and it would be absurd to offer it back an hour later.
+    public static func delete(themeID: Int64, database: ShifuDatabase,
+                              now: Date = Date()) throws {
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try database.queue.write { db in
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT key, name FROM themes WHERE id = ?",
+                arguments: [themeID]) else { return }
+            let key: String = row["key"]
+            try db.execute(sql: """
+                UPDATE activities SET theme_key = NULL, theme_attempts = ?, theme_user_set = 0
+                WHERE theme_key = ?
+                """, arguments: [ThemeClusterer.maxAttempts, key])
+            try db.execute(sql: "DELETE FROM theme_suggestions WHERE theme_key = ?",
+                           arguments: [key])
+            try ThemeProposals.dismissKey(key, name: row["name"], db: db, now: nowMs)
+            try db.execute(sql: "DELETE FROM themes WHERE id = ?", arguments: [themeID])
+        }
+    }
+
+    /// Blank prose is absence, not an empty line on the theme card.
+    private static func clean(_ text: String?) -> String? {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 
     private static func overview(from row: Row) -> Overview {

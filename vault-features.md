@@ -247,9 +247,9 @@ are a shortcut, not an autopilot.
 
 Themes replaced projects outright (v14: the `projects` table, project notes
 and their compiler, and the `--project` search filter are all gone). Projects
-were user-created folders a task was filed into by hand; themes are the same
-idea arrived at from the other end —
-the clusterer proposes the initiatives, the user corrects them. A task's theme
+were user-created folders a task was filed into by hand, and v17 brings themes
+back to that: the user makes them, the clusterer only *files into* them and
+*suggests* the ones it thinks are missing (design.md §5.3). A task's theme
 is derived, not stored: filing is per block (`activities.theme_key`), and a
 task's theme is the one its time mostly sits in. Picking one from the Task
 log's row menu writes *all* of that task's blocks, so the label always matches
