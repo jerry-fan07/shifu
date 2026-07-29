@@ -183,7 +183,7 @@ Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`,
 A user-invoked focus contract, toggled from the menu bar (and optionally auto-scheduled, e.g. weekdays 9–12).
 
 - While active, the daemon classifies the *current* block in near-real-time using the rules layer only (no LLM on the hot path). Unknown → treated as neutral, never nagged.
-- If the current block has been non-`work`/non-`learning` for a grace period (default 3 min), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades, with a short translucent motivational line centered on the screen the user is working on (e.g. "Believe in yourself"). Repeats at most every 4 min while off-task. No sound, no modal — a nudge, not a scold.
+- If the current block has been non-`work`/non-`learning` for a grace period (default 1 s), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades, with a short translucent motivational line centered on the screen the user is working on (e.g. "Believe in yourself"). Repeats at most every 10 s while off-task. No sound, no modal — a nudge, not a scold.
 - Escalation is configurable: off → glow → glow + haptic (on supported trackpads) → gentle notification. Default is glow only.
 - Work Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
 
