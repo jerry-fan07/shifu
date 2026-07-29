@@ -2,8 +2,14 @@ import Foundation
 import GRDB
 
 /// Knowledge extraction (design.md §5.1): learning blocks (and work blocks
-/// with fresh text) are scanned for candidate notes. Candidates land in the
-/// inbox; nothing enters the review queue unconfirmed.
+/// with fresh text) are scanned for reference notes worth keeping. Candidates
+/// land in the inbox for triage.
+///
+/// This stage writes no flashcards. Cards are user-requested only now (§5.2):
+/// they come from a deck, and the deck request is the confirmation. What
+/// automatic extraction still earns is the *reference* half — a paragraph
+/// explaining something the user read — which is worth having in the vault
+/// and searchable whether or not it ever becomes a card.
 public enum KnowledgeExtractor {
     public static let batchLimit = 8
     public static let confidenceFloor = 0.5
@@ -28,19 +34,18 @@ public enum KnowledgeExtractor {
         let workingLine = working.isEmpty
             ? "" : "\nWhile reading, the user was working on — \(working.joined(separator: ", "))."
         return """
-        Create spaced-repetition flashcards from this screen text the user was reading
+        Extract reference notes worth keeping from this screen text the user was reading
         (\(source.joined(separator: ", "))).\(workingLine)
         Look for: definitions, facts, how-tos, error→fix pairs, shortcuts, new terms.
-        Write cards that teach, not clippings: combine what the screen shows with your
+        Write notes that explain, not clippings: combine what the screen shows with your
         own knowledge of the subject — define the terms involved, explain how or why it
-        works, and add a concrete example or gotcha where you know one. Every card must
+        works, and add a concrete example or gotcha where you know one. Every note must
         stand on its own months from now, when the screen and this task are gone.
+        Do not write quiz questions or flashcards — these are reference notes, not cards.
         \(CardCandidates.latexRules())
         Respond with ONLY a JSON array (empty if nothing is worth keeping):
         [{"topic": "short topic",
           "note": "markdown explanation, 3-6 sentences: the fact plus the background needed to understand it",
-          "question": "optional recall question that names its subject (never 'this function' or 'the error above')",
-          "answer": "optional answer, 2-4 sentences: the direct answer plus the why",
           "confidence": 0.8}]
         Extract at most 3 candidates. Only genuinely reusable knowledge — no UI chrome,
         no navigation text, no user's own writing.
@@ -50,15 +55,15 @@ public enum KnowledgeExtractor {
         """
     }
 
+    /// The note is the candidate's explanation and nothing else. Any `question`
+    /// or `answer` a model volunteers anyway is dropped rather than appended:
+    /// a `Q:`/`A:` pair here would put an unrequested card in the review queue,
+    /// which is exactly what §5.2 took away.
     static func note(
         from candidate: CardCandidates.Candidate, activity: Activity,
         sourceURL: String?, taskKey: String?
     ) -> Note {
-        var body = candidate.note
-        if let question = candidate.question, let answer = candidate.answer {
-            body += "\n\nQ: \(question)\nA: \(answer)"
-        }
-        return Note(
+        Note(
             captured: Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000),
             sourceApp: activity.appBundle.split(separator: ".").last.map(String.init),
             sourceURL: sourceURL,
@@ -66,7 +71,7 @@ public enum KnowledgeExtractor {
             taskKey: taskKey,
             confidence: candidate.confidence,
             state: .inbox,
-            body: body
+            body: candidate.note
         )
     }
 

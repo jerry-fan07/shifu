@@ -114,38 +114,17 @@ struct CardsTabView: View {
         }
     }
 
-    /// How many inbox candidates the empty deck state surfaces.
-    private static let maxStarterCandidates = 3
-
-    /// Empty deck: seed it right here — the freshest reviewable inbox
-    /// candidates with their triage actions, instead of a dead end.
-    @ViewBuilder private var emptyDeckView: some View {
-        let candidates = store.inboxNotes.filter { $0.questionAnswer != nil }
-        if candidates.isEmpty {
-            ContentUnavailableView(
-                "No cards yet", systemImage: "rectangle.stack",
-                description: Text("Keep inbox candidates with a Q/A to build your deck.")
-            )
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("No cards yet — keep a recent candidate to start your deck:")
-                    .foregroundStyle(.secondary)
-                ForEach(candidates.prefix(Self.maxStarterCandidates)) { note in
-                    InboxRowView(
-                        note: note,
-                        onKeep: { store.keep(note) },
-                        onDiscard: { store.discard(note) },
-                        onEdit: { editingCard = note })
-                    Divider()
-                }
-                if store.inboxNotes.count > Self.maxStarterCandidates {
-                    Button("See all \(store.inboxNotes.count) in the inbox") {
-                        path.append(.inbox)
-                    }
-                    .buttonStyle(.link)
-                }
-            }
-        }
+    /// Empty deck. This used to offer the freshest reviewable inbox
+    /// candidates to keep, but automatic extraction no longer writes a Q/A —
+    /// the inbox is reference notes now, so that list would be permanently
+    /// empty. Cards come from decks the user asked for (§5.2), and that is
+    /// where the empty state points.
+    private var emptyDeckView: some View {
+        ContentUnavailableView(
+            "No cards yet", systemImage: "rectangle.stack",
+            description: Text("Cards come from decks. Accept a suggested deck above, "
+                + "or open a task in the Vault tab and ask for one.")
+        )
     }
 
     private var urgencyLegend: some View {

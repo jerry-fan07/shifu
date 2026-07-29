@@ -201,6 +201,8 @@ import Testing
         #expect(prompt.contains(#"\\frac{a}{b}"#))
     }
 
+    /// The task and its screen source are the difference between a note that
+    /// still reads months later and one that says "the error above".
     @Test func promptCarriesTaskAndSourceContext() {
         let context = KnowledgeExtractor.BlockContext(
             text: "Actors serialize access to their state.",
@@ -223,14 +225,30 @@ import Testing
         #expect(!prompt.contains("working on"))
     }
 
-    @Test func candidateBecomesInboxNoteWithQA() {
+    @Test func promptForbidsFlashcards() {
+        let prompt = KnowledgeExtractor.prompt(
+            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
+        #expect(prompt.contains("reference notes"))
+        #expect(prompt.contains("Do not write quiz questions or flashcards"))
+        // The JSON shape must not offer the fields either, or the model fills
+        // them in whatever the prose says.
+        #expect(!prompt.contains("\"question\""))
+        #expect(!prompt.contains("\"answer\""))
+    }
+
+    /// A model that volunteers a Q/A anyway must not get a card into the
+    /// review queue through the back door — cards are user-requested (§5.2).
+    @Test func candidateBecomesReferenceNoteWithoutQA() {
         let activity = Activity(startedAt: 1_000, endedAt: 400_000,
                                 appBundle: "com.apple.Safari", category: .learning)
         let note = KnowledgeExtractor.note(
             from: .init(topic: "t", note: "fact", question: "q?", answer: "a", confidence: 0.8),
             activity: activity, sourceURL: "https://x.test/doc", taskKey: nil)
         #expect(note.state == .inbox)
-        #expect(note.questionAnswer?.question == "q?")
+        #expect(note.questionAnswer == nil)
+        #expect(!note.body.contains("Q:"))
+        #expect(note.body == "fact")
         #expect(note.sourceURL == "https://x.test/doc")
+        #expect(note.deck == nil)
     }
 }
