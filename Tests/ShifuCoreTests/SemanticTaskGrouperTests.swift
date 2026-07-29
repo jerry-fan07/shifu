@@ -14,10 +14,14 @@ private struct StubBackend: LLMBackend {
 private final class GroupingBackend: LLMBackend, @unchecked Sendable {
     let name = "grouping"
     let contextWindowTokens: Int
+    let responseHeadroomTokens: Int
     private let lock = NSLock()
     private(set) var prompts: [String] = []
 
-    init(contextWindowTokens: Int) { self.contextWindowTokens = contextWindowTokens }
+    init(contextWindowTokens: Int, responseHeadroomTokens: Int = 0) {
+        self.contextWindowTokens = contextWindowTokens
+        self.responseHeadroomTokens = responseHeadroomTokens
+    }
 
     func complete(prompt: String, maxTokens: Int) async throws -> String {
         lock.withLock { prompts.append(prompt) }
@@ -298,6 +302,29 @@ private struct TaskRowSnapshot: Sendable {
             try String.fetchAll(sqlite, sql: "SELECT DISTINCT sem_key FROM activities")
         }
         #expect(distinctKeys == ["sem:planning-the-sf-trip"])
+    }
+
+    /// A thinking backend's headroom outranks the stage's answer reserve when
+    /// sizing batches: prompts must leave the whole headroom free, or the
+    /// model burns the remainder on chain-of-thought and answers nothing.
+    @Test func runReservesThinkingHeadroomWhenSizingBatches() async throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        for index in 0..<8 {
+            try seedBlock(db, id: &ids, startedAt: Int64(index) * 3_600_000,
+                          title: "window \(index)",
+                          text: String(repeating: "dense screen text ", count: 30))
+        }
+        let headroom = SemanticTaskGrouper.responseTokenReserve + 600
+        let backend = GroupingBackend(contextWindowTokens: 3_200,
+                                      responseHeadroomTokens: headroom)
+        let summary = try await SemanticTaskGrouper.run(
+            database: db, backend: backend, from: 0, to: 100_000_000)
+        #expect(summary.assigned == 8)
+        #expect(backend.prompts.count > 1)
+        for prompt in backend.prompts {
+            #expect(LLMTokens.estimate(prompt) <= 3_200 - headroom)
+        }
     }
 
     @Test func humanizeStripsPrefixAndDashes() {

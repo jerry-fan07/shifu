@@ -221,7 +221,8 @@ public enum TaskOverviewCompiler {
         }
         var text = render()
         while days.count > 1,
-              LLMTokens.estimate(text) + responseTokens > backend.contextWindowTokens {
+              LLMTokens.estimate(text) + backend.responseReserve(responseTokens)
+                > backend.contextWindowTokens {
             days.removeFirst()
             text = render()
         }

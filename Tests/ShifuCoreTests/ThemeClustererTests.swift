@@ -53,34 +53,6 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(ThemeClusterer.prompt(roster: [], blocks: blocks).contains("(none yet)"))
     }
 
-    @Test func runCreatesThemeAndAssignsBlocks() async throws {
-        let db = try ShifuDatabase.inMemory()
-        var ids: [Int64] = []
-        try seedBlock(db, ids: &ids, startedAt: 0, domain: "partiful.com")
-        try seedBlock(db, ids: &ids, startedAt: 3_600_000, domain: "startupschool.org")
-        let backend = StubBackend(response: #"""
-            {"assignments": [{"id": \#(ids[0]), "task": "n1", "confidence": 0.9},
-                             {"id": \#(ids[1]), "task": "n1", "confidence": 0.9}],
-             "new_themes": [{"handle": "n1", "title": "YC Startup School",
-                             "gist": "The program and everything around it."}]}
-            """#)
-        let summary = try await ThemeClusterer.run(
-            database: db, backend: backend, from: 0, to: 10_000_000)
-        #expect(summary == .init(assigned: 2, themesCreated: 1))
-
-        let theme = try await db.queue.read { sqlite -> (String, String)? in
-            guard let row = try Row.fetchOne(
-                sqlite, sql: "SELECT key, name FROM themes") else { return nil }
-            return (row["key"], row["name"])
-        }
-        #expect(theme?.0 == "thm:yc-startup-school")
-        #expect(theme?.1 == "YC Startup School")
-        let keys = try await db.queue.read { sqlite in
-            try String.fetchAll(sqlite, sql: "SELECT DISTINCT theme_key FROM activities")
-        }
-        #expect(keys == ["thm:yc-startup-school"])
-    }
-
     @Test func rosterThemeJoinsWithoutRenaming() async throws {
         let db = try ShifuDatabase.inMemory()
         try await db.queue.write { sqlite in
@@ -98,7 +70,7 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         let summary = try await ThemeClusterer.run(
             database: db, backend: backend, from: 0, to: 10_000_000,
             now: Date(timeIntervalSince1970: 10_000))
-        #expect(summary == .init(assigned: 1, themesCreated: 0))
+        #expect(summary == .init(assigned: 1, themesProposed: 0))
         let theme = try await db.queue.read { sqlite -> (String, Int64)? in
             guard let row = try Row.fetchOne(
                 sqlite, sql: "SELECT name, last_active_at FROM themes") else { return nil }
@@ -215,8 +187,16 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(detail.recent.count == 2)
 
         try ThemeStore.rename(themeID: overviews[0].id, to: "Summer travel", database: db)
-        #expect(try ThemeStore.overviews(database: db, now: now)[0].name == "Summer travel")
+        let renamed = try ThemeStore.overviews(database: db, now: now)[0]
+        #expect(renamed.name == "Summer travel")
+        #expect(renamed.gist == "Trips.")          // a rename doesn't wipe the gist
         #expect(try ThemeStore.detail(themeID: 99, database: db) == nil)
+
+        try ThemeStore.update(themeID: renamed.id, name: nil, gist: "Flights and stays.",
+                              database: db)
+        #expect(try ThemeStore.overviews(database: db, now: now)[0].gist
+            == "Flights and stays.")
+        #expect(try ThemeStore.overviews(database: db, now: now)[0].name == "Summer travel")
     }
 
     @Test func themeWithOnlyTodayBlocksGetsNoNarrative() async throws {

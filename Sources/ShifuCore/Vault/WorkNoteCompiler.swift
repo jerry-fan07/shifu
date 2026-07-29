@@ -412,8 +412,10 @@ extension WorkNoteCompiler {
                    sessions: pending.note.sessions, samples: samples, tier: pending.tier)
         }
         var text = render()
+        // The tier's own answer need, floored at the backend's thinking
+        // headroom (`responseReserve`) so a reasoning slot can't be starved.
         while !samples.isEmpty,
-              LLMTokens.estimate(text) + pending.tier.responseTokens
+              LLMTokens.estimate(text) + backend.responseReserve(pending.tier.responseTokens)
                 > backend.contextWindowTokens {
             samples = String(samples.prefix(samples.count * 2 / 3))
             text = render()

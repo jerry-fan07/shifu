@@ -24,6 +24,9 @@ struct DeepSeekBackend: LLMBackend {
     let apiKey: String
     let model: String
     let baseURL: String
+    /// Nonzero only for the reasoning slot — see
+    /// `reasoningResponseHeadroomTokens`.
+    let responseHeadroomTokens: Int
 
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
     /// batches sane and works with any OpenAI-compatible endpoint the user
@@ -34,8 +37,16 @@ struct DeepSeekBackend: LLMBackend {
     /// 2-3k tokens, so this is generous while staying inside the output limit
     /// of any OpenAI-compatible server. It still exists (rather than sending
     /// the whole window remainder) to bound a runaway reasoning loop's cost
-    /// and latency.
+    /// and latency. A run that thinks past it gets one retry at the whole
+    /// window remainder (see `complete`) — escalation is the exception path,
+    /// so the common case stays bounded.
     static let thinkingHeadroomTokens = 16_000
+
+    /// What reasoning-slot batchers must keep free in the window
+    /// (`responseHeadroomTokens`): the first-attempt cap plus an equal
+    /// escalation, so even a maximal batch leaves the retry real room. Fast
+    /// (non-thinking) instances report 0 and keep their batches full-width.
+    static let reasoningResponseHeadroomTokens = 2 * thinkingHeadroomTokens
 
     static let defaultBaseURL = "https://api.deepseek.com"
     /// Two model slots, one backend. The fast slot (V4 Flash: an order of
@@ -64,6 +75,13 @@ struct DeepSeekBackend: LLMBackend {
             case .reasoning: return DeepSeekBackend.defaultReasoningModel
             }
         }
+
+        var responseHeadroomTokens: Int {
+            switch self {
+            case .fast: return 0
+            case .reasoning: return DeepSeekBackend.reasoningResponseHeadroomTokens
+            }
+        }
     }
 
     /// Nil when analysis is off or no key exists. No key ⇒ rules-only and
@@ -79,16 +97,42 @@ struct DeepSeekBackend: LLMBackend {
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
         return DeepSeekBackend(
             name: model, apiKey: key, model: model,
-            baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base)
+            baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
+            responseHeadroomTokens: role.responseHeadroomTokens)
     }
 
     func complete(prompt: String, maxTokens: Int) async throws -> String {
         // Headroom for chain-of-thought on every call, clamped so prompt +
         // response still fit the context window.
+        let remainder = contextWindowTokens - LLMTokens.estimate(prompt)
         let cap = min(
             max(maxTokens, Self.thinkingHeadroomTokens),
-            max(maxTokens, contextWindowTokens - LLMTokens.estimate(prompt)))
-        return try await send(prompt: prompt, maxTokens: cap)
+            max(maxTokens, remainder))
+        do {
+            return try await send(prompt: prompt, maxTokens: cap)
+        } catch is ResponseTruncated where remainder > cap {
+            // The model thought past the cap and returned no answer. One
+            // retry at the whole window remainder — batchers reserve
+            // `responseHeadroomTokens`, so a reasoning-slot retry always has
+            // at least another `thinkingHeadroomTokens` to grow into. Paying
+            // the prompt twice beats losing the pass, and the provider's
+            // context cache discounts the resent prompt.
+            do {
+                return try await send(prompt: prompt, maxTokens: remainder)
+            } catch let again as ResponseTruncated {
+                throw LLMError.badResponse("after escalated retry: \(again.detail)")
+            }
+        } catch let truncated as ResponseTruncated {
+            throw LLMError.badResponse(truncated.detail)
+        }
+    }
+
+    /// Thrown only by `send`, only for the recoverable case: the response
+    /// budget ran out (finish_reason=length) before any `content` appeared.
+    /// `complete` converts it to `LLMError` once escalation is exhausted, so
+    /// it never crosses the backend boundary.
+    private struct ResponseTruncated: Error {
+        let detail: String
     }
 
     private func send(prompt: String, maxTokens: Int) async throws -> String {
@@ -124,13 +168,15 @@ struct DeepSeekBackend: LLMBackend {
         }
         if let text, !text.isEmpty { return text }
 
-        // finish_reason=length + reasoning_content but no content means even
-        // the headroom cap ran out mid-thought — surfaced, not retried; the
-        // stage fails soft and its blocks stay queued (§10).
+        // finish_reason=length + no content means the response budget ran out
+        // mid-thought. Thrown typed so `complete` can escalate once; any other
+        // empty answer is a protocol problem no bigger cap would fix.
         let finish = choices.first?["finish_reason"] as? String ?? "?"
         let reasoningChars = (message["reasoning_content"] as? String)?.count ?? 0
-        throw LLMError.badResponse("no message content (finish_reason=\(finish), "
+        let detail = "no message content (finish_reason=\(finish), "
             + "keys=\(message.keys.sorted().joined(separator: ",")), "
-            + "reasoning_content=\(reasoningChars) chars, max_tokens=\(maxTokens))")
+            + "reasoning_content=\(reasoningChars) chars, max_tokens=\(maxTokens))"
+        if finish == "length" { throw ResponseTruncated(detail: detail) }
+        throw LLMError.badResponse(detail)
     }
 }

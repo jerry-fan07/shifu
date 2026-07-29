@@ -242,7 +242,8 @@ extension Radar {
         }
         guard !dossiers.isEmpty else { return Described() }
 
-        let budget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        let budget = max(
+            512, backend.contextWindowTokens - backend.responseReserve(responseTokenReserve))
         var outcome = Described()
         for batch in batches(dossiers, promptTokenBudget: budget) {
             let response = try await backend.complete(

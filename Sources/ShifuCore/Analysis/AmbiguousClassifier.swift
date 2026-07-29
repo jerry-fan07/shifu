@@ -200,7 +200,8 @@ public enum AmbiguousClassifier {
         let samples = try pendingSamples(database: database, from: from, to: to)
         guard !samples.isEmpty else { return 0 }
 
-        let promptBudget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        let promptBudget = max(
+            512, backend.contextWindowTokens - backend.responseReserve(responseTokenReserve))
         var anchors = try ongoingTopics(database: database, before: to)
         var anchorSlugs = Set(anchors.map(TaskGrouper.slug))
         var remaining = samples[...]

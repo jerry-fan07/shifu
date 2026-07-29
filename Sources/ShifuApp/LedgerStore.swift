@@ -81,6 +81,9 @@ final class LedgerStore: ObservableObject {
         }
     }
     @Published private(set) var themes: [ThemeStore.Overview] = []
+    /// Initiatives the clusterer wants to found, shown below the Themes grid.
+    /// Nothing here is a theme until the user says so (design.md §5.3).
+    @Published private(set) var themeProposals: [ThemeProposals.Pending] = []
     /// Decks the user has asked for (§5.2), newest first — the picker's own
     /// group, and the "Building…" rows on the Cards screen.
     @Published private(set) var decks: [DeckStore.Deck] = []
@@ -112,6 +115,9 @@ final class LedgerStore: ObservableObject {
     var deckBuildProcess: Process?
     private var lastAnalyzerRun = Date.distantPast
 
+    /// Internal, not private: the store's actions are split across files
+    /// (LedgerStoreThemes.swift, LedgerStoreDecks.swift, …), and they all open
+    /// the DB through here.
     func db() throws -> ShifuDatabase {
         if let database { return database }
         try ShifuPaths.ensureHomeExists()
@@ -140,6 +146,7 @@ final class LedgerStore: ObservableObject {
             allThemeSuggestions = (try? TaskMerges.pendingThemes(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             themes = (try? ThemeStore.overviews(database: database)) ?? []
+            themeProposals = (try? ThemeProposals.pending(database: database)) ?? []
             decks = (try? DeckStore.decks(database: database)) ?? []
             deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
             hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
@@ -274,29 +281,7 @@ final class LedgerStore: ObservableObject {
         return vault.workNote(day: day, taskKey: taskKey)
     }
 
-    // MARK: - Themes (design.md §5.3, the high-level mode)
-
-    func themeDetail(_ themeID: Int64) -> ThemeStore.Detail? {
-        guard let database = try? db() else { return nil }
-        return (try? ThemeStore.detail(themeID: themeID, database: database)) ?? nil
-    }
-
-    func renameTheme(_ themeID: Int64, to name: String) {
-        if let database = try? db() {
-            try? ThemeStore.rename(themeID: themeID, to: name, database: database)
-        }
-        refreshSoon()
-    }
-
-    /// "New theme…" from a task row: mint it and file the task there in one
-    /// step, so the theme never exists empty.
-    func createThemeAndAssign(_ taskID: Int64, themeName: String) {
-        guard let database = try? db(),
-              let key = try? ThemeStore.create(named: themeName, database: database) ?? nil
-        else { return }
-        try? TaskStore.assignTheme(taskID: taskID, themeKey: key, database: database)
-        refreshSoon()
-    }
+    // Theme reads and edits live in LedgerStoreThemes.swift.
 
     func renameTask(_ taskID: Int64, to name: String) {
         if let database = try? db() {

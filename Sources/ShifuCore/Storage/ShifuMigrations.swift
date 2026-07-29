@@ -373,14 +373,53 @@ extension ShifuDatabase {
                 """)
         }
 
+        migrator.registerMigration("v17") { db in
+            // Themes belong to the user (design.md §5.3). The clusterer still
+            // files blocks into themes that *exist*, but a theme it invents no
+            // longer appears in the Themes grid on its own — it lands here as a
+            // proposal to accept or dismiss.
+            //
+            // `key` is unique, so a re-proposal of the same initiative updates
+            // one row rather than piling up, and a dismissal is permanent —
+            // the same rule the merge and task→theme queues already follow.
+            // Deleting a theme records a dismissed row under its key too, so
+            // the next run can't quietly propose back what the user just threw
+            // away.
+            try db.create(table: "theme_proposals") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("key", .text).notNull().unique()   // "thm:<slug>"
+                table.column("name", .text).notNull()
+                table.column("gist", .text)
+                table.column("status", .text).notNull().defaults(to: "new")
+                table.column("created_at", .integer).notNull()
+            }
+            // The blocks the model put behind a proposal. Without them,
+            // accepting would mint a named, empty theme and the user would
+            // wait an hour for the next run to fill it — and the blocks that
+            // burned `theme_attempts` getting proposed would never arrive.
+            try db.create(table: "theme_proposal_blocks") { table in
+                table.column("proposal_id", .integer).notNull()
+                    .references("theme_proposals", onDelete: .cascade)
+                table.column("activity_id", .integer).notNull()
+            }
+            try db.create(index: "idx_theme_proposal_blocks",
+                          on: "theme_proposal_blocks",
+                          columns: ["proposal_id", "activity_id"], unique: true)
+            // Existing themes are grandfathered, not demoted: they carry the
+            // user's renames, their narratives, and the blocks already filed
+            // under them. Deleting is now a first-class action, so the ones
+            // the clusterer minted and the user never wanted can just go.
+        }
+
         migrator.registerMigration("v18") { db in
             // User-requested flashcard decks (design.md §5.2).
             //
-            // v18, not v17: a parallel branch registered its own "v17" and its
-            // binary reached the dogfood DB first. GRDB keys `grdb_migrations`
-            // on the identifier string, so a duplicate number is not a
-            // conflict — it is a *silent skip*, surfacing later as "no such
-            // table: decks" at query time rather than at open. Automatic
+            // Numbered v18 while v17 (above) was still on another branch:
+            // GRDB keys `grdb_migrations` on the identifier string, so two
+            // branches claiming one number is not a conflict it can detect —
+            // it is a *silent skip*, surfacing later as "no such table: decks"
+            // at query time rather than at open. Pick the next number from
+            // what has actually run, not from what is in this file. Automatic
             // extraction no longer writes cards at all — a deck is the only
             // way one is born, and the request *is* the confirmation, so deck
             // cards skip the inbox and land kept.

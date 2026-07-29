@@ -175,11 +175,15 @@ order, and some of that ordering is load-bearing:
    notes are born and can be stamped into their frontmatter.
 6. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
    clustering (design.md §5.3): blocks into 3–8 broad initiatives
-   (`activities.theme_key`, `themes` rows). Runs *after* TaskGrouper so task
-   names serve as evidence. Narratives are hash-gated over *completed* days —
-   at most one LLM generation per active theme per day. Reuses
-   SemanticTaskGrouper's parse/resolve engine (`"thm:"` prefix,
-   `"new_themes"` wire key).
+   (`activities.theme_key`). Runs *after* TaskGrouper so task names serve as
+   evidence. Narratives are hash-gated over *completed* days — at most one LLM
+   generation per active theme per day. Reuses SemanticTaskGrouper's
+   parse/resolve engine (`"thm:"` prefix, `"new_themes"` wire key).
+   **It files, it doesn't found (v17):** a key with no `themes` row becomes a
+   `theme_proposals` row for the user instead, and those blocks burn an
+   attempt like any unplaced one — the model *has* answered, so re-asking
+   every hour would buy the same verdict twice. The proposal remembers the
+   block ids, so accepting it a week later still files them.
 7. **`TaskMerges.writeSignatures`** — re-derives durable per-block signatures
    while the source window titles still exist (they die with the 14-day
    retention).
@@ -216,7 +220,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | What that model is shown — roster prior, stickiness context, block evidence, the prompt | [`Analysis/SemanticTaskEvidence.swift`](Sources/ShifuCore/Analysis/SemanticTaskEvidence.swift) |
 | Theme clustering (the high-level mode) + running narratives | [`Analysis/ThemeClusterer.swift`](Sources/ShifuCore/Analysis/ThemeClusterer.swift) |
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
-| The theme list/detail data | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift) |
+| The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
+| Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
 | The Time tab's modes, span and lens | [`ShifuApp/DashboardView.swift`](Sources/ShifuApp/DashboardView.swift) — `TimeTabView` |
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
@@ -301,13 +306,23 @@ Projects are gone as of v14 — `projects`, `tasks.project_id`,
 whole; see `theme_user_set` below for the one bit that had to survive.
 
 **`themes`** (v12, `key` unique `"thm:<slug>"`) — the high-level clustering
-mode, and since v13 also what the Task log files tasks under. `name`
-user-renameable, `gist` the LLM one-liner, `summary` the running narrative
-with `summary_hash` as its regeneration gate (hashed over completed days
-only). Theme *day entries* have no table — they are computed on read from
-`activities.theme_key` (`ThemeStore.detail`), and so is a *task's* theme: the
-one its blocks spend the most time in (`TaskStore.dominantThemeSQL`), since
-filing is per block and a task's blocks may straddle themes.
+mode, and since v13 also what the Task log files tasks under. `name` and
+`gist` are the user's (editable in place; the key never moves, so a rename
+keeps the history), `summary` the running narrative with `summary_hash` as its
+regeneration gate (hashed over completed days only). Theme *day entries* have
+no table — they are computed on read from `activities.theme_key`
+(`ThemeStore.detail`), and so is a *task's* theme: the one its blocks spend the
+most time in (`TaskStore.dominantThemeSQL`), since filing is per block and a
+task's blocks may straddle themes. **Rows are only ever written by the user**
+as of v17 (`ThemeStore.create`, or accepting a proposal); `ThemeClusterer` may
+only touch `last_active_at`.
+
+**`theme_proposals`** + **`theme_proposal_blocks`** (v17, `key` unique) — the
+initiatives the clusterer wants to found, with the blocks behind each, shown
+under *Suggested themes*. Accepting mints the theme and files those blocks
+(`ThemeProposals.accept`, unfiled ones only — a hand-filed block keeps its
+home). `key` unique makes a dismissal permanent, and `ThemeStore.delete`
+writes a dismissed row so a deleted theme can't be proposed back.
 
 **`rules`** and **`exclusions`** — user overrides, merged over the hardcoded
 seeds in `RulesClassifier` / `Exclusions`. Unique on `(kind, value)` where
@@ -385,7 +400,7 @@ This is where each is actually enforced, and what would catch a regression.
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
 | 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
-| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
+| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
 **Invariants 4 and 5 have no automated guard** because both live in `shifud`,

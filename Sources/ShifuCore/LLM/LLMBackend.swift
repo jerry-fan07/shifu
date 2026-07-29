@@ -10,11 +10,26 @@ public protocol LLMBackend: Sendable {
     /// Total context window (prompt + response) in tokens. Batched prompts
     /// must be chunked to fit it — see LLMTokens.estimate.
     var contextWindowTokens: Int { get }
+    /// Response-side tokens callers must leave free inside the context window
+    /// when sizing a prompt, when that is more than their own answer reserve.
+    /// Thinking models spend response budget on chain-of-thought before any
+    /// content, so an answer-sized reserve starves them mid-thought on dense
+    /// prompts. Zero (the default) for answer-only models.
+    var responseHeadroomTokens: Int { get }
     func complete(prompt: String, maxTokens: Int) async throws -> String
 }
 
 extension LLMBackend {
     public var contextWindowTokens: Int { 200_000 }
+    public var responseHeadroomTokens: Int { 0 }
+
+    /// The reserve to subtract from `contextWindowTokens` when sizing a
+    /// prompt: the caller's own answer need or the backend's thinking
+    /// headroom, whichever is larger. Every prompt-budget computation goes
+    /// through this so no stage can starve a thinking model (invariant 7).
+    public func responseReserve(_ answerTokens: Int) -> Int {
+        max(answerTokens, responseHeadroomTokens)
+    }
 }
 
 /// Prompt sizing (CLAUDE.md invariant 7). Every batched prompt must be sized

@@ -227,7 +227,8 @@ public enum DeckSuggester {
         var trimmed = candidate
         var text = prompt(for: trimmed)
         while !trimmed.samples.isEmpty,
-              LLMTokens.estimate(text) + responseTokens > backend.contextWindowTokens {
+              LLMTokens.estimate(text) + backend.responseReserve(responseTokens)
+                > backend.contextWindowTokens {
             trimmed.samples.removeLast()
             text = prompt(for: trimmed)
         }

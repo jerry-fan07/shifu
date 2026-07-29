@@ -147,7 +147,10 @@ public enum DeckBuilder {
         _ blocks: [BlockText], claim: DeckStore.Claim, taskName: String,
         backend: any LLMBackend
     ) -> [[BlockText]] {
-        LLMTokens.batches(blocks, budget: backend.contextWindowTokens - responseTokens) {
+        LLMTokens.batches(
+            blocks,
+            budget: backend.contextWindowTokens - backend.responseReserve(responseTokens)
+        ) {
             prompt(title: claim.title, taskName: taskName, blocks: $0)
         }
     }
