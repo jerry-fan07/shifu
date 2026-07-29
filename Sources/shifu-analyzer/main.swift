@@ -110,9 +110,9 @@ if let reasoningBackend {
     do {
         let themeSummary = try await ThemeClusterer.run(
             database: database, backend: reasoningBackend, from: from, to: nowMs)
-        if themeSummary.assigned > 0 {
+        if themeSummary.assigned > 0 || themeSummary.themesProposed > 0 {
             print("themes (\(reasoningBackend.name)): \(themeSummary.assigned) "
-                + "blocks assigned, \(themeSummary.themesCreated) themes created")
+                + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
         let narrated = try await ThemeClusterer.refreshNarratives(
             database: database, backend: reasoningBackend)

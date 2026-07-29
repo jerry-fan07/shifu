@@ -10,35 +10,114 @@ struct ThemeRoute: Hashable {
 /// The Vault tab's *Themes* mode (design.md §5.3): the user's broad ongoing
 /// initiatives, most recently active first, laid out as a grid of cards
 /// rather than a vertical list.
+///
+/// Every theme here is one the user made — by hand, or by accepting one of the
+/// clusterer's proposals, which sit in their own section *below* the grid.
+/// Nothing crosses that line on its own.
 struct ThemeListView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var editing: ThemeStore.Overview?
+    @State private var isCreating = false
 
     private let columns = [GridItem(.adaptive(minimum: 220, maximum: 340), spacing: 12)]
 
     var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Your themes")
+                    .font(.headline)
+                Spacer()
+                Button("New Theme", systemImage: "plus") { isCreating = true }
+                    .help("Themes are yours to create — Shifu only files time into them")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            grid
+        }
+        .sheet(isPresented: $isCreating) { ThemeEditSheet(theme: nil) }
+        .sheet(item: $editing) { ThemeEditSheet(theme: $0) }
+        .onAppear { store.refresh() }
+    }
+
+    private var grid: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(store.themes) { theme in
-                    NavigationLink(value: ThemeRoute(id: theme.id)) {
-                        ThemeCardView(theme: theme)
-                    }
-                    .buttonStyle(.plain)
+                    themeCell(theme)
                 }
             }
             .padding(16)
+            if !store.themeProposals.isEmpty {
+                Divider()
+                suggested
+            }
         }
         // Overlaid rather than placed inside the grid so it centers in the
         // full content area instead of hugging the top-leading corner.
         .overlay {
-            if store.themes.isEmpty {
-                ContentUnavailableView(
-                    "No themes yet", systemImage: "square.stack.3d.up",
-                    description: Text("Themes are the broad initiatives your time "
-                        + "clusters into — they appear after the next analysis run "
-                        + "with an AI backend configured in Settings."))
+            if store.themes.isEmpty && store.themeProposals.isEmpty {
+                ContentUnavailableView {
+                    Label("No themes yet", systemImage: "square.stack.3d.up")
+                } description: {
+                    Text("Themes are the broad initiatives you want your time grouped "
+                        + "under — \"YC Startup School\", \"Travel\". Make the ones you "
+                        + "care about; Shifu files your time into them, and suggests "
+                        + "others it notices below.")
+                } actions: {
+                    Button("New Theme") { isCreating = true }
+                }
             }
         }
-        .onAppear { store.refresh() }
+    }
+
+    /// The card, plus its edit button layered *over* the navigation link
+    /// rather than inside it — a button nested in a NavigationLink's label
+    /// doesn't reliably get the click on macOS. Deleting lives one level in,
+    /// in the edit sheet, so there is a single confirmed path to it.
+    private func themeCell(_ theme: ThemeStore.Overview) -> some View {
+        ZStack(alignment: .topTrailing) {
+            NavigationLink(value: ThemeRoute(id: theme.id)) {
+                ThemeCardView(theme: theme)
+            }
+            .buttonStyle(.plain)
+            Button {
+                editing = theme
+            } label: {
+                Image(systemName: "pencil")
+                    .foregroundStyle(.secondary)
+                    .padding(6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Rename, describe, or delete this theme")
+            .padding(6)
+        }
+    }
+
+    /// The clusterer's proposals (design.md §5.3). Deliberately below the
+    /// grid, visually distinct, and never counted as themes: this is the
+    /// model's opinion of what the user is up to, waiting for a yes.
+    private var suggested: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Suggested themes · \(store.themeProposals.count)")
+                    .font(.headline)
+                Spacer()
+                Button("Dismiss all", action: store.dismissAllThemeProposals)
+                    .buttonStyle(.link)
+                    .help("Clears these for good — a dismissed suggestion never comes back")
+            }
+            Text("Initiatives Shifu noticed in your time. Adding one creates the theme "
+                + "and files the blocks behind it; nothing is added on its own.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(store.themeProposals) { proposal in
+                    ProposalCardView(proposal: proposal)
+                }
+            }
+        }
+        .padding(16)
     }
 }
 
@@ -52,6 +131,8 @@ private struct ThemeCardView: View {
             Text(theme.name)
                 .font(.headline)
                 .lineLimit(2)
+                // Room for the edit menu sitting in the corner above.
+                .padding(.trailing, 20)
             if let gist = theme.gist, !gist.isEmpty {
                 Text(gist)
                     .font(.callout)
@@ -82,15 +163,147 @@ private struct ThemeCardView: View {
     }
 }
 
+/// One suggestion, shaped like a theme card so the two read as the same kind
+/// of thing — but dashed and unfilled, because it isn't one yet. The evidence
+/// line is the whole argument for saying yes: how much time is already behind
+/// this idea.
+private struct ProposalCardView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let proposal: ThemeProposals.Pending
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(proposal.name)
+                .font(.headline)
+                .lineLimit(2)
+            if let gist = proposal.gist, !gist.isEmpty {
+                Text(gist)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            Spacer(minLength: 0)
+            Text("\(LedgerStore.hours(proposal.totalMs)) across "
+                + "\(proposal.blockCount) block\(proposal.blockCount == 1 ? "" : "s")")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+            HStack {
+                Button("Add") { store.acceptThemeProposal(proposal) }
+                    .buttonStyle(.borderedProminent)
+                Button("Dismiss") { store.dismissThemeProposal(proposal) }
+                Spacer()
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        }
+    }
+}
+
+/// Create a theme, or edit the name and gist of one. Both live in one sheet:
+/// the fields are identical, and the only difference is whether there is a
+/// row behind them to delete.
+struct ThemeEditSheet: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    /// nil when creating.
+    let theme: ThemeStore.Overview?
+
+    @State private var name: String
+    @State private var gist: String
+    @State private var confirmingDelete = false
+
+    init(theme: ThemeStore.Overview?) {
+        self.theme = theme
+        _name = State(initialValue: theme?.name ?? "")
+        _gist = State(initialValue: theme?.gist ?? "")
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(theme == nil ? "New theme" : "Edit theme")
+                .font(.title3)
+                .bold()
+            field("Name", prompt: "YC Startup School", text: $name)
+            field("Description (optional)", prompt: "Program sessions, applications, "
+                + "and everything around them.", text: $gist)
+            Text(theme == nil
+                ? "Shifu will file matching time into this theme from the next "
+                    + "analysis run on."
+                : "Renaming keeps the theme's history — its time stays filed here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            footer
+        }
+        .padding(20)
+        .frame(minWidth: 420)
+        .confirmationDialog(
+            "Delete \"\(theme?.name ?? "")\"?", isPresented: $confirmingDelete
+        ) {
+            Button("Delete theme", role: .destructive) {
+                if let theme { store.deleteTheme(theme.id) }
+                dismiss()
+            }
+        } message: {
+            Text("The time stays in your ledger — it just stops being filed under "
+                + "this theme, and Shifu won't suggest it again.")
+        }
+    }
+
+    private func field(
+        _ label: String, prompt: String, text: Binding<String>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            if theme != nil {
+                Button("Delete…", role: .destructive) { confirmingDelete = true }
+            }
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button(theme == nil ? "Create" : "Save") {
+                if let theme {
+                    store.updateTheme(theme.id, name: name, gist: gist)
+                } else {
+                    store.createTheme(named: name, gist: gist)
+                }
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .disabled(trimmedName.isEmpty)
+        }
+    }
+}
+
 /// One theme as a full page: the running narrative, day-by-day history,
 /// the tasks the theme's time flowed through (each links to its task page),
 /// and recent raw activity.
 struct ThemeDetailView: View {
     @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
     let themeID: Int64
 
     @State private var detail: ThemeStore.Detail?
     @State private var name = ""
+    @State private var editing: ThemeStore.Overview?
 
     var body: some View {
         Group {
@@ -100,12 +313,15 @@ struct ThemeDetailView: View {
                 ContentUnavailableView("Theme not found", systemImage: "questionmark.square")
             }
         }
+        .sheet(item: $editing, onDismiss: reload) { ThemeEditSheet(theme: $0) }
         .onAppear(perform: reload)
     }
 
     private func reload() {
         detail = store.themeDetail(themeID)
         name = detail?.overview.name ?? ""
+        // Deleted from the edit sheet: there is no page left to stand on.
+        if detail == nil { dismiss() }
     }
 
     private func content(_ detail: ThemeStore.Detail) -> some View {
@@ -152,6 +368,9 @@ struct ThemeDetailView: View {
         }
         .listStyle(.inset)
         .navigationTitle(detail.overview.name)
+        .toolbar {
+            Button("Edit", systemImage: "pencil") { editing = detail.overview }
+        }
     }
 
     @ViewBuilder private func header(_ detail: ThemeStore.Detail) -> some View {

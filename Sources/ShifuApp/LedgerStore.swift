@@ -82,6 +82,9 @@ final class LedgerStore: ObservableObject {
         }
     }
     @Published private(set) var themes: [ThemeStore.Overview] = []
+    /// Initiatives the clusterer wants to found, shown below the Themes grid.
+    /// Nothing here is a theme until the user says so (design.md §5.3).
+    @Published private(set) var themeProposals: [ThemeProposals.Pending] = []
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
@@ -95,7 +98,9 @@ final class LedgerStore: ObservableObject {
     private var analyzerProcess: Process?
     private var lastAnalyzerRun = Date.distantPast
 
-    private func db() throws -> ShifuDatabase {
+    /// Internal, not private: the store's actions are split across files
+    /// (LedgerStoreThemes.swift), and they all open the DB through here.
+    func db() throws -> ShifuDatabase {
         if let database { return database }
         try ShifuPaths.ensureHomeExists()
         let opened = try ShifuDatabase.open(at: ShifuPaths.database)
@@ -123,6 +128,7 @@ final class LedgerStore: ObservableObject {
             allThemeSuggestions = (try? TaskMerges.pendingThemes(database: database)) ?? []
             todayLogs = (try? TaskStore.logs(dayStart: dayStart, database: database)) ?? []
             themes = (try? ThemeStore.overviews(database: database)) ?? []
+            themeProposals = (try? ThemeProposals.pending(database: database)) ?? []
         }
         do {
             let start = Calendar.current.startOfDay(for: Date())
@@ -143,7 +149,7 @@ final class LedgerStore: ObservableObject {
     /// republishing the list's own data there is a reentrant table operation
     /// (AppKit warns today, will assert eventually). Every store action a row
     /// can trigger goes through this; menu-bar actions stay synchronous.
-    private func refreshSoon() {
+    func refreshSoon() {
         Task { @MainActor [weak self] in self?.refresh() }
     }
 
@@ -268,29 +274,7 @@ final class LedgerStore: ObservableObject {
         return vault.workNote(day: day, taskKey: taskKey)
     }
 
-    // MARK: - Themes (design.md §5.3, the high-level mode)
-
-    func themeDetail(_ themeID: Int64) -> ThemeStore.Detail? {
-        guard let database = try? db() else { return nil }
-        return (try? ThemeStore.detail(themeID: themeID, database: database)) ?? nil
-    }
-
-    func renameTheme(_ themeID: Int64, to name: String) {
-        if let database = try? db() {
-            try? ThemeStore.rename(themeID: themeID, to: name, database: database)
-        }
-        refreshSoon()
-    }
-
-    /// "New theme…" from a task row: mint it and file the task there in one
-    /// step, so the theme never exists empty.
-    func createThemeAndAssign(_ taskID: Int64, themeName: String) {
-        guard let database = try? db(),
-              let key = try? ThemeStore.create(named: themeName, database: database) ?? nil
-        else { return }
-        try? TaskStore.assignTheme(taskID: taskID, themeKey: key, database: database)
-        refreshSoon()
-    }
+    // Theme reads and edits live in LedgerStoreThemes.swift.
 
     func renameTask(_ taskID: Int64, to name: String) {
         if let database = try? db() {

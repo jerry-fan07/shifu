@@ -7,6 +7,13 @@ import GRDB
 /// semantic tasks. Assignment is per block, so a task's blocks may straddle
 /// themes; the Vault tab's Themes mode reads `activities.theme_key`.
 ///
+/// **The model files, it does not found** (v17): blocks flow into themes that
+/// already exist, but an initiative the model *invents* is written to
+/// `ThemeProposals` for the user to accept or dismiss. Themes are the user's
+/// own way of carving up their life, and the clusterer minting them silently
+/// meant the grid filled with the model's opinions faster than anyone could
+/// correct them.
+///
 /// The machinery deliberately mirrors `SemanticTaskGrouper` (and reuses its
 /// verdict parsing/validation): confidence floor 0.6, `theme_attempts` cap,
 /// token-budgeted batches, roster reuse, rebuild carry by span identity,
@@ -49,11 +56,13 @@ public enum ThemeClusterer {
 
     public struct Summary: Equatable, Sendable {
         public var assigned: Int
-        public var themesCreated: Int
+        /// New initiatives written to the proposal queue — nothing appears in
+        /// the Themes grid until the user accepts one.
+        public var themesProposed: Int
 
-        public init(assigned: Int = 0, themesCreated: Int = 0) {
+        public init(assigned: Int = 0, themesProposed: Int = 0) {
             self.assigned = assigned
-            self.themesCreated = themesCreated
+            self.themesProposed = themesProposed
         }
     }
 
@@ -67,7 +76,7 @@ public enum ThemeClusterer {
             "\"College applications\", \"Travel\"). Coarser than single tasks: never a",
             "website, an app, or a one-off errand.",
             "",
-            "Existing initiatives — strongly prefer joining one:"
+            "Known initiatives — strongly prefer joining one:"
         ]
         if roster.isEmpty {
             lines.append("(none yet)")
@@ -167,6 +176,33 @@ extension ThemeClusterer {
         }
     }
 
+    /// Everything a batch may join: the user's active themes, then the
+    /// proposals already waiting on them, up to `rosterLimit` names total.
+    ///
+    /// Showing open proposals is what keeps the queue readable. Without them
+    /// the model re-invents the same initiative from scratch every run and
+    /// every batch, and small wording drift ("YC Startup School" → "Startup
+    /// School program") slugs to a different key, so one initiative arrives as
+    /// three suggestions. Shown the handle, it reuses it.
+    static func joinableRoster(
+        database: ShifuDatabase, now: Date = Date()
+    ) throws -> [SemanticTaskGrouper.RosterEntry] {
+        var entries = try activeRoster(database: database, now: now)
+        guard entries.count < rosterLimit else { return entries }
+        let remaining = rosterLimit - entries.count
+        entries += try database.queue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT key, name, gist FROM theme_proposals
+                WHERE status = 'new' ORDER BY created_at DESC LIMIT ?
+                """, arguments: [remaining]
+            ).map { row in
+                SemanticTaskGrouper.RosterEntry(key: row["key"], name: row["name"],
+                                                gist: row["gist"])
+            }
+        }
+        return entries
+    }
+
     /// Clusters the window's unassigned blocks. Same batching-and-growing-
     /// roster loop as SemanticTaskGrouper.run; a mid-run failure keeps
     /// earlier batches and leaves the rest queued (design.md §10).
@@ -177,7 +213,7 @@ extension ThemeClusterer {
     ) async throws -> Summary {
         let samples = try pendingSamples(database: database, from: from, to: to)
         guard !samples.isEmpty else { return Summary() }
-        var roster = try activeRoster(database: database, now: now)
+        var roster = try joinableRoster(database: database, now: now)
         let budget = max(512, backend.contextWindowTokens - responseTokenReserve)
 
         var summary = Summary()
@@ -202,33 +238,59 @@ extension ThemeClusterer {
             let outcome = try apply(verdict, batch: batch, roster: roster,
                                     database: database, now: now)
             summary.assigned += outcome.assigned
-            summary.themesCreated += outcome.created.count
-            roster.append(contentsOf: outcome.created)
+            summary.themesProposed += outcome.proposed.count
+            roster.append(contentsOf: outcome.proposed)
         }
         return summary
     }
 
-    /// Writes one batch: confident assignments set `theme_key` (upserting the
-    /// theme row); every other batch id burns an attempt.
+    /// Writes one batch. A key that names a theme the user has takes its
+    /// blocks (`theme_key`); a key that doesn't becomes a proposal instead,
+    /// carrying those block ids so accepting it files them. Every batch id
+    /// that didn't land in a real theme burns an attempt — including the ones
+    /// behind a proposal: the model *has* said where they go, and re-sending
+    /// them every hour until the user answers would pay for that verdict
+    /// again and again. The proposal remembers them, so an accept a week later
+    /// still files the lot.
     static func apply(
         _ verdict: SemanticTaskGrouper.Verdict, batch: [BlockSample],
         roster: [SemanticTaskGrouper.RosterEntry],
         database: ShifuDatabase, now: Date = Date()
-    ) throws -> (assigned: Int, created: [SemanticTaskGrouper.RosterEntry]) {
+    ) throws -> (assigned: Int, proposed: [SemanticTaskGrouper.RosterEntry]) {
         let resolved = SemanticTaskGrouper.resolve(
             verdict, batch: batch.map(\.id), roster: roster, prefix: keyPrefix)
         let batchEnds = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0.endedAt) })
+        let rosterByKey = Dictionary(roster.map { ($0.key, $0) }) { first, _ in first }
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         return try database.queue.write { db in
-            var created: [SemanticTaskGrouper.RosterEntry] = []
+            var proposed: [SemanticTaskGrouper.RosterEntry] = []
             var assignedIDs: Set<Int64> = []
             for (key, ids) in resolved.assignmentsByKey.sorted(by: { $0.key < $1.key }) {
-                let lastActive = ids.compactMap { batchEnds[$0] }.max() ?? nowMs
-                if let entry = try upsertTheme(
-                    db, key: key, definition: resolved.newTaskByKey[key],
-                    createdAt: nowMs, lastActive: lastActive) {
-                    created.append(entry)
+                let exists = try Int64.fetchOne(
+                    db, sql: "SELECT id FROM themes WHERE key = ?", arguments: [key]) != nil
+                guard exists else {
+                    // Either a name the model just invented, or an open
+                    // proposal it was shown in the roster — the definition is
+                    // only present in the first case.
+                    let definition = resolved.newTaskByKey[key]
+                    let candidate = SemanticTaskGrouper.RosterEntry(
+                        key: key,
+                        name: definition?.title ?? rosterByKey[key]?.name
+                            ?? SemanticTaskGrouper.humanize(key: key),
+                        gist: definition?.gist ?? rosterByKey[key]?.gist)
+                    if try ThemeProposals.record(db, theme: candidate,
+                                                 blockIDs: ids, now: nowMs) {
+                        proposed.append(candidate)
+                    }
+                    continue
                 }
+                // The Themes list orders by recency; adopting blocks can only
+                // make a theme more recently active, never less. Names and
+                // gists are the user's — nothing here overwrites them.
+                let lastActive = ids.compactMap { batchEnds[$0] }.max() ?? nowMs
+                try db.execute(sql: """
+                    UPDATE themes SET last_active_at = MAX(last_active_at, ?) WHERE key = ?
+                    """, arguments: [lastActive, key])
                 for id in ids {
                     try db.execute(sql: "UPDATE activities SET theme_key = ? WHERE id = ?",
                                    arguments: [key, id])
@@ -240,28 +302,8 @@ extension ThemeClusterer {
                     sql: "UPDATE activities SET theme_attempts = theme_attempts + 1 WHERE id = ?",
                     arguments: [id])
             }
-            return (assignedIDs.count, created)
+            return (assignedIDs.count, proposed)
         }
-    }
-
-    /// Creates or touches one theme row. Existing rows keep their name
-    /// (renames stick) and gist; only `last_active_at` advances.
-    private static func upsertTheme(
-        _ db: Database, key: String, definition: SemanticTaskGrouper.NewTask?,
-        createdAt: Int64, lastActive: Int64
-    ) throws -> SemanticTaskGrouper.RosterEntry? {
-        let existed = try Int64.fetchOne(
-            db, sql: "SELECT id FROM themes WHERE key = ?", arguments: [key]) != nil
-        let name = definition?.title ?? SemanticTaskGrouper.humanize(key: key)
-        try db.execute(sql: """
-            INSERT INTO themes (key, name, gist, created_at, last_active_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                last_active_at = MAX(last_active_at, excluded.last_active_at),
-                gist = COALESCE(themes.gist, excluded.gist)
-            """, arguments: [key, name, definition?.gist, createdAt, lastActive])
-        return existed ? nil
-            : SemanticTaskGrouper.RosterEntry(key: key, name: name, gist: definition?.gist)
     }
 }
 
