@@ -4,17 +4,24 @@ import Testing
 @testable import ShifuCore
 
 /// Counts LLM calls so tests can assert the content-hash gate: unchanged
-/// days must make zero calls (vault-features.md §2.1).
+/// days must make zero calls (vault-features.md §2.1). Records prompts too,
+/// since the tier is a prompt-shape claim.
 private final class CountingBackend: LLMBackend, @unchecked Sendable {
     let name = "counting"
+    let response: String
     private let lock = NSLock()
-    private var callCount = 0
+    private var prompts: [String] = []
 
-    var calls: Int { lock.withLock { callCount } }
+    init(response: String = "- **09:00–10:00** — chased the observer leak; landed the fix") {
+        self.response = response
+    }
+
+    var calls: Int { lock.withLock { prompts.count } }
+    var lastPrompt: String { lock.withLock { prompts.last ?? "" } }
 
     func complete(prompt: String, maxTokens: Int) async throws -> String {
-        lock.withLock { callCount += 1 }
-        return "- **09:00–10:00** — chased the observer leak; landed the fix"
+        lock.withLock { prompts.append(prompt) }
+        return response
     }
 }
 
@@ -39,6 +46,25 @@ private struct ExtractorBackend: LLMBackend {
             capturedLinks: ["17-sck-single-frame"])
         let parsed = try #require(WorkNote.parse(note.serialize()))
         #expect(parsed == note)
+    }
+
+    @Test func roundTripsTheDetailedTiersNotesSection() throws {
+        let note = WorkNote(
+            id: "01TESTULID0000000000000000", taskKey: "sem:fsrs-tuning",
+            taskName: "FSRS tuning", day: "2026-07-18", durationMs: 5_400_000,
+            contentHash: 11, summary: "Xcode — FSRS tuning",
+            sessionsProse: "- **09:12–10:41** — tuned the stability curve.",
+            detailProse: "### What was worked on\nRetuning FSRS.\n\n"
+                + "### Learned / decided\n- Short intervals were the problem.",
+            capturedLinks: ["18-fsrs"])
+        let parsed = try #require(WorkNote.parse(note.serialize()))
+        #expect(parsed == note)
+        // Section order is part of the body contract.
+        let body = note.serialize()
+        #expect(body.range(of: "## Sessions")!.lowerBound
+            < body.range(of: "## Notes")!.lowerBound)
+        #expect(body.range(of: "## Notes")!.lowerBound
+            < body.range(of: "## Captured")!.lowerBound)
     }
 
     @Test func lineOneOnlyNoteIsValid() throws {
@@ -320,6 +346,95 @@ private struct ExtractorBackend: LLMBackend {
         #expect(inbox.first?.taskKey == "topic:debugging-capture-daemon")
         #expect(TaskStore.matches(note: inbox[0], taskKey: "topic:debugging-capture-daemon"))
         #expect(!TaskStore.matches(note: inbox[0], taskKey: "topic:something-else"))
+    }
+
+    // MARK: - Tiering (vault-features.md §2.1)
+
+    private static let detailedResponse = """
+    - **09:00–10:30** — retuned the FSRS stability curve.
+
+    ## Notes
+    ### What was worked on
+    Retuning the FSRS stability growth so short intervals stop collapsing.
+
+    ### Learned / decided
+    - Short intervals were the problem, because the first-review seed was too low.
+    """
+
+    @Test func learningDominantDayGetsTheDetailedPromptAndNotes() async throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        let backend = CountingBackend(response: Self.detailedResponse)
+        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 90,
+                           topic: "fsrs tuning", category: ShifuCore.Category.learning,
+                           sampleText: "FSRS stability grows with each successful review")
+
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(backend.lastPrompt.contains("## Notes"))
+        #expect(backend.lastPrompt.contains("### Problems → fixes"))
+        #expect(backend.lastPrompt.contains("No flashcards"))
+
+        let note = try #require(vault.workNote(
+            day: WorkNoteCompiler.dayString(ms(day1), calendar: calendar),
+            taskKey: "topic:fsrs-tuning"))
+        #expect(note.sessionsProse?.contains("retuned the FSRS") == true)
+        #expect(note.sessionsProse?.contains("## Notes") == false)
+        #expect(note.detailProse?.hasPrefix("### What was worked on") == true)
+        #expect(note.detailProse?.contains("Short intervals") == true)
+    }
+
+    /// A day whose time was mostly admin gets the short prompt, whatever else
+    /// happened in it — a document is earned by the day, not by any one block.
+    @Test func adminDominantDayStaysOnTheLightPrompt() async throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        let backend = CountingBackend()
+        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 90,
+                           app: "com.apple.mail", topic: "inbox triage",
+                           category: ShifuCore.Category.admin, sampleText: "expense report")
+        try insertActivity(database, start: day1.addingTimeInterval(11 * 3_600), minutes: 20,
+                           app: "com.apple.mail", topic: "inbox triage",
+                           category: ShifuCore.Category.learning, sampleText: "a short read")
+
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(!backend.lastPrompt.contains("## Notes"))
+        #expect(backend.lastPrompt.contains("Respond with ONLY the bullets"))
+
+        let note = try #require(vault.workNote(
+            day: WorkNoteCompiler.dayString(ms(day1), calendar: calendar),
+            taskKey: "topic:inbox-triage"))
+        #expect(note.detailProse == nil)
+    }
+
+    /// The carry has to cover *both* prose sections. With only `sessionsProse`
+    /// carried, every unchanged-day rebuild silently deleted `## Notes` — and
+    /// the hash gate then never regenerated it, because the day is unchanged.
+    @Test func unchangedDayCarriesBothProseSections() async throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        let backend = CountingBackend(response: Self.detailedResponse)
+        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 90,
+                           topic: "fsrs tuning", category: ShifuCore.Category.learning,
+                           sampleText: "FSRS stability grows with each successful review")
+
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(backend.calls == 1)
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(backend.calls == 1)   // unchanged: no regeneration
+
+        let note = try #require(vault.workNote(
+            day: WorkNoteCompiler.dayString(ms(day1), calendar: calendar),
+            taskKey: "topic:fsrs-tuning"))
+        #expect(note.sessionsProse?.isEmpty == false)
+        #expect(note.detailProse?.contains("What was worked on") == true)
+    }
+
+    @Test func responseWithoutTheHeaderIsAllSessionProse() {
+        let split = WorkNoteCompiler.split("- **09:00–10:00** — did the thing")
+        #expect(split.sessions == "- **09:00–10:00** — did the thing")
+        #expect(split.detail == nil)
+        // An empty section is nil, not an empty `## Notes` heading in the file.
+        #expect(WorkNoteCompiler.split("- bullet\n\n## Notes\n   ").detail == nil)
     }
 
     private func taskRows(_ database: ShifuDatabase) throws -> [String] {

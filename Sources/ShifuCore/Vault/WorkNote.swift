@@ -3,9 +3,9 @@ import Foundation
 /// One work note: the Markdown twin of a `task_logs` row (vault-features.md
 /// §2.1) — same (task, day) granularity, same idempotent rebuild. Body
 /// contract, enforced here: line 1 is the deterministic "where — what"
-/// summary; `## Sessions` (LLM prose) and `## Captured` (wiki-links to the
-/// day's knowledge notes) are optional sections the compiler can replace
-/// independently.
+/// summary; `## Sessions` (LLM prose), `## Notes` (the detailed tier's
+/// multi-section prose) and `## Captured` (wiki-links to the day's knowledge
+/// notes) are optional sections the compiler can replace independently.
 public struct WorkNote: Equatable, Sendable {
     /// One contiguous stretch of work within a task-day, rendered as local
     /// wall-clock strings rather than timestamps — these are written into
@@ -33,13 +33,19 @@ public struct WorkNote: Equatable, Sendable {
     public var contentHash: Int64
     public var summary: String      // body line 1, deterministic
     public var sessionsProse: String?
+    /// The `## Notes` section: multi-section prose for a day whose time was
+    /// dominantly work or learning (vault-features.md §2.1). Nil on light-tier
+    /// days, which get session bullets and nothing else — an afternoon of
+    /// admin does not earn a document.
+    public var detailProse: String?
     public var capturedLinks: [String]  // wiki-link targets, no brackets
 
     public init(
         id: String = Note.ulid(), taskKey: String, taskName: String, day: String,
         durationMs: Int64, sources: [String] = [], sessions: [Session] = [],
         contentHash: Int64 = 0, summary: String,
-        sessionsProse: String? = nil, capturedLinks: [String] = []
+        sessionsProse: String? = nil, detailProse: String? = nil,
+        capturedLinks: [String] = []
     ) {
         self.id = id
         self.taskKey = taskKey
@@ -51,6 +57,7 @@ public struct WorkNote: Equatable, Sendable {
         self.contentHash = contentHash
         self.summary = summary
         self.sessionsProse = sessionsProse
+        self.detailProse = detailProse
         self.capturedLinks = capturedLinks
     }
 
@@ -74,6 +81,9 @@ public struct WorkNote: Equatable, Sendable {
         var body = summary
         if let sessionsProse, !sessionsProse.isEmpty {
             body += "\n\n## Sessions\n\(sessionsProse)"
+        }
+        if let detailProse, !detailProse.isEmpty {
+            body += "\n\n## Notes\n\(detailProse)"
         }
         if !capturedLinks.isEmpty {
             body += "\n\n## Captured\n" + capturedLinks.map { "- [[\($0)]]" }.joined(separator: "\n")
@@ -100,6 +110,7 @@ public struct WorkNote: Equatable, Sendable {
             contentHash: fields["content_hash"].flatMap(Int64.init) ?? 0,
             summary: body.summary,
             sessionsProse: body.prose,
+            detailProse: body.detail,
             capturedLinks: body.links
         )
     }
@@ -107,6 +118,7 @@ public struct WorkNote: Equatable, Sendable {
     struct ParsedBody {
         var summary: String
         var prose: String?
+        var detail: String?
         var links: [String]
     }
 
@@ -114,6 +126,7 @@ public struct WorkNote: Equatable, Sendable {
     /// the compiler owns this file and rewrites it wholesale.
     static func parseBody(_ body: String) -> ParsedBody {
         var prose: String?
+        var detail: String?
         var links: [String] = []
         let chunks = body.components(separatedBy: "\n## ")
         let summary = chunks[0].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,6 +138,8 @@ public struct WorkNote: Equatable, Sendable {
             switch header {
             case "Sessions":
                 prose = content.isEmpty ? nil : content
+            case "Notes":
+                detail = content.isEmpty ? nil : content
             case "Captured":
                 links = content.components(separatedBy: "\n").compactMap { line in
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -135,7 +150,7 @@ public struct WorkNote: Equatable, Sendable {
                 break
             }
         }
-        return ParsedBody(summary: summary, prose: prose, links: links)
+        return ParsedBody(summary: summary, prose: prose, detail: detail, links: links)
     }
 
     /// `[Xcode, github.com]` → ["Xcode", "github.com"]

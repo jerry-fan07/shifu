@@ -37,9 +37,43 @@ public enum WorkNoteCompiler {
     static let narrativeResponseTokens = 400
     static let sampleCharsPerActivity = 800
 
+    /// How much of a day-note the day earned (vault-features.md §2.1). The
+    /// rule is the day's *dominant* category, not the presence of any work:
+    /// an afternoon of email with ten minutes of reading in it is a light day.
+    enum Tier {
+        /// Session bullets only, 400 tokens — the pre-existing behaviour.
+        case light
+        /// Session bullets plus a `## Notes` document: what was worked on,
+        /// what was learned or decided, problems and their fixes.
+        case detailed
+
+        var responseTokens: Int {
+            switch self {
+            case .light: return WorkNoteCompiler.narrativeResponseTokens
+            case .detailed: return WorkNoteCompiler.detailedResponseTokens
+            }
+        }
+
+        /// Evidence per activity. A document has to say what actually
+        /// happened, which the light tier's 800 chars can't support; a light
+        /// day's three bullets don't need more.
+        var sampleChars: Int {
+            switch self {
+            case .light: return WorkNoteCompiler.sampleCharsPerActivity
+            case .detailed: return WorkNoteCompiler.detailedSampleChars
+            }
+        }
+    }
+
+    static let detailedResponseTokens = 1_200
+    static let detailedSampleChars = 2_000
+    /// The categories that earn the detailed tier.
+    static let detailCategories: Set<Category> = [.work, .learning]
+
     struct Pending {
         var note: WorkNote
         var needsNarrative: Bool
+        var tier: Tier
         var samples: String
     }
 
@@ -72,8 +106,9 @@ public enum WorkNoteCompiler {
             for var pending in pendings {
                 if pending.needsNarrative, let backend,
                    let prose = try? await narrative(for: pending, backend: backend),
-                   !prose.isEmpty {
-                    pending.note.sessionsProse = prose
+                   !prose.sessions.isEmpty {
+                    pending.note.sessionsProse = prose.sessions
+                    pending.note.detailProse = prose.detail
                     summary.narrativesGenerated += 1
                 }
                 try vault.saveWork(pending.note)
@@ -117,6 +152,7 @@ public enum WorkNoteCompiler {
         var appBundle: String
         var domain: String?
         var topic: String?
+        var category: Category
         var taskKey: String
         var taskName: String
     }
@@ -141,6 +177,15 @@ public enum WorkNoteCompiler {
         var spans: [(start: Int64, end: Int64)] = []
         var entries: [HashEntry] = []
         var samples: [String] = []
+        var msByCategory: [Category: Int64] = [:]
+
+        /// The tier this task-day earned: detailed when the biggest share of
+        /// its time was work or learning.
+        var tier: Tier {
+            guard let dominant = msByCategory.max(by: { $0.value < $1.value })?.key,
+                  detailCategories.contains(dominant) else { return .light }
+            return .detailed
+        }
     }
 
     private struct Fetched {
@@ -157,7 +202,7 @@ public enum WorkNoteCompiler {
         try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT a.id, a.task_id, a.started_at, a.ended_at, a.app_bundle,
-                       a.domain, a.topic, t.key AS task_key, t.name AS task_name
+                       a.domain, a.topic, a.category, t.key AS task_key, t.name AS task_name
                 FROM activities a
                 JOIN tasks t ON t.id = a.task_id
                 WHERE a.ended_at > ? AND a.started_at < ? AND a.category != 'private'
@@ -168,18 +213,24 @@ public enum WorkNoteCompiler {
                     id: row["id"], taskID: row["task_id"],
                     startedAt: row["started_at"], endedAt: row["ended_at"],
                     appBundle: row["app_bundle"], domain: row["domain"],
-                    topic: row["topic"], taskKey: row["task_key"],
-                    taskName: row["task_name"])
+                    topic: row["topic"],
+                    category: Category(rawValue: row["category"]) ?? .unclassified,
+                    taskKey: row["task_key"], taskName: row["task_name"])
             }
+            // Fetched at the detailed tier's size regardless of what the day
+            // turns out to be: the tier isn't known until the rows are folded,
+            // and a light day's prompt just truncates what it takes. Hashing
+            // the *full* sample is the better gate anyway — it notices changes
+            // in text a light prompt never sees.
             var samples: [Int64: String] = [:]
             for row in rows {
                 let texts = try String.fetchAll(db, sql: """
                     SELECT text FROM observations
-                    WHERE session_id = ? AND text IS NOT NULL LIMIT 4
+                    WHERE session_id = ? AND text IS NOT NULL LIMIT 8
                     """, arguments: [row.id])
                 if !texts.isEmpty {
                     samples[row.id] = String(
-                        texts.joined(separator: "\n").prefix(sampleCharsPerActivity))
+                        texts.joined(separator: "\n").prefix(detailedSampleChars))
                 }
             }
             var links: [Int64: [String]] = [:]
@@ -208,7 +259,9 @@ public enum WorkNoteCompiler {
                     taskID: row.taskID, taskKey: row.taskKey, taskName: row.taskName)
             }
             var agg = perTask[row.taskID]!
-            agg.durationMs += min(row.endedAt, day.end) - max(row.startedAt, day.start)
+            let clipped = min(row.endedAt, day.end) - max(row.startedAt, day.start)
+            agg.durationMs += clipped
+            agg.msByCategory[row.category, default: 0] += clipped
             let source = row.domain
                 ?? (row.appBundle.split(separator: ".").last.map(String.init) ?? row.appBundle)
             if !agg.sources.contains(source) { agg.sources.append(source) }
@@ -240,8 +293,15 @@ public enum WorkNoteCompiler {
             guard let agg = perTask[taskID] else { return nil }
             let hash = contentHash(entries: agg.entries)
             let old = vault.workNote(day: dayStr, taskKey: agg.taskKey)
-            let carried = old?.contentHash == hash ? old?.sessionsProse : nil
-            let samples = agg.samples.joined(separator: "\n---\n")
+            // Both prose sections carry on a hash match, not just the first.
+            // Carrying only `sessionsProse` would silently delete `## Notes`
+            // on every unchanged-day rebuild — and the hash gate would then
+            // never regenerate it, because the day is by definition unchanged.
+            let unchanged = old?.contentHash == hash
+            let tier = agg.tier
+            let samples = agg.samples
+                .map { String($0.prefix(tier.sampleChars)) }
+                .joined(separator: "\n---\n")
             let note = WorkNote(
                 id: old?.id ?? Note.ulid(),
                 taskKey: agg.taskKey,
@@ -252,12 +312,12 @@ public enum WorkNoteCompiler {
                 sessions: sessions(from: agg.spans, formatter: times),
                 contentHash: hash,
                 summary: TaskGrouper.summaryLine(sources: agg.sources, topics: agg.topics),
-                sessionsProse: carried,
+                sessionsProse: unchanged ? old?.sessionsProse : nil,
+                detailProse: unchanged ? old?.detailProse : nil,
                 capturedLinks: wikiLinks(fetched.linksByTask[taskID] ?? []))
             let substantial = agg.durationMs >= minMs && !samples.isEmpty
-            return Pending(note: note,
-                           needsNarrative: old?.contentHash != hash && substantial,
-                           samples: samples)
+            return Pending(note: note, needsNarrative: !unchanged && substantial,
+                           tier: tier, samples: samples)
         }
     }
 
@@ -277,38 +337,86 @@ public enum WorkNoteCompiler {
         }
     }
 
-    // MARK: - Narrative (LLM, optional — vault-features.md §2.1)
+}
 
-    static func prompt(taskName: String, day: String,
-                       sessions: [WorkNote.Session], samples: String) -> String {
+// MARK: - Narrative (LLM, optional — vault-features.md §2.1)
+
+extension WorkNoteCompiler {
+    static func prompt(taskName: String, day: String, sessions: [WorkNote.Session],
+                       samples: String, tier: Tier = .light) -> String {
         let spans = sessions.map { "\($0.start)–\($0.end)" }.joined(separator: ", ")
-        return """
+        let bullets = """
         Summarize one day (\(day)) of work on the task "\(taskName)".
         Session times: \(spans)
         Write 1-3 markdown bullets, each formatted
         "**HH:MM–HH:MM** — what happened, what was accomplished."
-        Use ONLY the screen-text samples below as evidence. Respond with ONLY the bullets.
+        """
+        guard tier == .detailed else {
+            return """
+            \(bullets)
+            Use ONLY the screen-text samples below as evidence. Respond with ONLY the bullets.
+
+            Screen-text samples:
+            \(samples)
+            """
+        }
+        return """
+        \(bullets)
+        Then, after the bullets, write a section that starts with the exact line
+        "## Notes" and documents the day under these sub-headings:
+        "### What was worked on" — 2-5 sentences of what the work actually was.
+        "### Learned / decided" — bullets, each with the reason behind it.
+        "### Problems → fixes" — bullets pairing what went wrong with what fixed it;
+        omit this whole sub-heading if the day had no problems.
+        Write documentation someone could read months from now to understand this day.
+        No flashcards, no quiz questions.
+        Use ONLY the screen-text samples below as evidence — do not invent anything
+        they don't show.
 
         Screen-text samples:
         \(samples)
         """
     }
 
+    /// The `## Notes` header the detailed prompt is told to emit, and the seam
+    /// the response is split on.
+    static let detailHeader = "\n## Notes"
+
+    /// Splits a detailed response into its two sections. A model that ignored
+    /// the header instruction has written session bullets and nothing else,
+    /// which is exactly the light shape — so it degrades rather than fails.
+    static func split(_ response: String) -> (sessions: String, detail: String?) {
+        guard let range = response.range(of: detailHeader) else {
+            return (response.trimmingCharacters(in: .whitespacesAndNewlines), nil)
+        }
+        let detail = response[range.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (String(response[..<range.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+                detail.isEmpty ? nil : detail)
+    }
+
     /// One prompt per task-day, sized to the backend's window (invariant 7):
     /// samples are truncated rather than the day split — quality over
     /// coverage, the deterministic line 1 always exists.
-    static func narrative(for pending: Pending, backend: any LLMBackend) async throws -> String {
+    static func narrative(
+        for pending: Pending, backend: any LLMBackend
+    ) async throws -> (sessions: String, detail: String?) {
         var samples = pending.samples
-        var text = prompt(taskName: pending.note.taskName, day: pending.note.day,
-                          sessions: pending.note.sessions, samples: samples)
-        while !samples.isEmpty,
-              LLMTokens.estimate(text) + narrativeResponseTokens > backend.contextWindowTokens {
-            samples = String(samples.prefix(samples.count * 2 / 3))
-            text = prompt(taskName: pending.note.taskName, day: pending.note.day,
-                          sessions: pending.note.sessions, samples: samples)
+        func render() -> String {
+            prompt(taskName: pending.note.taskName, day: pending.note.day,
+                   sessions: pending.note.sessions, samples: samples, tier: pending.tier)
         }
-        let response = try await backend.complete(prompt: text, maxTokens: narrativeResponseTokens)
-        return response.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = render()
+        while !samples.isEmpty,
+              LLMTokens.estimate(text) + pending.tier.responseTokens
+                > backend.contextWindowTokens {
+            samples = String(samples.prefix(samples.count * 2 / 3))
+            text = render()
+        }
+        let response = try await backend.complete(
+            prompt: text, maxTokens: pending.tier.responseTokens)
+        return split(response)
     }
 }
 

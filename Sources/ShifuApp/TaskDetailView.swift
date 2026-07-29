@@ -278,6 +278,13 @@ private struct DayHistoryRow: View {
                             .font(.callout)
                             .foregroundStyle(.tertiary)
                     }
+                    // The detailed tier's `## Notes` document (§2.1). Rendered
+                    // through CardTextView so its `###` sub-headings are
+                    // headings rather than literal hashes.
+                    if let detail = note.detailProse, !detail.isEmpty {
+                        Divider()
+                        CardTextView(text: detail)
+                    }
                 }
                 .padding(.leading, 4)
                 .padding(.vertical, 2)
