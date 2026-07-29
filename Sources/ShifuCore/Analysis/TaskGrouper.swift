@@ -260,9 +260,13 @@ public enum TaskGrouper {
     /// Recomputes one day's logs from all task-assigned activities that touch
     /// it (not just the window's), so partial windows can't undercount a day.
     /// Also called by DeletionTools so a forgotten range leaves no stale logs.
+    /// The delete is ranged, not `day_start = dayStart`: rows written under a
+    /// different timezone sit at a different midnight inside the same day, and
+    /// an equality delete would strand them to double-count the day forever.
     @discardableResult
     static func rebuildLogs(_ db: Database, dayStart: Int64, dayEnd: Int64) throws -> Int {
-        try db.execute(sql: "DELETE FROM task_logs WHERE day_start = ?", arguments: [dayStart])
+        try db.execute(sql: "DELETE FROM task_logs WHERE day_start >= ? AND day_start < ?",
+                       arguments: [dayStart, dayEnd])
         let rows = try Row.fetchAll(db, sql: """
             SELECT task_id, started_at, ended_at, app_bundle, domain, topic
             FROM activities

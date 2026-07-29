@@ -214,7 +214,8 @@ extension ThemeClusterer {
         let samples = try pendingSamples(database: database, from: from, to: to)
         guard !samples.isEmpty else { return Summary() }
         var roster = try joinableRoster(database: database, now: now)
-        let budget = max(512, backend.contextWindowTokens - responseTokenReserve)
+        let budget = max(
+            512, backend.contextWindowTokens - backend.responseReserve(responseTokenReserve))
 
         var summary = Summary()
         var cursor = 0
@@ -410,7 +411,8 @@ extension ThemeClusterer {
             // Budget (invariant 7): drop oldest days rather than fail.
             var lines = item.dayLines
             var text = narrativePrompt(name: item.name, gist: item.gist, dayLines: lines)
-            while lines.count > 1, LLMTokens.estimate(text) + narrativeResponseTokens
+            while lines.count > 1,
+                LLMTokens.estimate(text) + backend.responseReserve(narrativeResponseTokens)
                 > backend.contextWindowTokens {
                 lines.removeFirst()
                 text = narrativePrompt(name: item.name, gist: item.gist, dayLines: lines)
