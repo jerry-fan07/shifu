@@ -89,8 +89,7 @@ import Testing
         let deckKey = try #require(
             try DeckStore.accept(pending, database: database, vault: vault))
 
-        // The request is the confirmation: cards skip the inbox entirely.
-        #expect(try vault.inbox().isEmpty)
+        // The request is the confirmation: the cards are born kept.
         let cards = try vault.deckNotes(deckKey: deckKey).sorted { $0.topic < $1.topic }
         #expect(cards.count == 2)
         #expect(cards.allSatisfy { $0.state == .kept })
@@ -184,8 +183,8 @@ import Testing
     // MARK: - Deck-scoped dedupe
 
     /// A deck dedupes within itself, never against the rest of the vault:
-    /// merging a requested card into an unrelated inbox note would leave the
-    /// deck quietly short a card, with no `deck:` stamp to show where it went.
+    /// merging a requested card into an unrelated note would leave the deck
+    /// quietly short a card, with no `deck:` stamp to show where it went.
     @Test func deckDedupeIgnoresIdenticalNonDeckNotes() throws {
         let (database, vault) = try scratch()
         try seedTask(database, key: "sem:fsrs-tuning", name: "FSRS tuning")
@@ -195,15 +194,17 @@ import Testing
         let card = sample("stability")
         let body = Note.composeBody(reference: card.note, question: card.question,
                                     answer: card.answer)
-        let stranger = Note(topic: card.topic, body: body)   // inbox, no deck
+        let stranger = Note(topic: card.topic, body: body)   // no deck stamp
         try vault.save(stranger)
 
         #expect(try DeckStore.write(card, deckKey: deckKey, taskKey: "sem:fsrs-tuning",
                                     vault: vault))
         #expect(try vault.deckNotes(deckKey: deckKey).count == 1)
-        // The bystander is untouched — no seen_count bump, still in the inbox.
-        let untouched = try #require(try vault.inbox().first { $0.id == stranger.id })
+        // The bystander is untouched — no seen_count bump, no deck stamp.
+        let untouched = try #require(
+            try vault.allNotes().first { $0.id == stranger.id })
         #expect(untouched.seenCount == 1)
+        #expect(untouched.deck == nil)
 
         // Within the deck, though, the same card does dedupe.
         #expect(try DeckStore.write(card, deckKey: deckKey, taskKey: "sem:fsrs-tuning",

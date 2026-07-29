@@ -17,7 +17,7 @@ public enum DigestGenerator {
         var topBlocks: [TopBlock]
         var topics: [String]
         var weekAverages: [Category: Int64]   // per-day average over trailing week
-        var inboxCount: Int = 0               // new knowledge candidates (§5.1)
+        var dueCards: Int = 0                 // cards the review queue is holding (§5.2)
         var suggestions: [String] = []        // top radar suggestions (§6.2)
     }
 
@@ -56,10 +56,12 @@ public enum DigestGenerator {
             }
         }
 
-        if data.inboxCount > 0 {
+        // The gentle nag §5.2 asks for. There is no triage queue to report
+        // any more — cards exist only because they were requested.
+        if data.dueCards > 0 {
             lines.append("")
             lines.append("## Vault")
-            lines.append("\(data.inboxCount) new knowledge candidate\(data.inboxCount == 1 ? "" : "s") awaiting triage")
+            lines.append("\(data.dueCards) card\(data.dueCards == 1 ? "" : "s") due for review")
         }
 
         if !data.suggestions.isEmpty {
@@ -124,7 +126,7 @@ public enum DigestGenerator {
 
         guard !totals.isEmpty else { return nil }   // nothing tracked, no digest
 
-        let inboxCount = (try? VaultStore(database: database).inbox().count) ?? 0
+        let dueCards = (try? VaultStore(database: database).due().count) ?? 0
         let suggestionLines = ((try? Radar.active(database: database)) ?? []).prefix(3).map {
             $0.title ?? $0.evidence
         }
@@ -133,7 +135,7 @@ public enum DigestGenerator {
             date: dayStart, totals: totals,
             topBlocks: topBlocks,
             topics: topics, weekAverages: weekAverages,
-            inboxCount: inboxCount, suggestions: Array(suggestionLines)
+            dueCards: dueCards, suggestions: Array(suggestionLines)
         ))
         try FileManager.default.createDirectory(at: ShifuPaths.digests, withIntermediateDirectories: true)
         try markdown.write(to: url, atomically: true, encoding: .utf8)

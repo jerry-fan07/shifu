@@ -108,7 +108,7 @@ private final class DeckBackend: LLMBackend, @unchecked Sendable {
         #expect(cards.allSatisfy { $0.deck == deckKey })
         #expect(cards.allSatisfy { $0.taskKey == "sem:fsrs" })
         #expect(cards.allSatisfy { $0.questionAnswer != nil })
-        #expect(try vault.inbox().isEmpty)
+        #expect(try vault.allNotes().count == 2)   // nothing else was written
         #expect(try vault.due(asOf: now).count == 2)
 
         let deck = try #require(try DeckStore.decks(database: database).first)

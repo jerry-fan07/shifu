@@ -202,7 +202,7 @@ private final class OverviewBackend: LLMBackend, @unchecked Sendable {
         #expect(FrontMatter.parse(text)?.kind == .taskOverview)
         #expect(Note.parse(text) == nil)
         #expect(WorkNote.parse(text) == nil)
-        #expect(try vault.inbox().isEmpty)
+        #expect(try vault.allNotes().isEmpty)   // not a Note at all
         #expect(try vault.due().isEmpty)
 
         try VaultIndexer.reconcile(root: vault.root, database: database)

@@ -3,15 +3,21 @@ import Foundation
 /// One knowledge note: plain Markdown with YAML frontmatter (design.md §5.1).
 /// The vault stays readable and portable without Shifu — Obsidian-compatible.
 public struct Note: Equatable, Sendable, Identifiable {
-    /// Triage state. Nothing enters the review queue unconfirmed (design.md
-    /// §5.1) — where unconfirmed means *not user-requested*. Automatic
-    /// extraction proposes and the user disposes, so its notes start `inbox`;
-    /// a deck's cards were requested by name and are born `kept`, the request
-    /// itself being the confirmation. A discarded note is deleted rather than
-    /// given a third state.
+    /// Nothing enters the review queue unrequested (design.md §5.1). Every
+    /// note Shifu writes now comes from a deck the user asked for, so `kept`
+    /// is the only state anything produces.
+    ///
+    /// `inbox` survives as a **guard, not a workflow.** Automatic extraction
+    /// used to write notes in that state and there is no triage screen left to
+    /// resolve them, but a vault is user-owned Markdown: an old file, a
+    /// restored backup, or a sync from a machine still running the previous
+    /// version can all reintroduce `state: inbox`. Keeping the case means such
+    /// a note parses as itself and stays out of the review queue. Delete the
+    /// case and it would fall through to `.kept` — silently turning months of
+    /// declined suggestions into cards.
     public enum State: String, Sendable {
-        case inbox      // candidate awaiting keep/discard triage
-        case kept       // confirmed; in the review queue if it has a Q/A
+        case inbox      // legacy; never written, never reviewed
+        case kept       // in the review queue if it has a Q/A
     }
 
     public var id: String
@@ -32,7 +38,7 @@ public struct Note: Equatable, Sendable, Identifiable {
     public init(
         id: String = Note.ulid(), captured: Date = Date(), sourceApp: String? = nil,
         sourceURL: String? = nil, topic: String, taskKey: String? = nil,
-        deck: String? = nil, confidence: Double? = nil, state: State = .inbox,
+        deck: String? = nil, confidence: Double? = nil, state: State = .kept,
         seenCount: Int = 1, srs: FSRS.State? = nil, body: String
     ) {
         self.id = id

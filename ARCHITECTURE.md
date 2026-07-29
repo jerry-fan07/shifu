@@ -49,7 +49,7 @@ Sources/ShifuCore/
   Vault/       Note, WorkNote, TaskOverview, FrontMatter, FSRS, VaultStore,
                VaultIndexer, VaultSearch, TaskStore (+TaskMerging, TaskPrune),
                ThemeStore, DeckStore, CardCandidates,
-               KnowledgeExtractor, WorkNoteCompiler, TaskOverviewCompiler,
+               WorkNoteCompiler, TaskOverviewCompiler,
                DeckSuggester, DeckBuilder
 ```
 
@@ -84,8 +84,6 @@ right of `observations` happens in `shifu-analyzer`.
                             ├──▶ ThemeClusterer ──▶ LLM ──▶ [activities].theme_key
                             │                               [themes] + narratives
                             │
-                            ├──▶ KnowledgeExtractor ──▶ vault/**.md  (inbox reference
-                            │                                          notes, no Q/A)
                             ├──▶ DeckBuilder.drainPending ──▶ vault/**.md (deck cards)
                             ├──▶ WorkNoteCompiler   ──▶ vault/work/**.md (per task-day,
                             │                                             two tiers)
@@ -185,8 +183,7 @@ order, and some of that ordering is load-bearing:
 7. **`TaskMerges.writeSignatures`** — re-derives durable per-block signatures
    while the source window titles still exist (they die with the 14-day
    retention).
-8. **`KnowledgeExtractor.run`** (Q&A-free reference notes),
-   **`DeckBuilder.drainPending`** (decks whose requested build never ran),
+8. **`DeckBuilder.drainPending`** (decks whose requested build never ran),
    **`WorkNoteCompiler.run`** (day notes, detailed tier for work/learning-
    dominant days) then **`TaskOverviewCompiler.run`** (per-task overview docs)
    — write Markdown into `~/Shifu/vault/`.
@@ -231,7 +228,6 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Screenshot + OCR mechanics | [`shifud/OCRCapture.swift`](Sources/shifud/OCRCapture.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
-| What gets extracted into notes | [`Vault/KnowledgeExtractor.swift`](Sources/ShifuCore/Vault/KnowledgeExtractor.swift) — reference notes only; it writes no cards |
 | The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |
 | Decks: rows, statuses, build claims | [`Vault/DeckStore.swift`](Sources/ShifuCore/Vault/DeckStore.swift) |
 | Whether a task is offered a deck | [`Vault/DeckSuggester.swift`](Sources/ShifuCore/Vault/DeckSuggester.swift) |
@@ -360,7 +356,7 @@ than external-content.
 ~/Shifu/
   shifu.db      SQLite (WAL). Optionally SQLCipher-encrypted (`shifu encrypt`)
   vault/        Markdown notes — source of truth, opens in Obsidian
-    YYYY/MM/    knowledge notes: inbox reference notes and deck cards
+    YYYY/MM/    knowledge notes: deck cards (nothing else writes here)
     work/       per-(task, day) work notes
     tasks/      per-task living overview documents
   digests/      daily digest markdown
@@ -503,7 +499,7 @@ dictionary in `run()`, plus a line in `usage`.
 **Add a vault note kind.** Add a `FrontMatter.Kind` case; `VaultIndexer` and
 `VaultSearch` filter on it. Knowledge-note queries must keep excluding other
 kinds — `Note.parse` returns nil for non-`.knowledge` files precisely so work
-and project notes can never enter the inbox or review queue.
+and project notes can never enter the review queue.
 
 ---
 

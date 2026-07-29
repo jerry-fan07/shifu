@@ -1,16 +1,18 @@
 import ShifuCore
 import SwiftUI
 
-/// *Cards* tab home (design.md §5.2): review-activity heatmap, deck picker,
-/// and an urgency overview of every card. Inbox triage and the review
-/// session are separate screens pushed from here.
+/// *Cards* tab home (design.md §5.2): suggested decks, review-activity
+/// heatmap, deck picker, and an urgency overview of every card. The review
+/// session is a separate screen pushed from here.
+///
+/// There is no inbox. Nothing proposes a card any more — a card exists
+/// because a deck was asked for, so there is nothing to triage.
 struct CardsTabView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var path: [Screen] = []
     @State private var editingCard: Note?
 
     enum Screen: Hashable {
-        case inbox
         case review
     }
 
@@ -28,7 +30,6 @@ struct CardsTabView: View {
             }
             .navigationDestination(for: Screen.self) { screen in
                 switch screen {
-                case .inbox: InboxView()
                 case .review: ReviewSessionView()
                 }
             }
@@ -44,7 +45,7 @@ struct CardsTabView: View {
     private var statsRow: some View {
         HStack(spacing: 12) {
             StatTile(value: store.dueNotes.count, label: "due now")
-            StatTile(value: store.inboxNotes.count, label: "in inbox")
+            StatTile(value: store.decks.count, label: "decks")
             StatTile(value: store.allCards.count, label: "cards")
             StatTile(value: store.reviewsToday, label: "reviewed today")
             Spacer()
@@ -113,11 +114,6 @@ struct CardsTabView: View {
             FilterMenu(options: deckOptions, selection: $store.reviewDeck)
             Spacer()
             Button {
-                path.append(.inbox)
-            } label: {
-                Label("Inbox · \(store.inboxNotes.count)", systemImage: "tray")
-            }
-            Button {
                 path.append(.review)
             } label: {
                 Label("Review · \(store.deckDueNotes.count) due", systemImage: "play.fill")
@@ -151,11 +147,8 @@ struct CardsTabView: View {
         }
     }
 
-    /// Empty deck. This used to offer the freshest reviewable inbox
-    /// candidates to keep, but automatic extraction no longer writes a Q/A —
-    /// the inbox is reference notes now, so that list would be permanently
-    /// empty. Cards come from decks the user asked for (§5.2), and that is
-    /// where the empty state points.
+    /// Empty deck. Cards come from decks the user asked for (§5.2) and from
+    /// nowhere else, so that is the only thing the empty state can point at.
     private var emptyDeckView: some View {
         ContentUnavailableView(
             "No cards yet", systemImage: "rectangle.stack",

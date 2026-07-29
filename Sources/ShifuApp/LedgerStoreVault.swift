@@ -10,19 +10,17 @@ extension LedgerStore {
     /// Everything one vault walk yields, so the walk can live out here while
     /// the store keeps its `private(set)` publishing to itself.
     struct VaultSnapshot {
-        var inbox: [Note] = []
         var cards: [Note] = []
         var due: [Note] = []
         var reviewsByDay: [Date: Int] = [:]
     }
 
-    /// One vault walk feeding inbox, review queue, and the Cards screens.
+    /// One vault walk feeding the review queue and the Cards screens.
     /// Queues are sorted most-urgent first (earliest due date; cards that
     /// never entered scheduling sort ahead of everything).
     func vaultSnapshot() -> VaultSnapshot {
         var snapshot = VaultSnapshot()
         let notes = (try? vault.allNotes()) ?? []
-        snapshot.inbox = notes.filter { $0.state == .inbox }
         snapshot.cards = notes
             .filter { $0.state == .kept && $0.questionAnswer != nil }
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
@@ -55,11 +53,6 @@ extension LedgerStore {
 
     var reviewsToday: Int {
         reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
-    }
-
-    func keep(_ note: Note) {
-        try? vault.keep(note)
-        refreshSoon()
     }
 
     func discard(_ note: Note) {

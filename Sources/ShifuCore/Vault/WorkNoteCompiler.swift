@@ -235,9 +235,13 @@ public enum WorkNoteCompiler {
             }
             var links: [Int64: [String]] = [:]
             for taskID in Set(rows.map(\.taskID)) {
+                // Deck cards are excluded (`deck_key IS NULL`). They carry the
+                // task key and are "captured" on the day their deck was built,
+                // so without this a single deck build would file twenty cards
+                // under one day's work as if that day had produced them.
                 links[taskID] = try String.fetchAll(db, sql: """
                     SELECT path FROM vault_index
-                    WHERE kind = 'knowledge' AND task_id = ?
+                    WHERE kind = 'knowledge' AND task_id = ? AND deck_key IS NULL
                       AND captured >= ? AND captured < ?
                     ORDER BY captured
                     """, arguments: [taskID, day.start, day.end])

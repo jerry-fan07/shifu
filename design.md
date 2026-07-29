@@ -13,7 +13,7 @@
 Shifu is a local-first, always-on observer that captures what is on your screen with near-zero perceptible overhead, then turns those observations into three outputs:
 
 1. **Productivity ledger** — an accurate, automatic accounting of where your time went (work, entertainment, socializing/networking, learning, admin, idle).
-2. **Knowledge vault** — new information you encountered, distilled into reviewable notes and surfaced on a spaced-repetition schedule.
+2. **Knowledge vault** — flashcard decks you ask for, built from what you actually worked on and surfaced on a spaced-repetition schedule.
 3. **Efficiency radar** — detection of repetitive or manual workflows that could be automated or delegated to AI, with concrete suggestions.
 
 ### Design principles (in priority order)
@@ -64,7 +64,7 @@ Three cooperating pieces, deliberately decoupled so the capture path stays tiny:
 │  • runs opportunistically: on AC power / idle / hourly      │
 │  • sessionizes observations → activities                    │
 │  • classifies activities (rules first, LLM for ambiguous)   │
-│  • extracts knowledge candidates → Markdown vault           │
+│  • builds requested flashcard decks → Markdown vault        │
 │  • detects repetition patterns → automation suggestions     │
 └────────────────────────┬────────────────────────────────────┘
                          │
@@ -86,7 +86,7 @@ Three cooperating pieces, deliberately decoupled so the capture path stays tiny:
 ```
 screen event ──► observation (text + metadata) ──► SQLite
 SQLite ──► sessionizer ──► activity blocks ──► classifier ──► ledger
-activity text ──► knowledge extractor ──► note candidates ──► vault (.md) ──► SRS queue
+requested deck ──► deck builder ──► cards ──► vault (.md) ──► SRS queue
 activity sequences ──► pattern miner ──► automation suggestions ──► digest
 ```
 
@@ -191,48 +191,44 @@ A user-invoked focus contract, toggled from the menu bar (and optionally auto-sc
 
 ## 5. Knowledge Vault & Spaced Repetition (§2 of instructions)
 
-### 5.1 Extraction
+### 5.1 The vault
 
-During analysis, blocks tagged `learning` (and `work` blocks with high novel-content signal) are scanned for **reference notes**: definitions, facts, how-tos, error→fix pairs, shortcuts, names/terms the user hasn't seen before. The extractor LLM prompt produces zero or more candidate notes per block.
+The vault is **plain Markdown in a plain folder** (`~/Shifu/vault/`), one note
+per fact, YAML frontmatter for metadata. Fully usable with Obsidian/any editor;
+Shifu is not a lock-in layer.
 
-**Automatic extraction writes no flashcards.** A note here is an explanation and nothing else — no `Q:`/`A:` pair, and the JSON shape doesn't offer the fields. Cards are user-requested only (§5.2); what this stage still earns is the reference half, which is worth having in the vault and searchable whether or not it ever becomes a card. `note(from:)` drops a question and answer even when a model volunteers them, because appending one would be a back door into the review queue for exactly the unrequested cards §5.2 removed.
+**Nothing writes a note automatically.** Earlier versions ran a
+`KnowledgeExtractor` over learning and work blocks, proposing cards into an
+inbox for keep/discard triage. It was removed in 2026-07 on the evidence: on
+the dogfood vault it had produced **1,162 proposals against 1 kept card**. A
+suggestion queue nobody drains is not a feature, it is a chore with a badge on
+it — and every one of those proposals cost a model call to write and a decision
+not to make. There is no extractor, no inbox, and no triage step.
 
-Notes are **explanatory, not clippings**: the prompt hands the LLM the block's task name, topic, window titles, URL, and text sample, and asks it to combine the screen with its own knowledge of the subject — multi-sentence explanations that stand on their own months later without the source screen. Formulas are required to come back as **LaTeX** (`\( … \)` inline, `$$ … $$` displayed) rather than ASCII or pasted Unicode, so §5.2 can typeset them. Because that LaTeX rides inside a JSON string, `CardCandidates.parse` repairs backslashes the model failed to double: un-repaired, `\(` is an invalid escape that fails the whole array and loses every candidate in the batch, while `\frac` parses as a formfeed and silently eats the `f`. That shape and its repairs are shared by all three prompts that answer in card JSON — this one, the deck suggester, and the deck builder.
+What remains is one rule: a card exists because the user asked for a deck
+(§5.2). That is what "nothing enters the review queue unconfirmed" means now —
+the deck request *is* the confirmation, so deck cards are born `kept` with FSRS
+seeded rather than routed through a second approval. Pruning happens during
+review, with the card actually in front of you.
 
-```yaml
-# ~/Shifu/vault/2026/07/17-scrncapturekit-single-frame.md
----
-id: 01J2X…            # ULID
-captured: 2026-07-17T14:32:00-07:00
-source_app: Safari
-source_url: https://developer.apple.com/documentation/screencapturekit
-topic: macOS screen capture
-confidence: 0.86
-state: inbox
----
-**ScreenCaptureKit can take one-off screenshots** via `SCScreenshotManager`
-without opening a stream — much cheaper than `SCStream` for infrequent captures.
-`SCStream` pays for a capture session, a queue and a delegate even when you
-only ever ask it for one frame.
-```
-
-- The vault is **plain Markdown in a plain folder** (`~/Shifu/vault/`), one note per fact, YAML frontmatter for metadata. Fully usable with Obsidian/any editor; Shifu is not a lock-in layer.
-- A note with a Q/A pair is a **card** and sits in the SRS queue; a note without one is a reference note and is excluded from it. Only decks (§5.2) and the card editor produce the former.
-- New candidates land in an **inbox state**; the daily digest shows them and the user can keep/edit/discard in one keystroke each.
-- **Nothing enters the review queue unconfirmed** — where unconfirmed means *not user-requested*. This used to mean inbox triage, back when extraction proposed cards. Now the deck request is the confirmation: a deck is asked for by name, its sample cards were on screen when the user pressed Create, and its cards are therefore born `kept` with FSRS seeded rather than routed through a second approval. Pruning happens during review, where the card is actually in front of you.
+`Note.State.inbox` survives in the model as a **guard, not a workflow**: a
+vault is user-owned Markdown, and an old file or a restored backup can still
+carry `state: inbox`. Keeping the case means such a note parses as itself and
+stays out of the review queue; deleting it would make it fall through to
+`kept` and silently turn months of declined suggestions into cards.
 
 ### 5.2 Review (spaced repetition)
 
 - Scheduler: **FSRS** (modern, better-calibrated than SM-2; a Swift implementation is small). SRS state lives in the note's frontmatter so the folder stays self-contained.
 - Review UI: a SwiftUI card session launched from the menu bar ("Review · 7 due") or the *Cards* tab, plus a `shifu review` CLI for terminal users. Space reveals, 1–4 grades (with next-interval previews); cards can be edited (E), skipped (S), or deleted mid-session, and "Again" cards rotate to the back of the session queue. Card text renders inline/fenced code and $LaTeX$ natively via `CardMarkup` (no web views): symbols, `^`/`_` scripts, `\frac`, `\sqrt`, accents, the math alphabets (`\mathbb{R}` → ℝ, `\mathbf{1}` → 𝟏) and `\begin{pmatrix}` environments become styled runs, with variables italic and digits/operators/function names upright the way a typeset formula has them. Unknown commands degrade to their bare name, so nothing ever disappears from a card. **Spacing is computed, not inherited** (`CardMarkupSpacing.swift`): TeX sets a formula by what its symbols *are* — a relation gets a wider gap than a binary operator, a sign gets none, an italic glyph gets an italic correction before an upright one so `‖x‖` doesn't weld the bars onto the x — and the "author" here is a model that types math with wildly uneven spacing. Gaps are Unicode fixed spaces, scaled down inside scripts the way TeX's `mu` units are, so the runs stay plain text. Surfaces that can't style runs — the card-list snippet, the `shifu review` terminal — go through `CardMarkup.plainText`, which undoes that spacing and flattens the markup to Unicode super/subscripts rather than showing the reviewer raw LaTeX.
-- **Cards home** (dashboard *Cards* tab): **suggested decks** (each with its title, source task, and sample cards, and Create/Dismiss), review-activity calendar heatmap (from `srs_reviews`), per-card urgency overview (overdue / due today / new / soon / scheduled), and the deck picker. Decks still building show a progress row. Inbox triage and the review session are separate screens pushed from here.
+- **Cards home** (dashboard *Cards* tab): **suggested decks** (each with its title, source task, and sample cards, and Create/Dismiss), review-activity calendar heatmap (from `srs_reviews`), per-card urgency overview (overdue / due today / new / soon / scheduled), and the deck picker. Decks still building show a progress row. The review session is the one screen pushed from here — there is no inbox.
 - **Decks are user-requested and persisted** (`decks`). A deck is one row per task — `key` (`deck:<slug>`), `task_key`, `title`, and a one-way `pending → building → ready` status. There is no `card_count` column: the user prunes cards during review, so a stored count would start drifting the moment the feature is used as designed. The count is always derived from `vault_index.deck_key`.
 
   There are two ways to get one. The analyzer's weekly **`DeckSuggester`** looks for a task substantial enough to deserve a deck — intent-named key, ≥45 min of learning/work in 14 days, and that time *dominant* rather than incidental — and asks the model whether it is worth it, with two or three real sample cards if so. Most tasks aren't, and the answer is stored either way: a `deck_suggestions` row keyed on `task_key` (not `task_id` — prune and merge delete task rows and SQLite reuses rowids, so an id-keyed permanent row could suppress an unrelated future task). That row is what stops a task being re-billed for the same verdict every week. Caps: ≤3 open proposals, ≤2 *model calls* per run. The second is the **Create flashcard deck** button on a task's page, which is also the escape hatch from a dismissed or declined proposal.
 
   Accepting writes the sample cards immediately and asks the analyzer to fill in the rest. Building needs the network, which only `shifu-analyzer` may touch (§8), so the app launches it with `--build-deck <key>`; that flag takes an early exit before the ledger rebuild, since the request is interactive. **There is no analyzer single-instance lock**, so concurrent builds are kept apart by a compare-and-set on `decks.status` rather than a lock — a claim older than an hour is reclaimable, and an hourly drain picks up any deck whose build never happened (a keyless launch, a process that died). Both mint-a-deck actions are gated on a configured API key: without one nothing could ever finish the build, and the deck would sit "Building…" forever.
 
-  Deck writes dedupe **only within their own deck**. The vault-wide `mergeIfDuplicate` could match a requested card against an unrelated inbox note, bump *that* note's `seen_count`, and leave the deck quietly short a card with no `deck:` stamp to show where it went.
+  Deck writes dedupe **only within their own deck**. The vault-wide `mergeIfDuplicate` could match a requested card against an unrelated note, bump *that* note's `seen_count`, and leave the deck quietly short a card with no `deck:` stamp to show where it went.
 
   Cards carry `deck: deck:<slug>` in frontmatter, which is all a deck *is* on disk:
 
@@ -271,9 +267,9 @@ The vault is a work database, not just flashcards:
 - **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The prompt is built around what a human watching over your shoulder actually uses (`SemanticTaskEvidence.swift`). **The roster is a weighted prior, not a list of names**: every entry carries its minutes and days logged over the 14-day window, days since last worked, and the domains its time actually went to — so a `partiful.com` block matches the task that already lives there, not merely the one whose title reads closest. **Work is sticky**: the already-grouped blocks on either side of a batch ride along read-only (id-less, so they can't be re-assigned), with the instruction to prefer the surrounding task when a block's own evidence is thin — the strongest cue a human has, since switches are punctuated events. That prior is explicitly **fenced against interruptions**: a short messaging/social/entertainment detour between two stretches of one task is a break from it, never part of it — the *return* is the continuity evidence, not the detour. **The evidence per block is denser at the same token cost**: observations are sampled across the block's whole span (first, last, and an even fan between) instead of its opening minutes, and browser blocks carry sanitized page identities (`github.com/org/repo` — origin plus two path segments, query and fragment dropped, then re-redacted, since `observations.url` is stored raw) instead of the bare host. Everything stays token-budgeted (CLAUDE.md invariant 7): backends under 16k context get the compact tier — the twelve heaviest tasks, names and gists only, and a shorter context section — which keeps on-device Foundation Models' 4k window in budget. The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, never hand-filed tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. System shell surfaces — the lock screen, the Dock, one-shot dialogs, Shifu's own UI, bundle-less `unknown.<pid>` processes — are denylisted from grouping outright (`TaskGrouper.isSystemBundle`): they carry no topic or domain, so they'd bottom out at the `app:` key and mint permanent nonsense tasks ("loginwindow") that accrue time daily and never go stale; their blocks keep ledger time but never mint or join a task, and prune reaps ones minted before the list existed regardless of size, recency, or theme filing (the denylist starves them of new blocks anyway) — only a rename spares one. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
 - **Day notes come in two tiers** (vault-features.md §2.1). A day whose *dominant* category is work or learning earns a `## Notes` document alongside its session bullets — what was worked on, what was learned or decided and why, problems paired with their fixes. Every other day keeps the short form. Dominance rather than presence is the test, so an afternoon of admin with twenty minutes of reading in it stays light. Both prose sections carry across an unchanged-day rebuild; carrying only the bullets would silently delete `## Notes` and the hash gate would then never regenerate it.
-- **Per-task overview document**: one living Markdown file per task under `vault/tasks/<slug>.md` (`kind: task_overview`), rewritten in full whenever the task's *completed* days change — Status / Timeline / Key knowledge / Open threads. A three-week task has twenty day notes and nowhere that says what it *is*; the day notes are the diary, this is the documentation. Gating on completed days caps it at one generation per task per day however often the analyzer runs. Its own frontmatter kind is what keeps a compiled document out of the inbox and review queues.
+- **Per-task overview document**: one living Markdown file per task under `vault/tasks/<slug>.md` (`kind: task_overview`), rewritten in full whenever the task's *completed* days change — Status / Timeline / Key knowledge / Open threads. A three-week task has twenty day notes and nowhere that says what it *is*; the day notes are the diary, this is the documentation. Gating on completed days caps it at one generation per task per day however often the analyzer runs. Its own frontmatter kind is what keeps a compiled document out of the review queue.
 - **Themes** (replaced projects, v14): the broad initiatives blocks cluster into (`ThemeClusterer`), which is also what the user files a task under by hand. Filing is per block, so a task's theme is the one its time mostly sits in; filing one from the Task log writes all of that task's blocks and sets `theme_user_set`, the bit prune and auto-merge read as "the user judged this". A theme's tasks also form a review deck (§5.2).
-- **Vault tab** shows today's compiled log (most recently worked task first) and the task list with its latest log line, behind a Themes / Task log toggle. Inbox triage lives on the *Cards* tab with the decks.
+- **Vault tab** shows today's compiled log (most recently worked task first) and the task list with its latest log line, behind a Themes / Task log toggle.
 - **Task log filters**: a filter bar pinned above the log — range (today / 7 days / 30 days / all time), minimum time spent (default 5 min+), order (most recent / most time), and theme (all / one / unfiled). The range doubles as the window the time column counts, so a row's hours always match the range on screen. The section header carries "N of M" because the list is capped at 50 rows: a roster runs to hundreds of tasks, most of them a stray minute, and a capped recency-sorted list looks identical under every range without it. Minimum time and theme also scope the *Today* day log; range and sort don't — that log is already a single day, and its most-recent-first order is part of what makes it a log rather than a task list. The *Cards* deck picker still reads the unfiltered roster. Session state, not persisted.
 - **Task detail page**: every task row opens as a full dashboard page (`TaskDetailView`): the LLM gist of what the task *is*, the **Overview** document above the history, day-by-day history with the work-note narratives and their `## Notes` sections (§2.1 of vault-features.md) expandable inline, where the time went per source, the knowledge notes captured under the task, recent activity blocks, inline rename, theme assignment (including creating a new theme in place), and the **Create flashcard deck** button (§5.2) — or the deck's live card count once one exists.
 - **Themes — the second clustering mode**: `ThemeClusterer` runs an *independent* LLM clustering of the same blocks into 3–8 broad initiatives spanning weeks ("YC Startup School", "Shifu development", "Travel") — one level above tasks, assigned per block (`activities.theme_key`, `"thm:"` namespace), so a task's blocks may straddle themes. Same engine discipline as semantic tasks: roster reuse (30-day window), confidence floor, `theme_attempts` cap, rebuild carry, fail-soft. Each theme keeps an LLM **running narrative** ("the story so far"), regenerated only when the hash of its *completed* days changes — at most one generation per active theme per day. The Vault tab gains a segmented **Themes / Task log** toggle; a theme's page shows the narrative, computed per-day history (no parallel log table — days derive from `theme_key` on read), the tasks its time flowed through (linking to their pages), and recent activity. Themes are renameable; renames stick.
@@ -400,7 +396,7 @@ Prompts are batched by rendered-token size (invariant 7), never by item count.
 Minimalism governs the UI (§1, principle 2): monochrome menu bar glyph, generous whitespace, system fonts and colors, no badges or gamification, no settings page longer than one screen. Three surfaces total:
 
 - **Menu bar item** (the only always-visible surface): status glyph (watching / paused / excluded app), Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Dashboard, Quit & Stop Capture.
-- **Dashboard window**: four tabs — *Time*, *Vault* (today's work log, tasks, themes — §5.3), *Cards* (home screen with activity heatmap + card urgency; inbox and review as separate screens — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
+- **Dashboard window**: four tabs — *Time*, *Vault* (today's work log, tasks, themes — §5.3), *Cards* (suggested decks, activity heatmap, card urgency; review as a separate screen — §5.2), *Radar* (suggestions). Charts native SwiftUI; no web views.
 - **The Time tab** carries one window (Day / Week) and one lens (Category / Theme / Task, §5.3) across two modes:
   - *Summary* — where the time went. A hero total with its change against the same window before it, a donut, and one row per group: color, name, duration, share, a proportional bar, expanding into the apps and domains inside it, its block count, and the hour it peaked. This is what makes "3 h 10 m of today was work, and 40 m of that was Chrome" a thing you can read at a glance.
   - *Timeline* — when it happened. Stacked bars over the hours or days, plus the block list. Its legend carries each group's total, so the strip under the chart is a breakdown rather than a color key.
@@ -469,7 +465,7 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
 | **M0 — Watcher** | shifud: events, capture ladder, dedupe, SQLite, exclusions, pause | Runs 8 h under budget (§3.4); `shifu log` CLI shows a sane trace of the day |
 | **M1 — Ledger** | analyzer sessionization + rules classifier; menu bar app with Time tab | Day view matches a hand-kept diary within ~10% |
 | **M2 — Brains** | local LLM classification + topics; daily digest; Work Mode + glow | Ambiguous-block accuracy spot-checked >85%; glow works and is likeable |
-| **M3 — Vault** | reference-note extraction, inbox triage, user-requested decks, FSRS review UI + CLI | 1 week of dogfooding yields >70% keep-rate on inbox notes, and every deck the user accepts is one they still want after reviewing it |
+| **M3 — Vault** | user-requested decks (suggested + manual), FSRS review UI + CLI | Every deck the user accepts is one they still want after reviewing it. (The predecessor — automatic extraction into a triage inbox — failed this at 1,162 proposals to 1 kept card and was removed.) |
 | **M4 — Radar** | pattern miner + suggestion describer, Radar tab | ≥1 genuinely useful suggestion per week of dogfooding |
 | **M5 — Hardening** | SQLCipher, retention jobs, onboarding, perf test suite, notarized build | Clean install → useful digest with zero config |
 

@@ -30,7 +30,6 @@ public enum LedgerBuilder {
         var topic: String?
         var confidence: Double?
         var llmLabeled: Bool
-        var extracted: Bool
         var llmAttempts: Int
         var semKey: String?
         var semAttempts: Int
@@ -43,7 +42,7 @@ public enum LedgerBuilder {
     }
 
     /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
-    /// reproduced unchanged keep their LLM labels and `extracted` flag, so
+    /// reproduced unchanged keep their LLM labels and retry counters, so
     /// re-runs never re-bill the LLM tiers. Returns what was done.
     @discardableResult
     public static func rebuild(
@@ -97,11 +96,11 @@ public enum LedgerBuilder {
     ) throws -> [SpanKey: CarriedState] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, category, topic,
-                   confidence, source, extracted, llm_attempts,
+                   confidence, source, llm_attempts,
                    sem_key, sem_attempts, theme_key, theme_attempts, theme_user_set
             FROM activities
             WHERE ended_at > ? AND started_at < ?
-              AND (source = 'llm' OR extracted = 1 OR llm_attempts > 0
+              AND (source = 'llm' OR llm_attempts > 0
                    OR sem_key IS NOT NULL OR sem_attempts > 0
                    OR theme_key IS NOT NULL OR theme_attempts > 0
                    OR theme_user_set = 1)
@@ -117,7 +116,6 @@ public enum LedgerBuilder {
                 topic: row["topic"],
                 confidence: row["confidence"],
                 llmLabeled: source == "llm",
-                extracted: row["extracted"],
                 llmAttempts: row["llm_attempts"],
                 semKey: row["sem_key"],
                 semAttempts: row["sem_attempts"],
@@ -151,13 +149,15 @@ public enum LedgerBuilder {
         }
         try activity.insert(db)
         guard let sessionID = activity.id else { return }
-        // Restore the extraction ledger, the retry counters, and the semantic
-        // task assignment onto the span-identical row so no LLM pass re-bills
-        // a block the rebuild just recreated.
-        if let prior, prior.extracted || prior.llmAttempts > 0 {
+        // Restore the retry counters and the semantic task assignment onto
+        // the span-identical row so no LLM pass re-bills a block the rebuild
+        // just recreated. `activities.extracted` is no longer among them:
+        // knowledge extraction is gone (§5.1), so the column is inert and the
+        // v4 migration keeps it only because migrations are append-only.
+        if let prior, prior.llmAttempts > 0 {
             try db.execute(
-                sql: "UPDATE activities SET extracted = ?, llm_attempts = ? WHERE id = ?",
-                arguments: [prior.extracted, prior.llmAttempts, sessionID])
+                sql: "UPDATE activities SET llm_attempts = ? WHERE id = ?",
+                arguments: [prior.llmAttempts, sessionID])
         }
         if let prior, prior.semKey != nil || prior.semAttempts > 0 {
             try db.execute(

@@ -14,8 +14,8 @@ Raw observations are ephemeral (14-day retention, design.md §3.5). The vault is
 what survives: a permanent, portable, plain-Markdown record of *what the user
 did, learned, and worked toward*. Three properties define it:
 
-1. **Complete** — every non-private working session leaves a distilled trace,
-   not just sessions that produced a flashcard.
+1. **Complete** — every non-private working session leaves a distilled trace
+   (a work note, and for substantial tasks an overview document).
 2. **Queryable** — full-text (later semantic) search across everything, from the
    CLI and the Vault tab. "What did I read about SQLite WAL?" has an answer.
 3. **Organized by meaning** — sessions cluster into tasks by what they're
@@ -26,7 +26,7 @@ new capture, no new daemon code paths (invariant 1).
 
 ### What already exists (baseline)
 
-- Knowledge notes with FSRS review, inbox triage, decks (§5.1–5.2, shipped M3).
+- Knowledge notes with FSRS review and decks (§5.1–5.2, shipped M3).
 - `TaskGrouper`: lexical task keys (`topic:` → `domain:` → `app:`), renameable
   tasks, idempotent per-day `task_logs` with deterministic "where — what"
   summaries (§5.3).
@@ -45,7 +45,7 @@ frontmatter, all readable in Obsidian, all indexed for search (§4).
 
 ```
 ~/Shifu/vault/
-  YYYY/MM/*.md              # knowledge notes: reference notes and deck cards
+  YYYY/MM/*.md              # knowledge notes: deck cards
   work/YYYY/MM/DD-<task-slug>.md   # work notes: one per task per local day
   tasks/<task-slug>.md      # overview documents: one living doc per task
 ```
@@ -116,8 +116,11 @@ Tracked down why the AX observers survived a pause and kept writing.
   the response is split on it, and a model that ignores the instruction has
   written session bullets and nothing else — which is exactly the light shape,
   so it degrades rather than fails.
-- **`## Captured`** wiki-links any knowledge notes extracted from the same
-  activities, tying the two note kinds together in Obsidian's graph.
+- **`## Captured`** wiki-links the day's knowledge notes for that task, tying
+  the two note kinds together in Obsidian's graph. Deck cards are excluded
+  (`deck_key IS NULL`): they carry the task key and are captured on the day
+  their deck was *built*, so without that filter one deck build would file
+  twenty cards under a single day's work as if that day had produced them.
 - Rebuild semantics mirror `TaskGrouper.rebuildLogs`: recompiled from scratch
   for every (task, day) an analyzer window touches, written via `VaultStore`
   (stable path from ULID prefix, same as knowledge notes). Narrative sections
@@ -192,16 +195,12 @@ disk; the DB already holds the prose.
 
 ### 2.3 Knowledge notes
 
-Two shapes now share the kind (design.md §5.1–5.2):
+Every knowledge note is a **card**: a Q/A pair, born `kept` with FSRS seeded,
+written by a deck the user asked for (§2.1c). Automatic extraction and the
+triage inbox it fed are gone (design.md §5.1).
 
-- **Reference notes** — what automatic extraction writes. Explanation only, no
-  `Q:`/`A:`, land in the inbox for triage, never in the SRS queue.
-- **Cards** — a note with a Q/A pair. Only decks (§2.1c) and the card editor
-  produce them, and deck cards are born `kept` with FSRS seeded.
-
-Both carry `task_key`, stamped at extraction time from the source activity,
-replacing the old slug-matching heuristic for task membership with an explicit
-link.
+Cards carry `task_key`, stamped from the deck's task, which is what lets a
+task- or theme-scoped review deck find them without slug matching.
 
 ---
 
@@ -210,7 +209,6 @@ link.
 ```
 activities (per analyzer window)
   ├─► TaskGrouper ──────────► task assignment + task_logs
-  ├─► KnowledgeExtractor ───► reference notes → inbox        (Q&A-free)
   ├─► WorkNoteCompiler ─────► work notes, two tiers (§2.1)
   ├─► TaskOverviewCompiler ─► task overview docs (§2.1b)
   └─► DeckBuilder.drainPending ──► deck cards (§2.1c)

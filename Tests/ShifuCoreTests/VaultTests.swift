@@ -92,21 +92,32 @@ import Testing
         return VaultStore(root: dir, database: try ShifuDatabase.inMemory())
     }
 
-    @Test func saveKeepDiscardLifecycle() throws {
+    @Test func saveAndDiscardLifecycle() throws {
         let vault = try scratchVault()
-        let note = Note(topic: "SQLite WAL", body: "WAL survives kill -9.\n\nQ: q\nA: a")
+        let note = Note(topic: "SQLite WAL", srs: FSRS.State(due: Date()),
+                        body: "WAL survives kill -9.\n\nQ: q\nA: a")
         try vault.save(note)
-
-        #expect(try vault.inbox().count == 1)
-        #expect(try vault.due().isEmpty)   // inbox notes are never in the queue
-
-        try vault.keep(note)
-        #expect(try vault.inbox().isEmpty)
         #expect(try vault.due().count == 1)
 
         let kept = try vault.due()[0]
         try vault.discard(kept)
         #expect(try vault.allNotes().isEmpty)
+    }
+
+    /// A legacy `state: inbox` note — from a backup, or a machine still on the
+    /// old version — must stay out of the review queue even though there is no
+    /// longer any triage step to resolve it. Deleting the enum case would make
+    /// it parse as `kept` and turn declined suggestions into cards.
+    @Test func legacyInboxNotesNeverReachTheQueue() throws {
+        let vault = try scratchVault()
+        let legacy = Note(topic: "old candidate", state: .inbox,
+                          srs: FSRS.State(due: Date()),
+                          body: "a proposal from the old world\n\nQ: q\nA: a")
+        try vault.save(legacy)
+
+        #expect(try vault.allNotes().count == 1)
+        #expect(try vault.due().isEmpty)
+        #expect(Note.parse(legacy.serialize())?.state == .inbox)
     }
 
     @Test func reviewSchedulesAndKeepsFileCount() throws {
@@ -189,66 +200,5 @@ import Testing
         let candidates = CardCandidates.parse(
             #"[{"topic": "t", "note": "Good \\(x\\) here", "confidence": 0.9}]"#)
         #expect(candidates.first?.note == #"Good \(x\) here"#)
-    }
-}
-
-@Suite struct KnowledgeExtractorTests {
-    @Test func promptAsksForLaTeXWithDoubledBackslashes() {
-        let prompt = KnowledgeExtractor.prompt(
-            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
-        #expect(prompt.contains(#"\( ... \)"#))
-        #expect(prompt.contains("$$ ... $$"))
-        #expect(prompt.contains(#"\\frac{a}{b}"#))
-    }
-
-    /// The task and its screen source are the difference between a note that
-    /// still reads months later and one that says "the error above".
-    @Test func promptCarriesTaskAndSourceContext() {
-        let context = KnowledgeExtractor.BlockContext(
-            text: "Actors serialize access to their state.",
-            url: "https://docs.swift.org/actors",
-            titles: ["Concurrency — Swift.org"],
-            taskKey: "swift-concurrency",
-            taskName: "Learning Swift concurrency")
-        let prompt = KnowledgeExtractor.prompt(
-            context: context, app: "com.apple.Safari", topic: "swift actors")
-        #expect(prompt.contains("Learning Swift concurrency"))
-        #expect(prompt.contains("swift actors"))
-        #expect(prompt.contains("Concurrency — Swift.org"))
-        #expect(prompt.contains("https://docs.swift.org/actors"))
-        #expect(prompt.contains("Actors serialize access to their state."))
-    }
-
-    @Test func promptOmitsWorkingLineWithoutTaskOrTopic() {
-        let prompt = KnowledgeExtractor.prompt(
-            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
-        #expect(!prompt.contains("working on"))
-    }
-
-    @Test func promptForbidsFlashcards() {
-        let prompt = KnowledgeExtractor.prompt(
-            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
-        #expect(prompt.contains("reference notes"))
-        #expect(prompt.contains("Do not write quiz questions or flashcards"))
-        // The JSON shape must not offer the fields either, or the model fills
-        // them in whatever the prose says.
-        #expect(!prompt.contains("\"question\""))
-        #expect(!prompt.contains("\"answer\""))
-    }
-
-    /// A model that volunteers a Q/A anyway must not get a card into the
-    /// review queue through the back door — cards are user-requested (§5.2).
-    @Test func candidateBecomesReferenceNoteWithoutQA() {
-        let activity = Activity(startedAt: 1_000, endedAt: 400_000,
-                                appBundle: "com.apple.Safari", category: .learning)
-        let note = KnowledgeExtractor.note(
-            from: .init(topic: "t", note: "fact", question: "q?", answer: "a", confidence: 0.8),
-            activity: activity, sourceURL: "https://x.test/doc", taskKey: nil)
-        #expect(note.state == .inbox)
-        #expect(note.questionAnswer == nil)
-        #expect(!note.body.contains("Q:"))
-        #expect(note.body == "fact")
-        #expect(note.sourceURL == "https://x.test/doc")
-        #expect(note.deck == nil)
     }
 }

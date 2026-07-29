@@ -25,14 +25,6 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
     }
 }
 
-/// Returns one knowledge candidate, for task_key stamping tests.
-private struct ExtractorBackend: LLMBackend {
-    let name = "extractor"
-    func complete(prompt: String, maxTokens: Int) async throws -> String {
-        #"[{"topic": "sck single frame", "note": "SCScreenshotManager captures one frame.", "confidence": 0.9}]"#
-    }
-}
-
 @Suite struct WorkNoteModelTests {
     @Test func roundTripsThroughSerialization() throws {
         let note = WorkNote(
@@ -322,30 +314,36 @@ private struct ExtractorBackend: LLMBackend {
         #expect(day2Logs == 0)
     }
 
-    @Test func analyzerOrderKeepsTaskRowsIdentical() async throws {
-        // The V2 pipeline runs TaskGrouper before extraction; grouping again
-        // after an extraction pass must not change task or log rows.
+    /// Grouping is idempotent across a deck build, and a deck card carries
+    /// the source task's key so the task-scoped review deck can find it
+    /// (§2.3). Extraction used to be what stamped that key; decks are what
+    /// stamp it now.
+    @Test func deckCardsCarryTheirTaskKeyAndGroupingStaysStable() async throws {
         let database = try ShifuDatabase.inMemory()
         let vault = try makeVault(database)
         try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 60,
                            category: .learning,
                            sampleText: String(repeating: "SCScreenshotManager docs. ", count: 12))
         try TaskGrouper.run(database: database, from: ms(day1), to: ms(day2))
-        let snapshot = { try self.taskRows(database) }
-        let before = try snapshot()
+        let before = try taskRows(database)
 
-        _ = try await KnowledgeExtractor.run(
-            database: database, vault: vault, backend: ExtractorBackend(),
-            from: ms(day1), to: ms(day2))
+        let taskKey = "topic:debugging-capture-daemon"
+        let deckKey = try #require(
+            try DeckStore.create(title: "Capture daemon", taskKey: taskKey, database: database))
+        try DeckStore.write(
+            DeckStore.SampleCard(topic: "sck single frame",
+                                 note: "SCScreenshotManager captures one frame.",
+                                 question: "Which SCK API takes a single screenshot?",
+                                 answer: "SCScreenshotManager, macOS 14+."),
+            deckKey: deckKey, taskKey: taskKey, vault: vault)
         try TaskGrouper.run(database: database, from: ms(day1), to: ms(day2))
-        #expect(try snapshot() == before)
+        #expect(try taskRows(database) == before)
 
-        // And extraction stamped the source task's key into the note (§2.3).
-        let inbox = try vault.inbox()
-        #expect(inbox.count == 1)
-        #expect(inbox.first?.taskKey == "topic:debugging-capture-daemon")
-        #expect(TaskStore.matches(note: inbox[0], taskKey: "topic:debugging-capture-daemon"))
-        #expect(!TaskStore.matches(note: inbox[0], taskKey: "topic:something-else"))
+        let cards = try vault.deckNotes(deckKey: deckKey)
+        #expect(cards.count == 1)
+        #expect(cards[0].taskKey == taskKey)
+        #expect(TaskStore.matches(note: cards[0], taskKey: taskKey))
+        #expect(!TaskStore.matches(note: cards[0], taskKey: "topic:something-else"))
     }
 
     // MARK: - Tiering (vault-features.md §2.1)

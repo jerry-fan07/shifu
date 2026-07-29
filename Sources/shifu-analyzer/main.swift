@@ -180,18 +180,9 @@ do {
     print("auto-merge failed (retries next run): \(error)")
 }
 
-// Knowledge extraction over learning/novel-work blocks (§5.1).
+// Nothing writes knowledge notes automatically any more (§5.1): the vault's
+// cards come from decks the user asked for, and nothing else.
 if let backend {
-    do {
-        let candidates = try await KnowledgeExtractor.run(
-            database: database, vault: vault, backend: backend, from: from, to: nowMs)
-        if candidates > 0 {
-            print("vault: \(candidates) new inbox candidates")
-        }
-    } catch {
-        print("extraction failed (blocks stay unprocessed next run): \(error)")
-    }
-
     // Decks the app asked for but never got built — its `--build-deck` launch
     // hit a machine with no key, or died mid-build (§5.2). Costs one indexed
     // query when there is nothing waiting.

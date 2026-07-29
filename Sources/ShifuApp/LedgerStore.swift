@@ -13,7 +13,6 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var todayTotals: [ShifuCore.Category: Int64] = [:]
     @Published private(set) var pausedUntil: Date?
     @Published private(set) var workModeOn = false
-    @Published private(set) var inboxNotes: [Note] = []
     @Published private(set) var dueNotes: [Note] = []
     /// Every kept, reviewable card (Q/A present), most urgent first.
     @Published private(set) var allCards: [Note] = []
@@ -416,7 +415,6 @@ final class LedgerStore: ObservableObject {
     /// are `private(set)` and an extension in another file can't write them.
     private func refreshVaultNotes() {
         let snapshot = vaultSnapshot()
-        inboxNotes = snapshot.inbox
         allCards = snapshot.cards
         dueNotes = snapshot.due
         reviewsByDay = snapshot.reviewsByDay

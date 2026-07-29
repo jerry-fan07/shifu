@@ -57,10 +57,6 @@ public struct VaultStore: Sendable {
         return notes.sorted { $0.captured > $1.captured }
     }
 
-    public func inbox() throws -> [Note] {
-        try allNotes().filter { $0.state == .inbox }
-    }
-
     /// Kept notes with a Q/A pair whose SRS due date has arrived (§5.2).
     public func due(asOf date: Date = Date()) throws -> [Note] {
         try allNotes().filter { note in
@@ -177,20 +173,11 @@ public struct VaultStore: Sendable {
         return nil
     }
 
-    // MARK: - Triage (§5.1) — the inbox path. Deck cards skip it: they are
-    // written `kept` and FSRS-seeded by DeckStore, the request being the
-    // confirmation this step exists to collect.
+    // MARK: - Deletion
 
-    public func keep(_ note: Note) throws {
-        var kept = note
-        kept.state = .kept
-        // Entering the queue: due immediately, scheduled by the first review.
-        if kept.questionAnswer != nil && kept.srs == nil {
-            kept.srs = FSRS.State(due: Date())
-        }
-        try save(kept)
-    }
-
+    /// Removes a card and its index rows. The only way a note leaves the
+    /// vault now that there is no triage step — pruning happens during review,
+    /// with the card in front of you.
     public func discard(_ note: Note) throws {
         if let file = existingURL(id: note.id) {
             try FileManager.default.removeItem(at: file)
