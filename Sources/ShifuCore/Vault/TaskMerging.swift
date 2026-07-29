@@ -66,6 +66,12 @@ extension TaskStore {
                 """, arguments: StatementArguments(absorbed)
             ).map { ($0["started_at"], $0["ended_at"]) }
         }
+        // Read before the fold: `deck_suggestions` is keyed on `task_key`, and
+        // the rows below are deleted after the task rows are gone.
+        let absorbedKeys: [String] = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT key FROM tasks WHERE id IN (\(placeholders))",
+                                arguments: StatementArguments(absorbed))
+        }
         let days = TaskGrouper.affectedDays(of: spans, calendar: calendar)
 
         try database.queue.write { db in
@@ -86,11 +92,7 @@ extension TaskStore {
                     """, arguments: [resolution.rawValue, fold.survivor, fold.absorbed,
                                      fold.absorbed, fold.survivor])
             }
-            try db.execute(sql: """
-                DELETE FROM task_merge_suggestions
-                WHERE status = 'new' AND (task_a IN (\(placeholders))
-                                          OR task_b IN (\(placeholders)))
-                """, arguments: StatementArguments(absorbed + absorbed))
+            try clearOpenSuggestions(db, absorbed: absorbed, keys: absorbedKeys)
             for day in days {
                 try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
             }
@@ -99,5 +101,26 @@ extension TaskStore {
             try WorkNoteCompiler.recompile(
                 days: days, database: database, vault: vault, calendar: calendar)
         }
+    }
+
+    /// Open suggestions that name a task which just disappeared into another
+    /// one are meaningless — same policy as prune. For deck proposals it is
+    /// more than tidiness: their rows are keyed permanently, so an orphan
+    /// would hold one of the suggester's three open slots forever with no UI
+    /// able to show or clear it. Resolved rows stay as the audit trail.
+    private static func clearOpenSuggestions(
+        _ db: Database, absorbed: [Int64], keys: [String]
+    ) throws {
+        let placeholders = databaseQuestionMarks(count: absorbed.count)
+        try db.execute(sql: """
+            DELETE FROM task_merge_suggestions
+            WHERE status = 'new' AND (task_a IN (\(placeholders))
+                                      OR task_b IN (\(placeholders)))
+            """, arguments: StatementArguments(absorbed + absorbed))
+        guard !keys.isEmpty else { return }
+        try db.execute(sql: """
+            DELETE FROM deck_suggestions
+            WHERE status = 'new' AND task_key IN (\(databaseQuestionMarks(count: keys.count)))
+            """, arguments: StatementArguments(keys))
     }
 }

@@ -237,11 +237,44 @@ public struct VaultStore: Sendable {
     /// content, bump `seen_count` (re-encounter is itself an SRS signal) and
     /// return true instead of creating a new note.
     public func mergeIfDuplicate(of candidate: Note) throws -> Bool {
+        try merge(candidate, into: try allNotes())
+    }
+
+    /// The same rule scoped to one deck (§5.2). Deck writes must never use the
+    /// vault-wide variant: a match against an unrelated inbox reference note
+    /// or an old kept card would bump *that* note's `seen_count` and silently
+    /// drop a card the user explicitly asked for — leaving the deck quietly
+    /// incomplete, with no `deck:` stamp anywhere to show what happened. So a
+    /// deck dedupes only within itself, and is O(deck) rather than O(vault):
+    /// `vault_index.deck_key` resolves the deck's paths directly.
+    public func mergeIfDuplicate(of candidate: Note, inDeck deckKey: String) throws -> Bool {
+        try merge(candidate, into: try deckNotes(deckKey: deckKey))
+    }
+
+    /// The cards filed under one deck. Falls back to a full scan without a
+    /// database — the index is disposable by design, so it can never be the
+    /// only route to a note.
+    public func deckNotes(deckKey: String) throws -> [Note] {
+        guard let database else {
+            return try allNotes().filter { $0.deck == deckKey }
+        }
+        let paths = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT path FROM vault_index WHERE deck_key = ?",
+                                arguments: [deckKey])
+        }
+        return paths.compactMap { path in
+            guard let text = try? String(
+                contentsOf: root.appendingPathComponent(path), encoding: .utf8) else { return nil }
+            return Note.parse(text)
+        }
+    }
+
+    private func merge(_ candidate: Note, into existing: [Note]) throws -> Bool {
         let candidateHash = SimHash.hash(candidate.body)
-        for existing in try allNotes()
-        where existing.topic.lowercased() == candidate.topic.lowercased() {
-            if SimHash.isNearDuplicate(SimHash.hash(existing.body), candidateHash) {
-                var bumped = existing
+        for note in existing
+        where note.topic.lowercased() == candidate.topic.lowercased() {
+            if SimHash.isNearDuplicate(SimHash.hash(note.body), candidateHash) {
+                var bumped = note
                 bumped.seenCount += 1
                 try save(bumped)
                 return true
