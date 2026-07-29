@@ -49,7 +49,8 @@ and restart the daemon:
 launchctl kickstart -k "gui/$(id -u)/com.shifu.shifud"
 ```
 
-Install the menu bar app (dashboard, review sessions, onboarding) as a
+Install the desktop app (sidebar dashboard, review sessions, onboarding,
+menu bar item) as a
 standalone `Shifu.app`:
 
 ```sh
@@ -114,6 +115,6 @@ shifu encrypt           migrate the database to SQLCipher (key in Keychain)
 - `make check` must be green before every commit; a perf-budget regression
   (`make perf`) blocks like a test failure (<0.5% avg CPU, <80 MB RSS).
 - Targets: `ShifuCore` (all testable logic), `shifud` (capture daemon),
-  `shifu-analyzer` (batch worker), `shifu` (CLI), `ShifuApp` (menu bar + dashboard).
+  `shifu-analyzer` (batch worker), `shifu` (CLI), `ShifuApp` (desktop app + menu bar).
 - Rebuilding to see a change in the running app: [start.md](start.md).
 - Phase plan and verification gates: [implementation.md](implementation.md).

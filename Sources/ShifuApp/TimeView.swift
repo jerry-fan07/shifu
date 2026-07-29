@@ -2,83 +2,12 @@ import Charts
 import ShifuCore
 import SwiftUI
 
-/// Dashboard (design.md §7): *Time*, *Vault*, *Cards*, and *Radar* tabs.
-/// Shows onboarding instead until the first-run flow completes.
-struct DashboardView: View {
-    enum Tab: String, CaseIterable { case time = "Time", vault = "Vault", cards = "Cards", radar = "Radar" }
-
-    @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var tab: Tab = .time
-
-    var body: some View {
-        if onboarded {
-            dashboard
-        } else {
-            OnboardingView()
-        }
-    }
-
-    private var dashboard: some View {
-        content
-            .frame(minWidth: 680, minHeight: 580)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    DashboardTabBar(tab: $tab)
-                }
-            }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch tab {
-        case .time: TimeTabView()
-        case .vault: VaultTabView()
-        case .cards: CardsTabView()
-        case .radar: RadarTabView()
-        }
-    }
-}
-
-/// Equal-width segmented control for the dashboard's top bar. Built by hand
-/// (rather than a `Picker`) so every label gets the same width — the native
-/// segmented style sizes each segment to its own text, which is what made
-/// the titlebar tab strip look unevenly spaced.
-private struct DashboardTabBar: View {
-    @Binding var tab: DashboardView.Tab
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(DashboardView.Tab.allCases, id: \.self) { item in
-                Button {
-                    tab = item
-                } label: {
-                    Text(item.rawValue)
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(minWidth: 64)
-                        .padding(.vertical, 5)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tab == item ? Color.primary : Color.secondary)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(tab == item ? Color.primary.opacity(0.12) : Color.clear)
-                )
-            }
-        }
-        .padding(3)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
-        )
-    }
-}
-
-/// *Time* tab: two modes over the same window (design.md §7).
+/// The *Time* page: two modes over the same window (design.md §7).
 /// *Summary* answers "where did my time go" — a Screen Time–style ranked
 /// breakdown; *Timeline* answers "when" — the stacked bars and the block list.
-/// A day/week span and a lens (category, theme, or task — §5.3) apply to both.
-/// System fonts and colors throughout (§7).
-struct TimeTabView: View {
+/// A day/week span and a lens (category, theme, or task — §5.3) apply to both;
+/// all three controls live in the window toolbar.
+struct TimeView: View {
     enum Span: String, CaseIterable { case day = "Day", week = "Week" }
     enum Mode: String, CaseIterable { case summary = "Summary", timeline = "Timeline" }
 
@@ -101,27 +30,6 @@ struct TimeTabView: View {
             limit: lens == .category ? nil : Self.maxGroups)
 
         return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Picker("", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-                .help("Where the time went, or when it happened")
-                Picker("", selection: $span) {
-                    ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 140)
-                Spacer(minLength: 8)
-                Picker("", selection: $lens) {
-                    ForEach(TimeLens.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 240)
-                .help("What the time is grouped by")
-            }
-
             switch mode {
             case .summary:
                 TimeBreakdownView(
@@ -134,7 +42,27 @@ struct TimeTabView: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 640, minHeight: 560)
+        .frame(minWidth: 640, minHeight: 500)
+        .background(Dojo.paper)
+        .navigationTitle("Time")
+        .toolbar {
+            ToolbarItemGroup {
+                Picker("Mode", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .help("Where the time went, or when it happened")
+                Picker("Span", selection: $span) {
+                    ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                Picker("Lens", selection: $lens) {
+                    ForEach(TimeLens.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .help("What the time is grouped by")
+            }
+        }
         .onAppear { store.refresh() }
     }
 
@@ -245,11 +173,10 @@ struct TimeTabView: View {
     ) -> some View {
         let data = buckets(activities, groups: Set(slices.map(\.name)))
         if data.isEmpty {
-            ContentUnavailableView(
+            SenseiEmptyState(
                 "No activity yet",
-                systemImage: "chart.bar",
-                description: Text("The analyzer runs hourly. Data appears once shifud has been watching for a while.")
-            )
+                message: "The analyzer runs hourly. The record fills in once "
+                    + "shifud has been watching a while.")
         } else {
             barChart(data)
                 // Explicit domain + range rather than Charts' automatic palette:
@@ -335,9 +262,10 @@ struct TimeTabView: View {
                     .font(.caption)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+                    .background(Dojo.well, in: Capsule())
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
     }
 }

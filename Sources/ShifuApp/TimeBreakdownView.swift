@@ -24,13 +24,11 @@ struct TimeBreakdownView: View {
 
     var body: some View {
         if slices.isEmpty {
-            ContentUnavailableView(
+            SenseiEmptyState(
                 "Nothing tracked \(periodLabel)",
-                systemImage: "chart.pie",
-                description: Text("The analyzer runs hourly. Totals appear once "
-                    + "shifud has been watching for a while.")
-            )
-            // Greedy like the ScrollView it stands in for, so the tab's
+                message: "The scroll is blank. Work a while — the analyzer "
+                    + "passes hourly, and I keep the record.")
+            // Greedy like the ScrollView it stands in for, so the page's
             // controls stay pinned to the top instead of centering with it.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -69,11 +67,7 @@ struct TimeBreakdownView: View {
             Spacer(minLength: 0)
             donut
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
-        )
+        .dojoCard(padding: 18)
     }
 
     private var donut: some View {
@@ -157,7 +151,7 @@ struct TimeBreakdownView: View {
     private func bar(_ slice: TimeSlice) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.07))
+                Capsule().fill(Dojo.well)
                 Capsule()
                     .fill(slice.color)
                     // A hairline of track always shows, so a 0.4% group is

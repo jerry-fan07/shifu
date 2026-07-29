@@ -161,24 +161,23 @@ enum TimeBreakdown {
     }
 }
 
-/// Chart colors for both Time-tab modes, so a group wears the same color in the
-/// timeline bars, the summary donut, and every legend.
+/// Chart colors for both Time-page modes, so a group wears the same color in
+/// the timeline bars, the summary donut, and every legend. All hues come from
+/// `Dojo.chartSlots`, validated for CVD separation and 3:1 contrast on both
+/// surfaces (design.md §7). Work wears the robe's terracotta; the low-signal
+/// categories (admin, private, unclassified) stay recessive grays.
 enum TimePalette {
-    /// Fixed category hues. `KeyValuePairs` because that is the shape
-    /// `chartForegroundStyleScale` takes; `categoryColors` mirrors it for lookup.
-    static let categoryScale: KeyValuePairs<String, Color> = [
-        "work": .blue, "learning": .green, "entertainment": .orange,
-        "social": .pink, "communication": .teal, "admin": .gray,
+    /// Fixed category hues.
+    private static let categoryColors: [String: Color] = [
+        "work": Dojo.terracotta, "learning": Dojo.jade, "entertainment": Dojo.gold,
+        "social": Dojo.magenta, "communication": Dojo.blue, "admin": .gray,
         "private": .secondary, "unclassified": Color.gray.opacity(0.4)
     ]
 
-    private static let categoryColors: [String: Color] =
-        Dictionary(uniqueKeysWithValues: categoryScale.map { ($0.key, $0.value) })
-
-    /// Hue order for theme and task groups, checked for color-vision-deficiency
-    /// separation against the chart surface. Deliberately a *fixed* list: a 9th
-    /// group never gets a generated hue, it folds into "Other".
-    static let groupHues: [Color] = [.blue, .orange, .green, .purple, .teal, .pink, .indigo, .mint]
+    /// Hue order for theme and task groups — the validated slot order, which is
+    /// what makes adjacent assignments CVD-distinct. Deliberately a *fixed*
+    /// list: a 9th group never gets a generated hue, it folds into "Other".
+    static let groupHues: [Color] = Dojo.chartSlots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.
     static let otherColor = Color.gray.opacity(0.5)

@@ -34,6 +34,8 @@ struct ThemeListView: View {
             .padding(.top, 12)
             grid
         }
+        .background(Dojo.paper)
+        .navigationTitle("Themes")
         .sheet(isPresented: $isCreating) { ThemeEditSheet(theme: nil) }
         .sheet(item: $editing) { ThemeEditSheet(theme: $0) }
         .onAppear { store.refresh() }
@@ -56,15 +58,15 @@ struct ThemeListView: View {
         // full content area instead of hugging the top-leading corner.
         .overlay {
             if store.themes.isEmpty && store.themeProposals.isEmpty {
-                ContentUnavailableView {
-                    Label("No themes yet", systemImage: "square.stack.3d.up")
-                } description: {
-                    Text("Themes are the broad initiatives you want your time grouped "
-                        + "under — \"YC Startup School\", \"Travel\". Make the ones you "
-                        + "care about; Shifu files your time into them, and suggests "
-                        + "others it notices below.")
-                } actions: {
+                SenseiEmptyState(
+                    "No themes yet",
+                    message: "Themes are the broad initiatives you want your time "
+                        + "grouped under — \"YC Startup School\", \"Travel\". Name the "
+                        + "ones you care about; I will file your hours into them, and "
+                        + "suggest others I notice."
+                ) {
                     Button("New Theme") { isCreating = true }
+                        .buttonStyle(.borderedProminent)
                 }
             }
         }
@@ -152,14 +154,9 @@ private struct ThemeCardView: View {
             }
             .font(.caption)
         }
-        .padding(12)
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.quaternary, lineWidth: 1)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .dojoCard(padding: 12)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -198,8 +195,10 @@ private struct ProposalCardView: View {
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    Dojo.accent.opacity(0.45),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         }
     }
 }

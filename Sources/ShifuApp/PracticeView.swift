@@ -1,12 +1,11 @@
 import ShifuCore
 import SwiftUI
 
-/// *Cards* tab home (design.md §5.2): review-activity heatmap, deck picker,
+/// The *Practice* page (design.md §5.2): review-activity heatmap, deck picker,
 /// and an urgency overview of every card. Inbox triage and the review
-/// session are separate screens pushed from here.
-struct CardsTabView: View {
+/// session are separate screens pushed from here into the page's stack.
+struct PracticeView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var path: [Screen] = []
     @State private var editingCard: Note?
 
     enum Screen: Hashable {
@@ -15,21 +14,21 @@ struct CardsTabView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    statsRow
-                    activitySection
-                    deckRow
-                    cardsSection
-                }
-                .padding(20)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                statsRow
+                activitySection
+                deckRow
+                cardsSection
             }
-            .navigationDestination(for: Screen.self) { screen in
-                switch screen {
-                case .inbox: InboxView()
-                case .review: ReviewSessionView()
-                }
+            .padding(20)
+        }
+        .background(Dojo.paper)
+        .navigationTitle("Practice")
+        .navigationDestination(for: Screen.self) { screen in
+            switch screen {
+            case .inbox: InboxView()
+            case .review: ReviewSessionView()
             }
         }
         .onAppear { store.refresh() }
@@ -75,14 +74,10 @@ struct CardsTabView: View {
             }
             .frame(maxWidth: 320)
             Spacer()
-            Button {
-                path.append(.inbox)
-            } label: {
+            NavigationLink(value: Screen.inbox) {
                 Label("Inbox · \(store.inboxNotes.count)", systemImage: "tray")
             }
-            Button {
-                path.append(.review)
-            } label: {
+            NavigationLink(value: Screen.review) {
                 Label("Review · \(store.deckDueNotes.count) due", systemImage: "play.fill")
             }
             .buttonStyle(.borderedProminent)
@@ -122,10 +117,10 @@ struct CardsTabView: View {
     @ViewBuilder private var emptyDeckView: some View {
         let candidates = store.inboxNotes.filter { $0.questionAnswer != nil }
         if candidates.isEmpty {
-            ContentUnavailableView(
-                "No cards yet", systemImage: "rectangle.stack",
-                description: Text("Keep inbox candidates with a Q/A to build your deck.")
-            )
+            SenseiEmptyState(
+                "No cards yet",
+                message: "Keep inbox candidates with a question and answer, "
+                    + "and your deck will grow on its own.")
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text("No cards yet — keep a recent candidate to start your deck:")
@@ -139,8 +134,8 @@ struct CardsTabView: View {
                     Divider()
                 }
                 if store.inboxNotes.count > Self.maxStarterCandidates {
-                    Button("See all \(store.inboxNotes.count) in the inbox") {
-                        path.append(.inbox)
+                    NavigationLink(value: Screen.inbox) {
+                        Text("See all \(store.inboxNotes.count) in the inbox")
                     }
                     .buttonStyle(.link)
                 }
@@ -164,25 +159,7 @@ struct CardsTabView: View {
     }
 }
 
-/// Hero-number tile: big value, muted label underneath.
-private struct StatTile: View {
-    let value: Int
-    let label: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("\(value)")
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
+// StatTile lives in Dojo.swift — the Today page shares it.
 
 /// Where a card sits in the review cycle. Status colors always ship with a
 /// text label (legend, list rows) — never color alone.
@@ -220,11 +197,11 @@ enum CardStatus: CaseIterable {
 
     var color: Color {
         switch self {
-        case .overdue: return .red
-        case .dueToday: return .orange
-        case .newCard: return .blue
-        case .soon: return .yellow
-        case .later: return .green
+        case .overdue: return Dojo.statusRed
+        case .dueToday: return Dojo.statusAmber
+        case .newCard: return Dojo.blue
+        case .soon: return Dojo.teal
+        case .later: return Dojo.statusGreen
         }
     }
 
@@ -310,9 +287,9 @@ private struct CardListRow: View {
     }
 }
 
-/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One green
-/// hue, light→dark with count (sequential ramp); zero-days sit on the
-/// recessive surface. Tooltips carry the exact numbers.
+/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One hue —
+/// the accent terracotta — light→dark with count (sequential ramp); zero-days
+/// sit on the recessive surface. Tooltips carry the exact numbers.
 struct ReviewHeatmapView: View {
     let counts: [Date: Int]
     var now: Date = Date()
@@ -431,10 +408,10 @@ struct ReviewHeatmapView: View {
     static func rampColor(_ count: Int) -> Color {
         switch count {
         case 0: return Color.primary.opacity(0.06)
-        case 1...2: return .green.opacity(0.30)
-        case 3...5: return .green.opacity(0.55)
-        case 6...9: return .green.opacity(0.80)
-        default: return .green
+        case 1...2: return Dojo.accent.opacity(0.30)
+        case 3...5: return Dojo.accent.opacity(0.55)
+        case 6...9: return Dojo.accent.opacity(0.80)
+        default: return Dojo.accent
         }
     }
 }

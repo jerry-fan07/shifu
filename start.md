@@ -4,7 +4,7 @@ Shifu is two installable pieces, rebuilt by two scripts:
 
 | What you changed | Rebuild with |
 |---|---|
-| `ShifuApp` (menu bar UI, dashboard, `LedgerStore`) | `./scripts/install-app.sh` |
+| `ShifuApp` (desktop app, menu bar item, `LedgerStore`) | `./scripts/install-app.sh` |
 | `shifud`, `shifu-analyzer`, `shifu` CLI, or `ShifuCore` logic they use | `./scripts/install-daemon.sh` |
 
 `ShifuCore` is linked into everything — if you changed it, rebuild whichever
@@ -19,18 +19,19 @@ make check
 Builds all targets, runs unit tests, SwiftLint, and the privacy invariants.
 Must be green before installing (and before every commit).
 
-## 2. Rebuild the menu bar app
+## 2. Rebuild the app
 
 ```sh
-# Quit the running app first: click the eye icon in the menu bar → Quit
+# Quit the running app first: menu bar sensei → Quit (or ⌘Q in the app)
 ./scripts/install-app.sh
 open /Applications/Shifu.app        # or ~/Applications/Shifu.app if /Applications isn't writable
 ```
 
 The script builds `ShifuApp` in release mode, bundles it as `Shifu.app`
 (with GRDB.framework and the icon), signs it, and installs it. The script's
-last lines print the exact path it installed to. The app is menu-bar only
-(no Dock icon) — look for the eye.
+last lines print the exact path it installed to. The app is a regular
+desktop app (Dock icon and all) with a menu bar companion — look for the
+martial-arts figure.
 
 ## 3. Rebuild the daemon, analyzer, and CLI
 

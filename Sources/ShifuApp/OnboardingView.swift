@@ -2,8 +2,9 @@ import AppKit
 import ShifuCore
 import SwiftUI
 
-/// First-run onboarding (design.md §7): four screens — what's captured,
-/// permissions, exclusions, analysis backend. Local-only is the default.
+/// First-run onboarding (design.md §7): the sensei introduces himself, then
+/// four screens — what's captured, permissions, exclusions, analysis backend.
+/// Local-only is the default. Rendered as one card centered on the paper.
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
     @State private var page = 0
@@ -11,7 +12,8 @@ struct OnboardingView: View {
     @State private var apiKey = ""
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 18) {
+            SenseiFigure(size: 92, mood: page == 3 ? .proud : .serene)
             Group {
                 switch page {
                 case 0: whatPage
@@ -22,37 +24,55 @@ struct OnboardingView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            HStack {
-                if page > 0 { Button("Back") { page -= 1 } }
-                Spacer()
-                Text("\(page + 1) / 4").font(.caption).foregroundStyle(.tertiary)
-                Spacer()
-                if page < 3 {
-                    Button("Next") { page += 1 }.buttonStyle(.borderedProminent)
-                } else {
-                    Button("Start watching") { finish() }.buttonStyle(.borderedProminent)
+            footer
+        }
+        .padding(26)
+        .frame(width: 560, height: 540)
+        .dojoCard(padding: 0)
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Dojo.paper)
+    }
+
+    private var footer: some View {
+        HStack {
+            if page > 0 { Button("Back") { page -= 1 } }
+            Spacer()
+            HStack(spacing: 5) {
+                ForEach(0..<4, id: \.self) { dot in
+                    Circle()
+                        .fill(dot == page ? Dojo.accent : Dojo.well)
+                        .frame(width: 6, height: 6)
                 }
             }
+            Spacer()
+            if page < 3 {
+                Button("Next") { page += 1 }.buttonStyle(.borderedProminent)
+            } else {
+                Button("Begin the practice") { finish() }.buttonStyle(.borderedProminent)
+            }
         }
-        .padding(28)
-        .frame(width: 520, height: 420)
     }
 
     private var whatPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Shifu watches you work").font(.title2).bold()
+            Text("I am Shifu. I watch you work.").font(.title2).bold()
+            // Literal strings, not concatenations: Text only parses the
+            // **markdown** through its LocalizedStringKey initializer.
             Text("""
-            Shifu captures **text and metadata** about what's on your screen — app, \
-            window title, visible text — and turns it into a time ledger, a knowledge \
-            vault, and automation suggestions.
-
-            Raw captured text is deleted after 14 days; the distilled work notes in \
-            your vault persist beyond that window.
-
-            What it never does:
-            • never records keystrokes
-            • never saves screenshots — pixels live in memory only for OCR
-            • never sends raw captures anywhere — analysis sends only redacted \
+            Not to judge — to remember. I capture **text and metadata** about \
+            what's on your screen — app, window title, visible text — and turn it \
+            into a time ledger, a knowledge vault, and automation suggestions.
+            """)
+            Text("""
+            Raw captured text is deleted after 14 days; the distilled work notes \
+            in your vault persist beyond that window.
+            """)
+            Text("""
+            What I never do:
+            • never record keystrokes
+            • never save screenshots — pixels live in memory only for OCR
+            • never send raw captures anywhere — analysis sends only redacted \
             text samples to DeepSeek, and only after you add an API key
             """)
         }
@@ -60,7 +80,7 @@ struct OnboardingView: View {
 
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Permissions").font(.title2).bold()
+            Text("Two permissions").font(.title2).bold()
             Text("""
             The capture daemon (`shifud`, installed at ~/Shifu/bin) needs two \
             permissions, granted in System Settings → Privacy & Security:
@@ -85,7 +105,7 @@ struct OnboardingView: View {
 
     private var exclusionsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Excluded by default").font(.title2).bold()
+            Text("What stays unseen").font(.title2).bold()
             Text("""
             Exclusions are enforced **before** capture — excluded content is never \
             read, only opaque "private time" duration is counted:
@@ -95,15 +115,13 @@ struct OnboardingView: View {
             • private/incognito browser windows (always, not configurable)
             • credit cards, SSNs, and secret-shaped strings are redacted from all \
             text before it ever touches disk
-
-            Add your own exclusions with the `exclusions` table (UI arrives later).
             """)
         }
     }
 
     private var backendPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Analysis backend").font(.title2).bold()
+            Text("A mentor may consult").font(.title2).bold()
             Text("Task naming, ambiguous-time classification, and knowledge "
                 + "extraction use DeepSeek. Without an API key those stages are "
                 + "skipped and Shifu runs on rules alone.")

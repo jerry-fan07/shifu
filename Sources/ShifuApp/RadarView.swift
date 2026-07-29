@@ -2,29 +2,31 @@ import AppKit
 import ShifuCore
 import SwiftUI
 
-/// *Radar* tab (design.md §6.2): ranked automation suggestions with
+/// The *Radar* page (design.md §6.2): ranked automation suggestions with
 /// Copy / Snooze / Dismiss actions. Only described, gated rows ever reach here
 /// (`Radar.active`) — a mined row on its own is evidence, not advice.
-struct RadarTabView: View {
+struct RadarView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var copiedID: Int64?
 
     var body: some View {
         Group {
             if store.suggestions.isEmpty {
-                ContentUnavailableView(
-                    "Nothing worth automating yet", systemImage: "dot.radiowaves.left.and.right",
-                    description: Text("Shifu reviews your recurring tasks weekly and only "
-                        + "suggests automating one when it would plainly pay for itself.")
-                )
+                SenseiEmptyState(
+                    "Nothing worth automating yet",
+                    message: "I review your recurring chores weekly, and point "
+                        + "only when automating one would plainly pay for itself.")
             } else {
                 List(store.suggestions, id: \.patternKey) { suggestion in
                     row(suggestion)
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
-        .padding(20)
+        .background(Dojo.paper)
+        .navigationTitle("Radar")
+        .onAppear { store.refresh() }
     }
 
     @ViewBuilder

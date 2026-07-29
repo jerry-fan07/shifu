@@ -16,7 +16,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 | `shifud` | executable | Capture daemon. LaunchAgent, headless, runs for weeks. | **forbidden** |
 | `shifu-analyzer` | executable | Batch analysis worker. Spawned hourly by `shifud`, or on demand. | only binary allowed |
 | `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `forget`, `vault`, `encrypt`. | never |
-| `ShifuApp` | executable | SwiftUI menu bar app + dashboard. | never |
+| `ShifuApp` | executable | SwiftUI desktop app + menu bar item. | never |
 
 **The one architectural fact to internalize: there is no IPC.** No sockets, no
 XPC, no message bus. The processes coordinate through shared state on disk:
@@ -208,7 +208,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
 | Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
-| The Time tab's modes, span and lens | [`ShifuApp/DashboardView.swift`](Sources/ShifuApp/DashboardView.swift) — `TimeTabView` |
+| The Time page's modes, span and lens | [`ShifuApp/TimeView.swift`](Sources/ShifuApp/TimeView.swift) — `TimeView` |
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
@@ -230,7 +230,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
-| Menu bar + dashboard | [`ShifuApp/`](Sources/ShifuApp/) — read model is `LedgerStore.swift` |
+| The main window's sidebar, pages, and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
+| The app's look — colors, cards, wisdom, the sensei | [`ShifuApp/Dojo.swift`](Sources/ShifuApp/Dojo.swift), [`ShifuApp/SenseiView.swift`](Sources/ShifuApp/SenseiView.swift) |
 | CLI commands | [`shifu-cli/main.swift`](Sources/shifu-cli/main.swift) |
 | The analyzer's stage order | [`shifu-analyzer/main.swift`](Sources/shifu-analyzer/main.swift) |
 
@@ -432,7 +433,8 @@ valid.
 
 **Add a category.** Add the case to `Category` in `Models/Activity.swift`
 (raw value = the string stored in SQLite), add seeds to `RulesClassifier`, and
-add a color in `TimeTabView.categoryColors`. `AmbiguousClassifier.prompt`
+add a color in `TimePalette.categoryColors` (pick a `Dojo.chartSlots` hue).
+`AmbiguousClassifier.prompt`
 derives its category list from `Category.allCases`, so the LLM tier updates
 itself — except `privateTime` and `unclassified`, which it filters out.
 

@@ -1,101 +1,25 @@
 import ShifuCore
 import SwiftUI
 
-/// *Vault* tab (design.md §5.3), two modes behind a segmented toggle:
-/// *Themes* — the broad initiatives your time clusters into — and the
-/// *Task log* — today's compiled work log and recent tasks.
-/// Rows navigate to full pages (ThemeDetailView / TaskDetailView).
-struct VaultTabView: View {
-    enum Mode: String, CaseIterable {
-        case themes = "Themes"
-        case log = "Task log"
-    }
-
+/// The *Task log* page (design.md §5.3): today's compiled work log and the
+/// recent-task roster, with the filter bar pinned above the list so it stays
+/// put while the log scrolls. Rows navigate to full task pages; vault search
+/// lives on the Scrolls page, themes on their own page.
+struct TaskLogView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var mode: Mode = .themes
-    @State private var selectedHit: VaultSearch.Hit?
-
-    private var isSearching: Bool {
-        !store.vaultQuery.trimmingCharacters(in: .whitespaces).isEmpty
-    }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-                .padding(.top, 10)
-                switch mode {
-                case .themes: ThemeListView()
-                case .log: logPage
-                }
-            }
-            .navigationDestination(for: Int64.self) { taskID in
-                TaskDetailView(taskID: taskID)
-            }
-            .navigationDestination(for: ThemeRoute.self) { route in
-                ThemeDetailView(themeID: route.id)
-            }
-            .navigationDestination(for: SuggestionsRoute.self) { _ in
-                MergeReviewView()
-            }
-        }
-    }
-
-    /// The filter bar is pinned above the list rather than living in the
-    /// Tasks section, so it stays put while the log scrolls.
-    private var logPage: some View {
         VStack(spacing: 0) {
             filterBar
             Divider()
             list
         }
+        .background(Dojo.paper)
+        .navigationTitle("Task log")
     }
 
     private var list: some View {
         List {
-            Section {
-                TextField("Search the vault", text: $store.vaultQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: store.vaultQuery) { _, _ in store.searchVault() }
-            }
-
-            if isSearching {
-                Section("Results") {
-                    if store.vaultHits.isEmpty {
-                        Text("No matches.")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(store.vaultHits) { hit in
-                        Button {
-                            selectedHit = hit
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(hit.title).bold()
-                                    Spacer()
-                                    if let captured = hit.captured {
-                                        Text(captured, style: .date)
-                                            .font(.caption)
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                Text(hit.snippet)
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
-
             Section("Today") {
                 if store.todayLogs.isEmpty {
                     Text("No work logged yet today — the analyzer compiles logs hourly.")
@@ -163,10 +87,8 @@ struct VaultTabView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .onAppear { store.refresh() }
-        .sheet(item: $selectedHit) { hit in
-            NoteReaderView(hit: hit)
-        }
     }
 
     /// Range · minimum · sort · theme. Minimum and theme also scope the
@@ -355,5 +277,5 @@ private struct TaskRowView: View {
     }
 }
 
-// The *Cards* tab (home screen, inbox, review session) lives in
-// CardsHomeView.swift / ReviewView.swift / CardEditSheet.swift.
+// The *Practice* page (home screen, inbox, review session) lives in
+// PracticeView.swift / ReviewView.swift / CardEditSheet.swift.

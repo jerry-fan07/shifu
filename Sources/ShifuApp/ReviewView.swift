@@ -35,6 +35,8 @@ struct ReviewSessionView: View {
             if let note = currentNote, let qa = note.questionAnswer {
                 ScrollView {
                     cardContent(note: note, question: qa.question, answer: qa.answer)
+                        .dojoCard(padding: 0)
+                        .padding(16)
                 }
                 Divider()
                 controls(note: note)
@@ -42,6 +44,7 @@ struct ReviewSessionView: View {
                 doneView
             }
         }
+        .background(Dojo.paper)
         .frame(minWidth: 460, minHeight: 400)
         .onAppear {
             store.refresh()
@@ -144,20 +147,20 @@ struct ReviewSessionView: View {
     }
 
     private var doneView: some View {
-        VStack(spacing: 12) {
-            ContentUnavailableView(
-                reviewedCount > 0 ? "Done — \(reviewedCount) reviewed" : "Nothing due",
-                systemImage: "checkmark.circle",
-                description: Text(store.deckDueNotes.isEmpty
-                    ? "Come back when cards are due."
-                    : "More cards became due while you reviewed.")
-            )
+        SenseiEmptyState(
+            reviewedCount > 0 ? "Done — \(reviewedCount) reviewed" : "Nothing due",
+            message: store.deckDueNotes.isEmpty
+                ? (reviewedCount > 0
+                    ? "Enough for today. Water the mind, then rest."
+                    : "The deck rests. Return when cards are due.")
+                : "More cards became due while you reviewed.",
+            mood: reviewedCount > 0 ? .proud : .serene
+        ) {
             if !store.deckDueNotes.isEmpty {
                 Button("Review \(store.deckDueNotes.count) more") { startSession() }
                     .buttonStyle(.borderedProminent)
             }
         }
-        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Session actions
@@ -224,10 +227,10 @@ struct InboxView: View {
     var body: some View {
         Group {
             if store.inboxNotes.isEmpty {
-                ContentUnavailableView(
-                    "Inbox empty", systemImage: "tray",
-                    description: Text("New knowledge candidates appear here after analysis.")
-                )
+                SenseiEmptyState(
+                    "The inbox is swept",
+                    message: "New knowledge candidates appear here after each "
+                        + "analysis pass.")
             } else {
                 List(store.inboxNotes) { note in
                     InboxRowView(
@@ -237,8 +240,10 @@ struct InboxView: View {
                         onEdit: { editingCard = note })
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
+        .background(Dojo.paper)
         .navigationTitle("Inbox")
         .navigationSubtitle("K keeps · D discards the first candidate")
         .onAppear { store.refresh() }
