@@ -30,6 +30,9 @@ struct TimeBreakdownView: View {
                 description: Text("The analyzer runs hourly. Totals appear once "
                     + "shifud has been watching for a while.")
             )
+            // Greedy like the ScrollView it stands in for, so the tab's
+            // controls stay pinned to the top instead of centering with it.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
