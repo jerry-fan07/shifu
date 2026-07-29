@@ -35,6 +35,35 @@ guard force || onACPower() else {
 
 try ShifuPaths.ensureHomeExists()
 let database = try ShifuDatabase.open(at: ShifuPaths.database)
+
+// `--build-deck <key>`: the app asking for one deck to be built (§5.2). Only
+// this binary may reach the network, so a deck build is a launch of it. This
+// runs before the ledger rebuild and exits — the request is interactive, the
+// user is watching a "Building…" row, and the hourly rebuild would both delay
+// it and give the concurrent hourly run something to fight over.
+if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.count {
+    let deckKey = args[flagIndex + 1]
+    guard let deckBackend = try DeepSeekBackend.ifConfigured(database: database) else {
+        // The UI gates this path on a configured backend, so reaching here
+        // means the key was removed mid-flight. The deck stays `pending` and
+        // the drain picks it up once a key exists — never a failure.
+        print("no DeepSeek key — deck \(deckKey) stays pending")
+        exit(0)
+    }
+    let deckVault = VaultStore(database: database)
+    do {
+        if let cards = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: deckVault, backend: deckBackend) {
+            print("deck \(deckKey): \(cards) cards")
+        } else {
+            print("deck \(deckKey): already building elsewhere")
+        }
+    } catch {
+        print("deck build failed (retries on the next drain): \(error)")
+    }
+    exit(0)
+}
+
 let classifier = try RulesClassifier(database: database)
 
 let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -161,6 +190,17 @@ if let backend {
         }
     } catch {
         print("extraction failed (blocks stay unprocessed next run): \(error)")
+    }
+
+    // Decks the app asked for but never got built — its `--build-deck` launch
+    // hit a machine with no key, or died mid-build (§5.2). Costs one indexed
+    // query when there is nothing waiting.
+    do {
+        let built = try await DeckBuilder.drainPending(
+            database: database, vault: vault, backend: backend)
+        if built > 0 { print("decks: \(built) built") }
+    } catch {
+        print("deck build failed (retries next run): \(error)")
     }
 }
 
