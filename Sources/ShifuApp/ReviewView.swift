@@ -33,10 +33,19 @@ struct ReviewSessionView: View {
             header
             Divider()
             if let note = currentNote, let qa = note.questionAnswer {
-                ScrollView {
-                    cardContent(note: note, question: qa.question, answer: qa.answer)
-                        .dojoCard(padding: 0)
+                // Centred in whatever room is left, but still scrollable: a card
+                // can carry a code block taller than the window (§5.2).
+                GeometryReader { proxy in
+                    ScrollView {
+                        VStack {
+                            Spacer(minLength: 0)
+                            cardContent(note: note, question: qa.question, answer: qa.answer)
+                                .dojoCard(padding: 0)
+                            Spacer(minLength: 0)
+                        }
                         .padding(16)
+                        .frame(minHeight: proxy.size.height)
+                    }
                 }
                 Divider()
                 controls(note: note)
@@ -62,19 +71,33 @@ struct ReviewSessionView: View {
         }
     }
 
+    /// Deck, counts, and the session's own progress bar — how far along the
+    /// climb you are, which a bare "n left" never quite says.
     private var header: some View {
-        HStack {
-            Text("Deck: \(store.reviewDeck.label)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("\(reviewedCount) done · \(remainingCount) left")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
+        VStack(spacing: 7) {
+            HStack {
+                Eyebrow(store.reviewDeck.label)
+                Spacer()
+                Text("\(reviewedCount) done · \(remainingCount) left")
+                    .font(Dojo.label(10))
+                    .foregroundStyle(.tertiary)
+            }
+            GeometryReader { proxy in
+                let total = max(1, reviewedCount + remainingCount)
+                Capsule()
+                    .fill(Dojo.well)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(Dojo.accent)
+                            .frame(
+                                width: proxy.size.width
+                                    * CGFloat(reviewedCount) / CGFloat(total))
+                    }
+            }
+            .frame(height: 4)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
     }
 
     private func cardContent(note: Note, question: String, answer: String) -> some View {

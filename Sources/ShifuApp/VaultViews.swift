@@ -9,18 +9,20 @@ struct TaskLogView: View {
     @EnvironmentObject private var store: LedgerStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            filterBar
-            Divider()
-            list
+        PageScaffold(destination: .tasks) {
+            Eyebrow(store.taskCountLabel)
+        } content: {
+            VStack(spacing: 0) {
+                filterBar
+                Divider()
+                list
+            }
         }
-        .background(Dojo.paper)
-        .navigationTitle("Task log")
     }
 
     private var list: some View {
         List {
-            Section("Today") {
+            Section {
                 if store.todayLogs.isEmpty {
                     Text("No work logged yet today — the analyzer compiles logs hourly.")
                         .foregroundStyle(.secondary)
@@ -48,9 +50,11 @@ struct TaskLogView: View {
                     }
                     .padding(.vertical, 2)
                 }
+            } header: {
+                Eyebrow("today")
             }
 
-            Section(store.taskCountLabel.isEmpty ? "Tasks" : "Tasks · \(store.taskCountLabel)") {
+            Section {
                 // The strongest few merge suggestions inline, above the tasks
                 // they concern (vault-features.md §5.2). The certain ones were
                 // already merged by the analyzer; the rest of the queue is one
@@ -84,6 +88,8 @@ struct TaskLogView: View {
                 ForEach(store.filteredTasks, id: \.rowID) { overview in
                     TaskRowView(overview: overview)
                 }
+            } header: {
+                Eyebrow("tasks")
             }
         }
         .listStyle(.inset)
@@ -99,9 +105,7 @@ struct TaskLogView: View {
     /// where an unlabelled bar would read as filtering all of it.
     private var filterBar: some View {
         HStack(spacing: 8) {
-            Text("Tasks")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Eyebrow("filter")
 
             FilterMenu(
                 options: TaskRange.allCases.map { ($0.rawValue, $0) },
@@ -133,8 +137,8 @@ struct TaskLogView: View {
             Spacer()
         }
         .font(.caption)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 10)
         .onChange(of: store.taskFilter) { _, _ in store.loadTasksSoon() }
     }
 }

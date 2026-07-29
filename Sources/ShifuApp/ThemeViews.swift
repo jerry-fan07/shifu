@@ -22,20 +22,13 @@ struct ThemeListView: View {
     private let columns = [GridItem(.adaptive(minimum: 220, maximum: 340), spacing: 12)]
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Your themes")
-                    .font(.headline)
-                Spacer()
-                Button("New Theme", systemImage: "plus") { isCreating = true }
-                    .help("Themes are yours to create — Shifu only files time into them")
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
+        PageScaffold(destination: .themes) {
+            Button("New Theme", systemImage: "plus") { isCreating = true }
+                .controlSize(.small)
+                .help("Themes are yours to create — Shifu only files time into them")
+        } content: {
             grid
         }
-        .background(Dojo.paper)
-        .navigationTitle("Themes")
         .sheet(isPresented: $isCreating) { ThemeEditSheet(theme: nil) }
         .sheet(item: $editing) { ThemeEditSheet(theme: $0) }
         .onAppear { store.refresh() }
@@ -48,9 +41,9 @@ struct ThemeListView: View {
                     themeCell(theme)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
             if !store.themeProposals.isEmpty {
-                Divider()
                 suggested
             }
         }
@@ -100,26 +93,29 @@ struct ThemeListView: View {
     /// grid, visually distinct, and never counted as themes: this is the
     /// model's opinion of what the user is up to, waiting for a yes.
     private var suggested: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Suggested themes · \(store.themeProposals.count)")
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(
+                "Noticed · \(store.themeProposals.count)", trailing: "not themes yet")
+            HStack(alignment: .top) {
+                Text("Initiatives Shifu noticed in your time. Adding one creates the "
+                    + "theme and files the blocks behind it; nothing is added on its own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 460, alignment: .leading)
                 Spacer()
                 Button("Dismiss all", action: store.dismissAllThemeProposals)
                     .buttonStyle(.link)
+                    .font(.caption)
                     .help("Clears these for good — a dismissed suggestion never comes back")
             }
-            Text("Initiatives Shifu noticed in your time. Adding one creates the theme "
-                + "and files the blocks behind it; nothing is added on its own.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach(store.themeProposals) { proposal in
                     ProposalCardView(proposal: proposal)
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
     }
 }
 

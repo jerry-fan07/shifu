@@ -29,41 +29,48 @@ struct TimeView: View {
             activities, lens: lens, from: from, to: to,
             limit: lens == .category ? nil : Self.maxGroups)
 
-        return VStack(alignment: .leading, spacing: 16) {
-            switch mode {
-            case .summary:
-                TimeBreakdownView(
-                    slices: slices, lens: lens,
-                    previousMs: previousTotalMs,
-                    periodLabel: span == .day ? "today" : "this week",
-                    comparisonLabel: span == .day ? "yesterday" : "last week")
-            case .timeline:
-                timeline(activities: activities, slices: slices)
+        return PageScaffold(destination: .time) {
+            controls
+        } content: {
+            VStack(alignment: .leading, spacing: 16) {
+                switch mode {
+                case .summary:
+                    TimeBreakdownView(
+                        slices: slices, lens: lens,
+                        previousMs: previousTotalMs,
+                        periodLabel: span == .day ? "today" : "this week",
+                        comparisonLabel: span == .day ? "yesterday" : "last week")
+                case .timeline:
+                    timeline(activities: activities, slices: slices)
+                }
             }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
         }
-        .padding(20)
         .frame(minWidth: 640, minHeight: 500)
-        .background(Dojo.paper)
-        .navigationTitle("Time")
-        .toolbar {
-            ToolbarItemGroup {
-                Picker("Mode", selection: $mode) {
-                    ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .help("Where the time went, or when it happened")
-                Picker("Span", selection: $span) {
-                    ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                Picker("Lens", selection: $lens) {
-                    ForEach(TimeLens.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .help("What the time is grouped by")
-            }
-        }
         .onAppear { store.refresh() }
+    }
+
+    /// Mode, span, and lens — in the page header rather than the window
+    /// toolbar, so the page carries exactly one bar of chrome.
+    private var controls: some View {
+        HStack(spacing: 8) {
+            Picker("Mode", selection: $mode) {
+                ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .help("Where the time went, or when it happened")
+            Picker("Span", selection: $span) {
+                ForEach(Span.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            Picker("Lens", selection: $lens) {
+                ForEach(TimeLens.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .help("What the time is grouped by")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -76,10 +83,8 @@ struct TimeView: View {
             TimeLegendStrip(slices: slices, lens: lens)
         }
 
-        Divider()
-
-        Text(span == .day ? "Blocks today" : "Blocks this week")
-            .font(.headline)
+        SectionHeading(span == .day ? "Blocks today" : "Blocks this week")
+            .padding(.top, 4)
         blockList(activities)
     }
 

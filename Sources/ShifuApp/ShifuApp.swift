@@ -24,9 +24,7 @@ struct ShifuApp: App {
         }
         .defaultSize(width: 1080, height: 700)
 
-        MenuBarExtra(
-            "Shifu", systemImage: store.isPaused ? "zzz" : "figure.martial.arts"
-        ) {
+        MenuBarExtra {
             Text(store.todaySummaryLine)
                 .onAppear {
                     store.refresh()       // menu open = refresh
@@ -78,6 +76,13 @@ struct ShifuApp: App {
             Divider()
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
+        } label: {
+            if let mark = MenuBarMark.image(paused: store.isPaused) {
+                Image(nsImage: mark)
+                    .accessibilityLabel(store.isPaused ? "Shifu, resting" : "Shifu, watching")
+            } else {
+                Image(systemName: store.isPaused ? "zzz" : "mountain.2.fill")
+            }
         }
         .menuBarExtraStyle(.menu)
 

@@ -1,9 +1,9 @@
 import ShifuCore
 import SwiftUI
 
-/// The main window (design.md §7): a full desktop app — sidebar of places on
-/// the left, one page on the right — wrapped in the Dojo look. Shows
-/// onboarding instead until the first-run flow completes.
+/// The main window (design.md §7): a full desktop app — the trail on the left,
+/// one place on the right — wrapped in the Dojo look. Shows onboarding instead
+/// until the first-run flow completes.
 struct MainWindow: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
     @State private var destination: Destination = .today
@@ -12,11 +12,11 @@ struct MainWindow: View {
         if onboarded {
             NavigationSplitView {
                 SidebarView(selection: $destination)
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 225, max: 280)
+                    .navigationSplitViewColumnWidth(min: 208, ideal: 232, max: 290)
             } detail: {
                 destination.page
             }
-            .frame(minWidth: 900, minHeight: 600)
+            .frame(minWidth: 940, minHeight: 620)
             .tint(Dojo.accent)
         } else {
             OnboardingView()
@@ -25,9 +25,9 @@ struct MainWindow: View {
     }
 }
 
-/// The places the sidebar can take you. Grouped the way the mentor thinks
-/// about them: the path (where time goes), the mind (what it taught you),
-/// the watch (what could be automated away).
+/// The places the trail can take you. Grouped the way the mentor thinks about
+/// them: the path (where time goes), the mind (what it taught you), the watch
+/// (what could be handed to a machine).
 enum Destination: String, CaseIterable, Identifiable {
     case today, time, themes, tasks, practice, scrolls, radar
 
@@ -47,13 +47,37 @@ enum Destination: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .today: return "sun.horizon"
+        case .today: return "mountain.2.fill"
         case .time: return "hourglass"
-        case .themes: return "square.stack.3d.up"
+        case .themes: return "square.stack.3d.up.fill"
         case .tasks: return "checklist"
-        case .practice: return "rectangle.stack"
-        case .scrolls: return "scroll"
+        case .practice: return "rectangle.stack.fill"
+        case .scrolls: return "scroll.fill"
         case .radar: return "dot.radiowaves.left.and.right"
+        }
+    }
+
+    /// The band this place belongs to — the eyebrow every page wears, and the
+    /// heading the sidebar groups it under.
+    var region: String {
+        switch self {
+        case .today: return "Basecamp"
+        case .time, .themes, .tasks: return "The path"
+        case .practice, .scrolls: return "The mind"
+        case .radar: return "The watch"
+        }
+    }
+
+    /// One line on what the place is for, under its title.
+    var blurb: String {
+        switch self {
+        case .today: return "How the day is going."
+        case .time: return "Where the hours went, and when."
+        case .themes: return "The few long arcs your work belongs to."
+        case .tasks: return "Every task the ledger has named."
+        case .practice: return "What you learned, brought back before it fades."
+        case .scrolls: return "The vault, searched."
+        case .radar: return "Work a machine could be doing instead."
         }
     }
 
@@ -94,52 +118,83 @@ struct DetailStack<Content: View>: View {
     }
 }
 
-/// The sidebar: the sensei's mark up top, the places, and a status card that
-/// keeps capture state and Work Mode one glance away. Rows are hand-drawn
-/// rather than a `List(selection:)` so the selected row wears the accent —
-/// the system sidebar paints selection in the user's OS accent color, which
-/// fights the warm palette everywhere it isn't orange.
+/// The sidebar: Shifu's mark up top, the places strung along a dashed trail,
+/// the daemon's controls, and the mountain he lives on holding up the bottom.
+///
+/// Rows are hand-drawn rather than a `List(selection:)` so the selected row
+/// wears the accent — the system sidebar paints selection in the user's OS
+/// accent color, which fights the warm palette everywhere it isn't orange.
 struct SidebarView: View {
     @EnvironmentObject private var store: LedgerStore
     @Binding var selection: Destination
+
+    /// Where the station discs are centred, and so where the trail runs.
+    private static let trailX: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
             header
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     row(.today)
-                    sectionLabel("Path")
-                    row(.time)
-                    row(.themes)
-                    row(.tasks)
-                    sectionLabel("Mind")
-                    row(.practice)
-                    row(.scrolls)
-                    sectionLabel("Watch")
-                    row(.radar)
+                    ForEach(Destination.groups, id: \.name) { group in
+                        sectionLabel(group.name)
+                        ForEach(group.places) { place in
+                            row(place)
+                        }
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
+                // Behind, not in front: the trail is drawn to the rows' own
+                // height, so it starts and stops at the first and last station.
+                .background(alignment: .top) { trail }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 12)
             }
             Spacer(minLength: 0)
             StatusFooter()
+            footerScene
         }
+        .background(Dojo.sidebar)
+    }
+
+    /// The dashed line the stations sit on. Drawn behind the rows and inset at
+    /// both ends so it reads as a route, not a rule.
+    private var trail: some View {
+        GeometryReader { proxy in
+            Path { path in
+                path.move(to: CGPoint(x: Self.trailX, y: 14))
+                path.addLine(to: CGPoint(x: Self.trailX, y: proxy.size.height - 14))
+            }
+            .stroke(
+                Dojo.accent.opacity(0.24),
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 5]))
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var footerScene: some View {
+        MountainScene(detail: .compact)
+            .frame(height: 76)
+            .mask(
+                LinearGradient(
+                    colors: [.clear, .black],
+                    startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.7)))
+            .allowsHitTesting(false)
     }
 
     private func sectionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 8)
-            .padding(.top, 14)
-            .padding(.bottom, 2)
+        Eyebrow(title)
+            .padding(.leading, 42)
+            .padding(.top, 16)
+            .padding(.bottom, 5)
     }
 
     private func row(_ destination: Destination) -> some View {
         SidebarRow(
             destination: destination,
             badge: badge(destination),
+            trailX: Self.trailX,
             selection: $selection)
     }
 
@@ -154,28 +209,39 @@ struct SidebarView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
-            SenseiFigure(size: 30, mood: store.isPaused ? .resting : .serene)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Shifu")
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+        HStack(spacing: 10) {
+            SenseiFigure(size: 40, mood: store.isPaused ? .resting : .serene)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("SHIFU")
+                    .font(Dojo.label(14, .bold))
+                    .tracking(3)
                 Text("your time, mentored")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 2)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
     }
 }
 
-/// One place in the sidebar: icon, title, optional count, and the terracotta
-/// wash when it is the current page.
+extension Destination {
+    /// The sidebar's groups, in trail order, with Today pulled out as its own
+    /// ungrouped first stop.
+    static var groups: [(name: String, places: [Destination])] {
+        [("The path", [.time, .themes, .tasks]),
+         ("The mind", [.practice, .scrolls]),
+         ("The watch", [.radar])]
+    }
+}
+
+/// One station on the trail: a disc on the dashed line, the title, and an
+/// optional count. The current place fills its disc with terracotta.
 private struct SidebarRow: View {
     let destination: Destination
     let badge: Int?
+    let trailX: CGFloat
     @Binding var selection: Destination
     @State private var hovering = false
 
@@ -185,51 +251,69 @@ private struct SidebarRow: View {
         Button {
             selection = destination
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: destination.symbol)
-                    .frame(width: 19)
-                    .foregroundStyle(isSelected ? Dojo.accentText : Color.secondary)
+            HStack(spacing: 10) {
+                station
                 Text(destination.title)
-                Spacer()
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                Spacer(minLength: 4)
                 if let badge, badge > 0 {
                     Text("\(badge)")
-                        .font(.caption2.weight(.semibold))
-                        .monospacedDigit()
+                        .font(Dojo.label(10, .bold))
                         .foregroundStyle(Dojo.accentText)
                         .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
+                        .padding(.vertical, 2)
                         .background(Dojo.accentSoft, in: Capsule())
                 }
             }
-            .font(.system(size: 13, weight: isSelected ? .medium : .regular))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.leading, trailX - 24)
+            .padding(.trailing, 10)
+            .padding(.vertical, 3)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected
-                        ? AnyShapeStyle(Dojo.accentSoft)
-                        : AnyShapeStyle(hovering ? Color.primary.opacity(0.06) : Color.clear)))
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering && !isSelected ? Color.primary.opacity(0.05) : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityLabel(destination.title)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var station: some View {
+        ZStack {
+            Circle()
+                .fill(isSelected ? Dojo.accent : Dojo.sidebar)
+                .frame(width: 26, height: 26)
+            Circle()
+                .strokeBorder(
+                    isSelected ? Color.clear : Dojo.hairline, lineWidth: 1)
+                .frame(width: 26, height: 26)
+            Image(systemName: destination.symbol)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(isSelected ? Color.white : .secondary)
+        }
+        .frame(width: 48, alignment: .center)
     }
 }
 
 /// Capture state, pause controls, Work Mode, and the door to Settings —
-/// the daemon's whole control surface (§6), pinned under the sidebar.
+/// the daemon's whole control surface (§6), pinned under the trail.
 private struct StatusFooter: View {
     @EnvironmentObject private var store: LedgerStore
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
                 Circle()
                     .fill(store.isPaused ? Color.secondary : Dojo.jade)
                     .frame(width: 7, height: 7)
-                Text(store.isPaused ? "Resting" : "Watching")
-                    .font(.caption.weight(.medium))
+                    .shadow(
+                        color: store.isPaused ? .clear : Dojo.jade.opacity(0.8),
+                        radius: 4)
+                Eyebrow(
+                    store.isPaused ? "asleep" : "watching",
+                    color: store.isPaused ? .secondary : Dojo.jade)
                 Spacer()
                 pauseMenu
                 Button {
@@ -253,20 +337,21 @@ private struct StatusFooter: View {
             .controlSize(.mini)
             .help("Glow when you wander off the work path")
         }
-        .padding(10)
+        .padding(11)
         .dojoCard(padding: 0)
-        .padding(10)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
     }
 
     private var pauseMenu: some View {
         Menu {
             if store.isPaused {
-                Button("Resume capture") { store.resume() }
+                Button("Wake Shifu") { store.resume() }
             } else {
-                Button("Pause 1 hour") {
+                Button("Rest 1 hour") {
                     store.pause(until: Date().addingTimeInterval(3_600))
                 }
-                Button("Pause until tomorrow") {
+                Button("Rest until tomorrow") {
                     store.pause(until: Calendar.current.startOfDay(
                         for: Date().addingTimeInterval(86_400)))
                 }
@@ -277,7 +362,7 @@ private struct StatusFooter: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help(store.isPaused ? "Resume capture" : "Pause capture")
+        .help(store.isPaused ? "Wake Shifu" : "Let Shifu rest")
     }
 
     private var workModeBinding: Binding<Bool> {

@@ -49,11 +49,9 @@ struct TimeBreakdownView: View {
     private var headline: some View {
         HStack(alignment: .center, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Tracked \(periodLabel)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Eyebrow("tracked \(periodLabel)")
                 Text(TimeBreakdown.duration(total))
-                    .font(.system(size: 42, weight: .semibold, design: .rounded))
+                    .font(Dojo.display(42))
                     .monospacedDigit()
                 if let delta {
                     Label(delta.text, systemImage: delta.symbol)

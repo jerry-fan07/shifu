@@ -10,22 +10,28 @@ struct RadarView: View {
     @State private var copiedID: Int64?
 
     var body: some View {
-        Group {
+        PageScaffold(destination: .radar) {
+            if !store.suggestions.isEmpty {
+                Eyebrow("\(store.suggestions.count) open")
+            }
+        } content: {
             if store.suggestions.isEmpty {
                 SenseiEmptyState(
                     "Nothing worth automating yet",
                     message: "I review your recurring chores weekly, and point "
                         + "only when automating one would plainly pay for itself.")
             } else {
-                List(store.suggestions, id: \.patternKey) { suggestion in
-                    row(suggestion)
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(store.suggestions, id: \.patternKey) { suggestion in
+                            row(suggestion).dojoCard(padding: 14)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
             }
         }
-        .background(Dojo.paper)
-        .navigationTitle("Radar")
         .onAppear { store.refresh() }
     }
 
@@ -33,7 +39,7 @@ struct RadarView: View {
     private func row(_ suggestion: Suggestion) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(suggestion.title ?? suggestion.evidence)
-                .font(.headline)
+                .font(Dojo.display(15))
             // The dossier line the suggestion was judged from: hours, days,
             // when it happens, where the time went.
             Text(suggestion.evidence)
@@ -64,6 +70,6 @@ struct RadarView: View {
             }
             .buttonStyle(.link)
         }
-        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -14,17 +14,20 @@ struct PracticeView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                statsRow
-                activitySection
-                deckRow
-                cardsSection
+        PageScaffold(destination: .practice) {
+            deckActions
+        } content: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    statsRow
+                    activitySection
+                    deckRow
+                    cardsSection
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            .padding(20)
         }
-        .background(Dojo.paper)
-        .navigationTitle("Practice")
         .navigationDestination(for: Screen.self) { screen in
             switch screen {
             case .inbox: InboxView()
@@ -50,17 +53,37 @@ struct PracticeView: View {
     }
 
     private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Review activity")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(
+                "Review activity",
+                trailing: "\(LedgerStore.HeatmapSpan.weeks) weeks")
             ReviewHeatmapView(counts: store.reviewsByDay)
+                .dojoCard(padding: 14)
         }
     }
 
     // MARK: - Deck + navigation
 
+    /// The two doors out of this page, in the header where they can't be
+    /// scrolled past.
+    private var deckActions: some View {
+        HStack(spacing: 8) {
+            NavigationLink(value: Screen.inbox) {
+                Label("Inbox · \(store.inboxNotes.count)", systemImage: "tray")
+            }
+            .controlSize(.small)
+            NavigationLink(value: Screen.review) {
+                Label("Review \(store.deckDueNotes.count)", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(store.deckDueNotes.isEmpty)
+        }
+    }
+
     private var deckRow: some View {
-        HStack {
+        HStack(spacing: 10) {
+            Eyebrow("deck")
             Picker("Deck", selection: $store.reviewDeck) {
                 Text("All notes").tag(ReviewDeck.all)
                 ForEach(store.themes) { theme in
@@ -72,39 +95,39 @@ struct PracticeView: View {
                         .tag(ReviewDeck.task(key: overview.task.key, name: overview.task.name))
                 }
             }
+            .labelsHidden()
             .frame(maxWidth: 320)
             Spacer()
-            NavigationLink(value: Screen.inbox) {
-                Label("Inbox · \(store.inboxNotes.count)", systemImage: "tray")
-            }
-            NavigationLink(value: Screen.review) {
-                Label("Review · \(store.deckDueNotes.count) due", systemImage: "play.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.deckDueNotes.isEmpty)
         }
     }
 
     // MARK: - All cards by urgency
 
     private var cardsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("All cards")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(
+                "All cards",
+                trailing: store.allCards.isEmpty ? nil : "\(store.allCards.count)")
             if store.allCards.isEmpty {
                 emptyDeckView
             } else {
-                CardUrgencyGridView(cards: store.allCards) { note in
-                    editingCard = note
+                VStack(alignment: .leading, spacing: 10) {
+                    CardUrgencyGridView(cards: store.allCards) { note in
+                        editingCard = note
+                    }
+                    urgencyLegend
                 }
-                urgencyLegend
-                Divider()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .dojoCard(padding: 14)
                 LazyVStack(spacing: 0) {
                     ForEach(store.allCards) { note in
                         CardListRow(note: note) { editingCard = note }
-                        Divider()
+                        if note.id != store.allCards.last?.id {
+                            Divider()
+                        }
                     }
                 }
+                .dojoCard(padding: 0)
             }
         }
     }
@@ -271,7 +294,8 @@ private struct CardListRow: View {
                 statusChip
             }
             .contentShape(Rectangle())
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
         }
         .buttonStyle(.plain)
     }

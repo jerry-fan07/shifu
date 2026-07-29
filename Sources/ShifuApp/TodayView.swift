@@ -1,70 +1,111 @@
 import ShifuCore
 import SwiftUI
 
-/// The mentor's front page (design.md §7): a greeting, one line of wisdom,
-/// today's tracked total with its top categories, the numbers that want
-/// attention, and today's task log. Everything here is a read the other pages
-/// already own — this page is the "how goes the day" glance.
+/// The mentor's front page (design.md §7): the mountain and the hour of the day,
+/// then today's total, then the day drawn as stepping stones, then the log.
+/// Everything here is a read the other pages already own — this page is the
+/// "how goes the day" glance, and the only one that is mostly picture.
 struct TodayView: View {
     @EnvironmentObject private var store: LedgerStore
 
+    private var sky: SkyTime { SkyTime.current() }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
                 if store.isPaused { pausedBanner }
-                greetingCard
+                heroCard
                 statRow
+                trailSection
                 pathSection
             }
             .padding(20)
-            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         .background(Dojo.paper)
-        .navigationTitle("Today")
+        // No navigation title: the hero already says the day, and an empty
+        // toolbar strip lets the scene start at the top of the pane.
         .onAppear {
             store.refresh()
             store.runAnalysis()
         }
     }
 
-    // MARK: - Greeting
+    // MARK: - Hero
 
-    private var greetingCard: some View {
-        HStack(alignment: .top, spacing: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(greeting)
-                        .font(.system(size: 27, weight: .semibold, design: .rounded))
-                    Text("“\(Wisdom.daily())”")
-                        .font(Dojo.voice(size: 14.5))
-                        .foregroundStyle(.secondary)
+    /// Scene on top, numbers on the surface strip below it. Splitting them is
+    /// what lets the sky change all day without the type ever fighting it: the
+    /// only words over the painting sit in the upper sky, which is the one band
+    /// each palette guarantees a contrast for.
+    private var heroCard: some View {
+        VStack(spacing: 0) {
+            ShifuScene(
+                time: sky,
+                mood: store.isPaused ? .resting : .watching,
+                petSize: 88)
+                .frame(height: 208)
+                // A wash under the text column only. The palettes already pick
+                // an ink that reads on the upper sky; this is insurance for the
+                // narrow window, where the peaks creep left behind the words.
+                .overlay(alignment: .leading) {
+                    LinearGradient(
+                        colors: [
+                            sky.palette.skyColors[0].opacity(0.55),
+                            sky.palette.skyColors[0].opacity(0)
+                        ],
+                        startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 380)
                 }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(TimeBreakdown.duration(trackedTodayMs))
-                        .font(.system(size: 40, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                    Text("tracked today")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if !topCategories.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(topCategories, id: \.name) { entry in
-                            categoryChip(entry)
-                        }
-                    }
-                }
-            }
-            Spacer(minLength: 8)
-            SenseiFigure(size: 108, mood: store.isPaused ? .resting : .serene)
-                .padding(.trailing, 6)
+                .overlay(alignment: .topLeading) { greeting }
+            totalStrip
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .dojoCard(padding: 20)
+        .background(Dojo.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Dojo.hairline, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.07), radius: 12, y: 3)
     }
 
-    private var greeting: String {
+    private var greeting: some View {
+        let palette = sky.palette
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+                .uppercased())
+                .font(Dojo.label())
+                .tracking(1.6)
+                .foregroundStyle(palette.secondaryTextColor)
+            Text(greetingLine)
+                .font(Dojo.display(30))
+                .foregroundStyle(palette.textColor)
+            Text("“\(Wisdom.daily())”")
+                .font(Dojo.voice(size: 14.5))
+                .foregroundStyle(palette.secondaryTextColor)
+                .frame(maxWidth: 310, alignment: .leading)
+        }
+        .padding(22)
+    }
+
+    private var totalStrip: some View {
+        HStack(alignment: .lastTextBaseline, spacing: 12) {
+            Text(TimeBreakdown.duration(trackedTodayMs))
+                .font(Dojo.display(34))
+                .monospacedDigit()
+            Eyebrow("tracked today")
+            Spacer(minLength: 12)
+            ForEach(topCategories, id: \.name) { entry in
+                DojoChip(
+                    text: "\(TimeBreakdown.duration(entry.ms)) \(entry.name)",
+                    dot: categoryColors[entry.name] ?? TimePalette.otherColor)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private var greetingLine: String {
         switch Calendar.current.component(.hour, from: Date()) {
         case 5..<12: return "Good morning."
         case 12..<17: return "Good afternoon."
@@ -86,19 +127,8 @@ struct TodayView: View {
             .map { (name: $0.key.rawValue, ms: $0.value) }
     }
 
-    private func categoryChip(_ entry: (name: String, ms: Int64)) -> some View {
-        let colors = TimePalette.colors(for: topCategories.map(\.name), lens: .category)
-        return HStack(spacing: 5) {
-            Circle()
-                .fill(colors[entry.name] ?? TimePalette.otherColor)
-                .frame(width: 7, height: 7)
-            Text("\(TimeBreakdown.duration(entry.ms)) \(entry.name)")
-                .font(.caption)
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Dojo.well, in: Capsule())
+    private var categoryColors: [String: Color] {
+        TimePalette.colors(for: topCategories.map(\.name), lens: .category)
     }
 
     // MARK: - Numbers that want attention
@@ -107,18 +137,35 @@ struct TodayView: View {
         HStack(spacing: 10) {
             StatTile(value: store.dueNotes.count, label: "cards due", accented: true)
             StatTile(value: store.inboxNotes.count, label: "in inbox")
-            StatTile(value: store.reviewsToday, label: "reviewed today")
-            StatTile(value: store.suggestions.count, label: "on the radar")
+            StatTile(value: store.reviewsToday, label: "reviewed")
+            StatTile(value: store.suggestions.count, label: "on radar")
             Spacer()
         }
+    }
+
+    // MARK: - The day as a route
+
+    private var trailSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading("Today’s stones", trailing: "one per hour")
+            DayTrail(stones: DayTrail.stones(from: todayActivities))
+                .padding(.horizontal, 4)
+                .padding(.top, 6)
+                .dojoCard(padding: 12)
+        }
+    }
+
+    private var todayActivities: [LedgerBuilder.LabeledActivity] {
+        store.labeledActivities(from: Calendar.current.startOfDay(for: Date()), to: Date())
     }
 
     // MARK: - Today's path
 
     private var pathSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Today’s path")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading(
+                "Today’s path",
+                trailing: store.todayLogs.isEmpty ? nil : "\(store.todayLogs.count) entries")
             if store.todayLogs.isEmpty {
                 Text("Nothing on the path yet. Work a while — I will keep the record.")
                     .font(Dojo.voice())
@@ -126,12 +173,12 @@ struct TodayView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .dojoCard()
             } else {
+                let shown = Array(store.todayLogs.prefix(Self.maxLogRows))
                 VStack(spacing: 0) {
-                    ForEach(Array(store.todayLogs.prefix(Self.maxLogRows)),
-                            id: \.rowID) { entry in
+                    ForEach(shown, id: \.rowID) { entry in
                         logRow(entry)
-                        if entry.rowID != store.todayLogs.prefix(Self.maxLogRows).last?.rowID {
-                            Divider()
+                        if entry.rowID != shown.last?.rowID {
+                            Divider().padding(.leading, 44)
                         }
                     }
                 }
@@ -148,9 +195,15 @@ struct TodayView: View {
     /// Rows before the page defers to the Task log — a glance, not the ledger.
     private static let maxLogRows = 8
 
+    /// Each row is a waypoint: a marker in the left gutter, the task, and how
+    /// long it took.
     private func logRow(_ entry: TaskStore.DayLogEntry) -> some View {
         NavigationLink(value: entry.taskID) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Circle()
+                    .strokeBorder(Dojo.accent.opacity(0.55), lineWidth: 2)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.taskName)
                         .fontWeight(.medium)
@@ -162,12 +215,11 @@ struct TodayView: View {
                 }
                 Spacer()
                 Text(LedgerStore.hours(entry.durationMs))
-                    .monospacedDigit()
-                    .font(.callout)
+                    .font(Dojo.label(11, .medium))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -177,15 +229,15 @@ struct TodayView: View {
 
     private var pausedBanner: some View {
         HStack(spacing: 10) {
-            Image(systemName: "moon.zzz")
+            Image(systemName: "moon.zzz.fill")
                 .foregroundStyle(Dojo.accentText)
             if let until = store.pausedUntil {
-                Text("Capture is resting until \(until, format: .dateTime.hour().minute()).")
+                Text("Shifu is asleep until \(until, format: .dateTime.hour().minute()).")
             } else {
-                Text("Capture is resting.")
+                Text("Shifu is asleep. Nothing is being captured.")
             }
             Spacer()
-            Button("Resume") { store.resume() }
+            Button("Wake him") { store.resume() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
