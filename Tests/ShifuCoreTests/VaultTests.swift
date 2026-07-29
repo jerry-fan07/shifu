@@ -158,6 +158,67 @@ import Testing
         #expect(KnowledgeExtractor.parseCandidates("no json at all").isEmpty)
     }
 
+    /// `\(` is not a JSON escape, so an un-doubled backslash used to fail the
+    /// whole array and lose every candidate in the batch.
+    @Test func rawLaTeXInJSONStillParses() {
+        let candidates = KnowledgeExtractor.parseCandidates(
+            #"[{"topic": "cone", "note": "\(a^T x \ge c\|x\|\)", "confidence": 0.9}]"#)
+        #expect(candidates.count == 1)
+        #expect(candidates[0].note == #"\(a^T x \ge c\|x\|\)"#)
+    }
+
+    /// `\frac` is worse than a parse failure: JSON reads `\f` as a formfeed and
+    /// silently eats the "f", so the card renders as "rac{a}{b}".
+    @Test func commandsThatLookLikeEscapesSurviveIntact() {
+        let candidates = KnowledgeExtractor.parseCandidates(
+            #"[{"topic": "t", "note": "\frac{a}{b} with \theta", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == #"\frac{a}{b} with \theta"#)
+    }
+
+    /// The repair only knows LaTeX commands, so a real `\n` between sentences
+    /// stays a newline — `\next` is not a command CardMarkup renders.
+    @Test func genuineJSONEscapesAreLeftAlone() {
+        let candidates = KnowledgeExtractor.parseCandidates(
+            #"[{"topic": "t", "note": "One.\nTwo, \"quoted\", 50% done.", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == "One.\nTwo, \"quoted\", 50% done.")
+    }
+
+    @Test func correctlyEscapedLaTeXIsNotDoubleEscaped() {
+        let candidates = KnowledgeExtractor.parseCandidates(
+            #"[{"topic": "t", "note": "Good \\(x\\) here", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == #"Good \(x\) here"#)
+    }
+
+    @Test func promptAsksForLaTeXWithDoubledBackslashes() {
+        let prompt = KnowledgeExtractor.prompt(
+            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
+        #expect(prompt.contains(#"\( ... \)"#))
+        #expect(prompt.contains("$$ ... $$"))
+        #expect(prompt.contains(#"\\frac{a}{b}"#))
+    }
+
+    @Test func promptCarriesTaskAndSourceContext() {
+        let context = KnowledgeExtractor.BlockContext(
+            text: "Actors serialize access to their state.",
+            url: "https://docs.swift.org/actors",
+            titles: ["Concurrency — Swift.org"],
+            taskKey: "swift-concurrency",
+            taskName: "Learning Swift concurrency")
+        let prompt = KnowledgeExtractor.prompt(
+            context: context, app: "com.apple.Safari", topic: "swift actors")
+        #expect(prompt.contains("Learning Swift concurrency"))
+        #expect(prompt.contains("swift actors"))
+        #expect(prompt.contains("Concurrency — Swift.org"))
+        #expect(prompt.contains("https://docs.swift.org/actors"))
+        #expect(prompt.contains("Actors serialize access to their state."))
+    }
+
+    @Test func promptOmitsWorkingLineWithoutTaskOrTopic() {
+        let prompt = KnowledgeExtractor.prompt(
+            context: .init(text: "text sample"), app: "com.apple.Safari", topic: nil)
+        #expect(!prompt.contains("working on"))
+    }
+
     @Test func candidateBecomesInboxNoteWithQA() {
         let activity = Activity(startedAt: 1_000, endedAt: 400_000,
                                 appBundle: "com.apple.Safari", category: .learning)

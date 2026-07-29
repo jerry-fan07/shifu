@@ -239,9 +239,8 @@ struct NoteReaderView: View {
             Divider()
             if let doc = store.noteDocument(for: hit) {
                 ScrollView {
-                    Text(doc.body)
+                    CardTextView(text: doc.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
                 }
             } else {
                 Text("The note file is gone — it may have been moved or deleted.")

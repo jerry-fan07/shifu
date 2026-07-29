@@ -95,21 +95,21 @@ struct CardTextView: View {
         return attributed
     }
 
-    /// Styled math runs: serif italic, with raised/lowered smaller runs for
-    /// scripts and fraction halves (CardMarkup.MathRun).
+    /// Styled math runs: serif throughout, italic only for variables so
+    /// digits, operators and function names stay upright the way a typeset
+    /// formula has them, with raised/lowered smaller runs for scripts and
+    /// fraction halves (CardMarkup.MathRun).
     static func math(_ runs: [CardMarkup.MathRun], size: CGFloat) -> AttributedString {
         var attributed = AttributedString()
         for run in runs {
             var piece = AttributedString(run.text)
+            let pointSize = run.script == .normal ? size + 1 : size * 0.72
+            let font = Font.system(size: pointSize, design: .serif)
+            piece.font = run.style == .variable ? font.italic() : font
             switch run.script {
-            case .normal:
-                piece.font = .system(size: size + 1, design: .serif).italic()
-            case .raised:
-                piece.font = .system(size: size * 0.72, design: .serif).italic()
-                piece.baselineOffset = size * 0.38
-            case .lowered:
-                piece.font = .system(size: size * 0.72, design: .serif).italic()
-                piece.baselineOffset = -size * 0.18
+            case .normal: break
+            case .raised: piece.baselineOffset = size * 0.38
+            case .lowered: piece.baselineOffset = -size * 0.18
             }
             attributed += piece
         }

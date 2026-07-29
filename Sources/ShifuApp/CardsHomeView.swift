@@ -281,7 +281,10 @@ private struct CardListRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(note.topic).bold()
                     if let qa = note.questionAnswer {
-                        Text(qa.question.replacingOccurrences(of: "\n", with: " "))
+                        // One styled line won't fit here, so the markup is
+                        // flattened rather than left as raw LaTeX.
+                        Text(CardMarkup.plainText(qa.question)
+                            .replacingOccurrences(of: "\n", with: " "))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
