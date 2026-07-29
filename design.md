@@ -246,34 +246,116 @@ The vault is a work database, not just flashcards:
 
 ## 6. Efficiency & Automation Radar (§2 of instructions)
 
-Two complementary detectors run over the ledger:
+**The unit of automation candidacy is the task.** The first version of this
+section mined labels — domains and bundle tails — out of activity sequences,
+and the tab it produced was uniformly useless: "google.com visited 255× → set
+up Google Analytics 4", "Chrome→Reddit sequence → write Puppeteer scripts,
+10–15 h setup" to save 15 min/week. Labels name *containers*, and a container
+holds every kind of work at once, so no describer downstream can say anything
+true about one. Tasks (§5.3) already name what the user was doing, their day
+logs already carry recurrence, and their blocks carry the schedule, the
+sources and the samples. So the miner ranks tasks; the LLM judges them.
 
-### 6.1 Pattern miner (deterministic)
+### 6.1 Candidate miner (deterministic)
 
-Looks for structural repetition in activity sequences:
+Runs weekly over a 14-day window and builds an in-memory **dossier** per
+candidate. Two kinds:
 
-- **Recurring n-grams** of (app/domain, topic) transitions — e.g. `Gmail → Sheets → Gmail` every weekday morning suggests a report-forwarding ritual.
-- **High-frequency short visits** — 30 visits/day to the same dashboard suggests an alerting gap.
-- **Manual transfer signatures** — rapid alternation between two apps with copy-adjacent dwell times.
+- **`task`** — a task with ≥3 active days and ≥20 minutes in the window, or
+  ≥2 days and ≥1 hour: the second door exists because the intent-level `sem:`
+  layer is by nature the youngest thing in the database, and a three-day bar
+  alone leaves the tab empty for a fortnight after every fresh install. Both
+  numbers are counted from the task's *blocks*, not its day logs — a merge
+  repoints activities without rewriting older logs, so the logs are the cheap
+  sieve and the blocks are the verdict. Only keys that *name intent* qualify:
+  `sem:` (the LLM's goal-level title) and `topic:` (the classifier's
+  description of the ongoing task). `app:` and `domain:` keys mean nothing ever learned what the work
+  was — on the dogfood ledger they are also the heaviest rows, so they are
+  filtered in SQL, before the ranking spends its budget on them. Also dropped:
+  tasks whose *time-weighted* dominant category is entertainment, social,
+  private or unclassified (communication and admin stay — mail triage is
+  exactly the chore worth automating), and system shells, which never join a
+  task any more but survive in old rows.
+- **`polling`** — one domain opened ≥10×/day for under 2 minutes a visit: the
+  alerting gap. The only non-task kind, because by construction those glances
+  never accrue the minutes to mint a task. Search engines are excluded (they
+  are visited briefly and constantly by definition — that structural bias is
+  what put google.com at the top of the old tab), as are browser-internal
+  pseudo-domains (`chrome://new-tab-page`, `*.top-chrome`) and glances that
+  are already filed under a task candidate: the work has a name, so the
+  suggestion should be about the work. That last test is per *block*, not per
+  domain — `github.com` can hold a week of real work and, in the same
+  fortnight, 150 refreshes of an unrelated repo.
 
-Cheap to compute (SQL + a small suffix-array pass), runs entirely locally.
+The dossier carries: name and gist, days active, minutes, a plain-language
+**schedule line** ("weekday mornings, usually 9–11" — regularity is itself an
+automation signal, and a thing that happens every weekday at 9 can be
+*scheduled*), top sources with minutes, the recent `task_logs` summaries,
+≤4 sampled window titles and a ≤300-char text sample spread across the whole
+window, plus derived **signal** lines. Rapid A↔B alternation with
+copy-adjacent dwell times — the old "manual transfer" detector — survives only
+as one of those signals: on its own it said "you switched between Chrome and
+Terminal a lot", which is not a workflow; attached to a task it says what the
+user was moving by hand.
+
+At most 12 dossiers per run (3 slots reserved for polling), ranked by observed
+minutes: a cap on LLM spend, and on the queue a human has to read.
 
 ### 6.2 Opportunity describer (LLM)
 
-Mined patterns (plus sampled text context) go to the LLM with a prompt that asks: *is this automatable, and how?* Output is a structured suggestion:
+Each batch of dossiers goes to the reasoning model with framing ("most habits
+are fine — say no"), a **named tool catalog**, honesty rules, and the evidence
+above. The catalog is the part the old prompt lacked entirely, and without it
+the model reached for whatever automation advice was common in its training
+data: Claude Code (terminal agent — scripts, data and file chores, API glue,
+schedulable with cron/launchd); claude.ai / Claude Desktop (Projects, MCP
+connectors to Gmail/Drive/Calendar/Notion/GitHub/Slack, scheduled tasks);
+Claude in Chrome (repetitive web workflows with no API); OS-native automation
+when the job is deterministic (Shortcuts, AppleScript, launchd, Hazel,
+Keyboard Maestro); alerting instead of polling. Claims must be grounded in the
+evidence shown — never an invented data source, file or account.
 
-```
-title:      "Morning metrics ritual (~22 min/week)"
-evidence:   pattern seen 9× in 14 days, avg 4.4 min
-suggestion: "This looks like manual copying of ad metrics into a sheet.
-             A scheduled script or a Claude Code task could pull the API
-             data directly. Estimated setup: <1 h."
-actions:    [Draft the automation with Claude Code] [Dismiss] [Snooze 30d]
-```
+The answer is `verdict` (yes/partial/no), `title`, `suggestion` (2–4 grounded
+sentences: what the workflow is, which tool, and the first concrete step),
+`setup_minutes`, `saved_minutes_weekly`, `teach` (one sentence naming a
+capability the user may not know exists — teaching AI tooling is half the
+point of the tab) and `confidence`.
 
-- Suggestions appear in the digest and a dashboard tab, ranked by `estimated_time_saved × confidence`.
-- Dismissals are remembered; a dismissed pattern never resurfaces unless its frequency doubles.
-- "Draft it" deep-links into the user's tool of choice (v1: copies a well-formed prompt describing the workflow; later: direct Claude Code session handoff).
+**Gates run in code, not in the ranking.** Confidence used to scale rank only,
+which meant everything shipped and the weak ones merely shipped lower. Now:
+
+- The claimed saving is **clamped to the minutes actually observed** — "ground
+  every claim in the evidence" is a prompt rule, and prompt rules are requests.
+- Verdict `no`, confidence < 0.6, or a payback failure
+  (`setup_minutes > 4 × saved_minutes_weekly`) **auto-dismisses** the row at its
+  current recurrence, and stamps a re-ask date 90 days out. A user's dismissal
+  is permanent until the habit doubles; a *model's* is an opinion, and for a
+  task — where recurrence is days active inside a 14-day window — doubling is
+  unreachable above 7 days, so without the date a model's "no" would be
+  forever. Either way the row returns *undescribed*, judged fresh.
+- A `yes` that omits the numbers the gates need is neither accepted nor
+  dismissed: the row stays pending and is asked about again next week. A
+  formatting slip must not bury a real suggestion.
+- Once a row *is* described, its evidence line, sizing and rank freeze
+  together. Recurrence keeps tracking the fresh mine (the dismissal memory
+  reads it), but refreshing the caption under an already-written suggestion
+  would leave the evidence arguing with the advice above it.
+
+Prompts are batched by rendered-token size (invariant 7), never by item count.
+
+- Suggestions appear in the digest and a dashboard tab, ranked by
+  `saved_minutes_weekly × confidence` — the model's grounded estimate, which
+  overwrites the miner's mechanical "minutes at stake" on the way in.
+- **Only described rows are ever shown.** A mined row is evidence, not advice;
+  with no backend configured the tab is empty rather than full of raw counts.
+- The tab is honest about numbers: "saves ≈45 min/wk (est.) · setup ≈30 min",
+  never a bare promise.
+- Dismissals are remembered; a dismissed candidate resurfaces only if its
+  recurrence doubles.
+- **Copy** puts a brief on the clipboard — the workflow, the observed
+  evidence, the assessment, and an instruction to interview the user before
+  building. Direct handoff ("Open in Claude", a `shifu radar draft` CLI) stays
+  deferred (§12).
 
 ---
 
@@ -362,7 +444,27 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
 - Calendar/task integration to label blocks with intended work ("was I doing what I planned?").
 - Audio-free meeting awareness (detect meeting apps, log attendance time, never record content).
 - Vault embeddings for semantic search ("what did I read about SQLite WAL?").
-- Direct Claude Code handoff for automation suggestions (§6.2).
+- **Radar handoff beyond the clipboard (§6.2)** — an "Open in Claude" button
+  and a `shifu radar draft <id>` CLI verb that pipes the brief straight into a
+  Claude Code session. Declined 2026-07-28 when the tab was rewritten:
+  clipboard-only, with a *rich* brief, does the same job with no launch-path
+  guessing, no second window, and nothing to keep working across Claude Code
+  releases. Revisit if the brief turns out to be routinely pasted unchanged.
+- **A Shifu MCP server** — expose the ledger (tasks, day logs, sources,
+  themes) to the user's *own* Claude, so an agent asked to build the
+  automation can query the evidence itself instead of being handed a
+  paragraph. The natural successor to the clipboard brief; also the first
+  thing in Shifu that would serve data to a process it doesn't control, so it
+  needs a privacy story first (§8).
+- **Adoption detection for radar suggestions** — a suggestion is "done" when
+  the pattern it described stops recurring. The miner already recomputes
+  recurrence weekly, so this is a comparison, not a new signal; what it needs
+  is a decision about what the tab does with it (quietly retire the row, or
+  say "this dropped from 11×/day to 2 — nice"). Would also give M4 a
+  measurable outcome instead of a self-reported one.
+- **An "automation review" section in the daily digest** — the digest lists
+  the top three radar titles today; the richer version would carry the teach
+  line and setup sizing so the digest can be read away from the app.
 - ~~SQLCipher at rest~~ — shipped after v1 via DuckDuckGo's GRDB 7.4.1 +
   SQLCipher 4.7.0 xcframework (`shifu encrypt`, key in the login Keychain,
   `SHIFU_DB_KEY` override for tests). Follow-up done: `install-daemon.sh`

@@ -194,30 +194,42 @@ do {
     print("vault index reconcile failed (retries next run): \(error)")
 }
 
-// Radar: mine patterns weekly (§6.1), or on demand with --radar.
+// Radar: mine automation candidates weekly (§6.1), or on demand with --radar.
+// The miner does its own filtering now — it walks tasks and their day logs
+// rather than raw blocks, so the "everything that isn't private" fetch this
+// block used to do is gone with the domain-altitude suggestions it produced.
 let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
 if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
-    let mineFrom = nowMs - 14 * 86_400_000
-    let recent = try database.queue.read { db in
-        try Activity
-            .filter(sql: "ended_at > ? AND category != 'private'", arguments: [mineFrom])
-            .order(sql: "started_at")
-            .fetchAll(db)
+    let mineFrom = nowMs - Int64(PatternMiner.windowDays) * 86_400_000
+    let candidates = try PatternMiner.mine(database: database, from: mineFrom, to: nowMs)
+    let inserted = try Radar.upsert(candidates: candidates, database: database)
+    if !candidates.isEmpty {
+        print("radar: \(candidates.count) candidates mined, \(inserted) new")
     }
-    let patterns = PatternMiner.mine(recent)
-    let inserted = try Radar.upsert(patterns: patterns, database: database)
-    try Settings.set("radar.last_mined", to: String(nowMs), database: database)
-    if !patterns.isEmpty {
-        print("radar: \(patterns.count) patterns mined, \(inserted) new")
-    }
-    if let backend {
+    // Judging what is worth automating is the reasoning model's kind of call,
+    // and this runs at most once a week over a dozen dossiers.
+    //
+    // The weekly watermark is only stamped once the describer has had its
+    // turn. A mined row is invisible until it is described (§6.2), and the
+    // dossier behind it lives only for this run — so stamping first would let
+    // one timed-out call hide the whole tab until the next weekly window,
+    // with nothing the user could do about it. Mining again next hour is
+    // local SQL; the describer's own attempt is what retries.
+    var described = true
+    if let reasoningBackend {
         do {
-            let described = try await Radar.describe(database: database, backend: backend)
-            if described > 0 { print("radar: described \(described) suggestions") }
+            let summary = try await Radar.describe(
+                database: database, backend: reasoningBackend, candidates: candidates)
+            if summary.accepted > 0 || summary.rejected > 0 {
+                print("radar (\(reasoningBackend.name)): \(summary.accepted) suggestions, "
+                    + "\(summary.rejected) judged not worth it")
+            }
         } catch {
+            described = false
             print("radar describer failed (retries next run): \(error)")
         }
     }
+    if described { try Settings.set("radar.last_mined", to: String(nowMs), database: database) }
 
     // Task merge + theme suggestions (vault-features.md §5.2–5.3), same
     // weekly cadence. No embedder ⇒ no new suggestions; theme assignment

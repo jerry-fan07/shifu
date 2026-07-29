@@ -143,8 +143,18 @@ extension SemanticTaskGrouper {
         minutes >= 90 ? String(format: "%.1fh", Double(minutes) / 60) : "\(minutes)m"
     }
 
+    /// "com.apple.dt.Xcode" → "Xcode". A trailing wrapper word is skipped:
+    /// "com.conductor.app" is *conductor*, and an evidence line reading
+    /// "app, ghostty, github.com" names one of the three.
+    static let bundleWrapperTails: Set<String> = ["app", "desktop", "mac", "macos", "osx"]
+
     static func shortBundle(_ bundle: String) -> String {
-        bundle.split(separator: ".").last.map(String.init) ?? bundle
+        let parts = bundle.split(separator: ".").map(String.init)
+        guard let last = parts.last else { return bundle }
+        if parts.count > 2, bundleWrapperTails.contains(last.lowercased()) {
+            return parts[parts.count - 2]
+        }
+        return last
     }
 
     private static func timeFormatter(_ calendar: Calendar) -> DateFormatter {

@@ -178,6 +178,13 @@ import Testing
             == "example.com/reset/[REDACTED:KEY]")
     }
 
+    @Test func shortBundleSkipsWrapperTails() {
+        #expect(Grouper.shortBundle("com.apple.dt.Xcode") == "Xcode")
+        #expect(Grouper.shortBundle("com.conductor.app") == "conductor")
+        #expect(Grouper.shortBundle("com.anthropic.claudefordesktop") == "claudefordesktop")
+        #expect(Grouper.shortBundle("ghostty") == "ghostty")
+    }
+
     @Test func spreadIndicesReachFirstAndLast() {
         #expect(Grouper.spreadIndices(total: 12, count: 5) == [0, 2, 5, 8, 11])
         #expect(Grouper.spreadIndices(total: 3, count: 5) == [0, 1, 2])

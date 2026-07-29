@@ -96,25 +96,14 @@ public enum AmbiguousClassifier {
 
     /// Splits samples into batches whose rendered prompt fits the token
     /// budget, so the backend never sees an oversized prompt however dense
-    /// the day's text was. An over-budget lone sample still gets its own
-    /// batch — its text is already capped by pendingSamples.
+    /// the day's text was (`LLMTokens.batches`; each sample's text is already
+    /// capped by `pendingSamples`).
     static func batches(
         _ samples: [BlockSample], ongoingTopics: [String] = [], promptTokenBudget: Int
     ) -> [[BlockSample]] {
-        var result: [[BlockSample]] = []
-        var current: [BlockSample] = []
-        for sample in samples {
-            current.append(sample)
-            if current.count > 1,
-               LLMTokens.estimate(prompt(for: current, ongoingTopics: ongoingTopics))
-                   > promptTokenBudget {
-                current.removeLast()
-                result.append(current)
-                current = [sample]
-            }
+        LLMTokens.batches(samples, budget: promptTokenBudget) {
+            prompt(for: $0, ongoingTopics: ongoingTopics)
         }
-        if !current.isEmpty { result.append(current) }
-        return result
     }
 
     /// Distinct topics the recent ledger already carries (newest first,
