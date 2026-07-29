@@ -218,6 +218,22 @@ do {
     print("work notes failed (retries next run): \(error)")
 }
 
+// Per-task overview documents (vault-features.md §2.1): the day notes are the
+// diary, this is the documentation. Runs right after the day notes it reads,
+// fast slot, hash-gated on *completed* days — so at most one generation per
+// task per day however often the analyzer runs.
+if let backend {
+    do {
+        let overviewSummary = try await TaskOverviewCompiler.run(
+            database: database, vault: vault, backend: backend)
+        if overviewSummary.written > 0 {
+            print("task overviews: \(overviewSummary.written) compiled")
+        }
+    } catch {
+        print("task overviews failed (retries next run): \(error)")
+    }
+}
+
 // Vault search index reconcile (vault-features.md §4): write-through hooks
 // cover Shifu's own writes; this catches external edits (Obsidian) and runs
 // after task grouping so task_key → task resolution is current.

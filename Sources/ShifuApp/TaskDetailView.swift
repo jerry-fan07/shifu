@@ -14,6 +14,9 @@ struct TaskDetailView: View {
     @State private var selectedHit: VaultSearch.Hit?
     @State private var askNewTheme = false
     @State private var newThemeName = ""
+    /// Open by default: the overview is the answer to "what is this task",
+    /// which is why the page was opened.
+    @State private var overviewExpanded = true
 
     var body: some View {
         Group {
@@ -51,6 +54,7 @@ struct TaskDetailView: View {
             Section {
                 header(detail)
             }
+            overviewSection(detail)
             if !detail.days.isEmpty {
                 Section("History") {
                     ForEach(detail.days) { day in
@@ -82,6 +86,30 @@ struct TaskDetailView: View {
         }
         .listStyle(.inset)
         .navigationTitle(detail.task.name)
+    }
+
+    /// The task's living overview document (vault-features.md §2.1) — what the
+    /// task *is*, above the day-by-day history that is its diary. Absent until
+    /// the compiler has had a task-day to work from.
+    @ViewBuilder private func overviewSection(_ detail: TaskStore.Detail) -> some View {
+        if let overview = store.taskOverview(taskKey: detail.task.key),
+           !overview.body.isEmpty {
+            Section {
+                DisclosureGroup(isExpanded: $overviewExpanded) {
+                    CardTextView(text: overview.body)
+                        .padding(.vertical, 4)
+                } label: {
+                    HStack {
+                        Text("Overview")
+                            .font(.headline)
+                        Spacer()
+                        Text(overview.updated, format: .relative(presentation: .named))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     private func sourceRow(_ share: TaskStore.SourceShare) -> some View {

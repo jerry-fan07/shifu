@@ -40,6 +40,13 @@ extension LedgerStore {
         return snapshot
     }
 
+    /// The task's living overview document, if the compiler has written one
+    /// (vault-features.md §2.1). Read from the file rather than the index —
+    /// it is one known path, and the index is disposable.
+    func taskOverview(taskKey: String) -> TaskOverview? {
+        vault.taskOverview(taskKey: taskKey)
+    }
+
     /// How far back the review-activity heatmap looks (26 weeks ≈ 6 months).
     enum HeatmapSpan {
         static let weeks = 26
