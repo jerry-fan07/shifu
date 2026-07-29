@@ -70,23 +70,23 @@ enum Dojo {
 
     /// Three registers, and no more than three:
     ///
-    /// - `display` — rounded, for titles and hero numbers. It shares its
-    ///   geometry with the pet, which is what ties the illustration to the UI.
+    /// - `display` — SF, for titles and hero numbers, set heavier than the
+    ///   body around it so weight alone carries the hierarchy.
     /// - `label` — SF Mono, uppercase, tracked out. Section eyebrows, units,
     ///   axis ticks: the terminal register, the one that says "this is a log".
     /// - system body — everything you actually read. Never restyled.
     static func display(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
-        .system(size: size, weight: weight, design: .rounded)
+        .system(size: size, weight: weight, design: .default)
     }
 
     static func label(_ size: CGFloat = 10.5, _ weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
 
-    /// The mentor's aside — the same size as the body text around it, set in a
-    /// rounded italic so his lines read as spoken rather than reported.
+    /// The mentor's aside — the same size as the body text around it, set in
+    /// italic so his lines read as spoken rather than reported.
     static func voice(size: CGFloat = 14) -> Font {
-        .system(size: size, design: .rounded).italic()
+        .system(size: size, design: .default).italic()
     }
 }
 

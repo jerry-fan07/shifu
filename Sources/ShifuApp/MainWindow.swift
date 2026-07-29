@@ -1,33 +1,175 @@
 import ShifuCore
 import SwiftUI
 
-/// The main window (design.md §7): a full desktop app — the trail on the left,
-/// one place on the right — wrapped in the Dojo look. Shows onboarding instead
-/// until the first-run flow completes.
+/// The main window (design.md §7): the mountain, edge to edge, with the trail
+/// hanging in the sky on the left and the current place's scroll unfurled on
+/// the right. Changing places does not swap a screen — it flies the camera up
+/// or down the mountain to another terrace, and the panel rolls up while it
+/// travels so you can see where you are going. Shows onboarding instead until
+/// the first-run flow completes.
 struct MainWindow: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
     @State private var destination: Destination = .today
+    @State private var camera = WorldMap.camera(for: .today)
+    /// The leg being walked, so the world can tell travelling from arrived.
+    @State private var leg = Leg(from: .zero, to: .zero)
+    @State private var travelling = false
+    @State private var hop: CGFloat = 0
+    @State private var arrival: Task<Void, Never>?
+    @EnvironmentObject private var store: LedgerStore
+
+    private struct Leg {
+        var from: CGPoint
+        var to: CGPoint
+    }
+
+    /// How long the camera takes to cross from one terrace to the next. Long
+    /// enough to read as a climb, short enough that it never feels like a wait.
+    private static let flightDuration = 0.82
 
     var body: some View {
         if onboarded {
-            NavigationSplitView {
-                SidebarView(selection: $destination)
-                    .navigationSplitViewColumnWidth(min: 208, ideal: 232, max: 290)
-            } detail: {
-                destination.page
-            }
-            .frame(minWidth: 940, minHeight: 620)
-            .tint(Dojo.accent)
+            world.tint(Dojo.accent)
         } else {
-            OnboardingView()
-                .tint(Dojo.accent)
+            OnboardingView().tint(Dojo.accent)
+        }
+    }
+
+    private var sky: SkyTime { SkyTime.current() }
+
+    private var world: some View {
+        GeometryReader { proxy in
+            let layout = Layout(size: proxy.size, destination: destination)
+            ZStack(alignment: .topLeading) {
+                WorldStage(
+                    camera: camera, anchor: layout.anchor, sky: sky,
+                    mood: store.isPaused ? .resting : .watching,
+                    origin: leg.from, arrival: leg.to, hop: hop)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { jump() }
+                if destination == .today { SkyGreeting(palette: sky.palette) }
+                TrailRail(selection: $destination, palette: sky.palette)
+                panel(layout)
+            }
+        }
+        .frame(minWidth: 1_020, minHeight: 660)
+        .onChange(of: destination) { _, place in fly(to: place) }
+    }
+
+    // MARK: - Travelling
+
+    private func fly(to place: Destination) {
+        let next = WorldMap.camera(for: place)
+        leg = Leg(from: camera.target, to: next.target)
+        arrival?.cancel()
+        withAnimation(.easeIn(duration: 0.14)) { travelling = true }
+        withAnimation(.timingCurve(0.5, 0, 0.12, 1, duration: Self.flightDuration)) {
+            camera = next
+        }
+        arrival = Task {
+            try? await Task.sleep(for: .seconds(Self.flightDuration * 0.82))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.3)) { travelling = false }
+        }
+    }
+
+    /// A click on the mountain and he hops. Nothing depends on it — it is
+    /// there because a place you can poke is a place you believe in.
+    private func jump() {
+        // Up, then down — two transactions, because both assignments in one
+        // pass would land on the value he started at and animate nothing.
+        guard hop == 0 else { return }
+        withAnimation(.easeOut(duration: 0.16)) { hop = 1 }
+        Task {
+            try? await Task.sleep(for: .milliseconds(160))
+            withAnimation(.easeIn(duration: 0.2)) { hop = 0 }
+        }
+    }
+
+    // MARK: - Layers over the world
+
+    private func panel(_ layout: Layout) -> some View {
+        destination.page
+            .frame(width: layout.panelWidth, height: layout.size.height - Layout.inset * 2)
+            .dojoPanel()
+            .offset(x: layout.panelX, y: Layout.inset)
+            .opacity(travelling ? 0 : 1)
+            .scaleEffect(travelling ? 0.97 : 1, anchor: .trailing)
+            .allowsHitTesting(!travelling)
+    }
+
+    /// Where the panel sits, and therefore where the terrace has to land: the
+    /// camera aims at the middle of the gap the panel leaves, so the temple you
+    /// travelled to is never the thing the scroll is covering.
+    private struct Layout {
+        static let inset: CGFloat = 16
+        let size: CGSize
+        let destination: Destination
+
+        /// Today is mostly picture, so its scroll is narrower.
+        var panelWidth: CGFloat {
+            let isToday = destination == .today
+            return min(
+                isToday ? 520 : 780,
+                max(isToday ? 380 : 520, size.width * (isToday ? 0.40 : 0.58)))
+        }
+
+        var panelX: CGFloat { size.width - Self.inset - panelWidth }
+
+        var anchor: UnitPoint {
+            let gap = (TrailRail.width + panelX) / 2
+            return UnitPoint(x: max(0.16, gap / max(1, size.width)), y: 0.6)
         }
     }
 }
 
-/// The places the trail can take you. Grouped the way the mentor thinks about
-/// them: the path (where time goes), the mind (what it taught you), the watch
-/// (what could be handed to a machine).
+/// Words laid straight on the painting need a halo the opposite way round from
+/// the sky they sit on, or dusk eats them.
+func haloColor(_ palette: SkyPalette) -> Color {
+    palette.onDark ? Color.black : Color.white
+}
+
+/// The salutation and the day's line, laid on the open sky above the camp.
+/// Only Today gets words on the painting; every other place says its piece
+/// inside its own scroll.
+private struct SkyGreeting: View {
+    let palette: SkyPalette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+                .uppercased())
+                .font(Dojo.label())
+                .tracking(1.6)
+                .foregroundStyle(palette.secondaryTextColor)
+            Text(greeting)
+                .font(Dojo.display(34))
+                .foregroundStyle(palette.textColor)
+            Text("“\(Wisdom.daily())”")
+                .font(Dojo.voice(size: 14.5))
+                .foregroundStyle(palette.secondaryTextColor)
+                .frame(maxWidth: 320, alignment: .leading)
+        }
+        .shadow(color: haloColor(palette).opacity(0.45), radius: 6)
+        .padding(.leading, TrailRail.width + 16)
+        .padding(.top, 44)
+        .allowsHitTesting(false)
+    }
+
+    private var greeting: String {
+        switch Calendar.current.component(.hour, from: Date()) {
+        case 5..<12: return "Good morning."
+        case 12..<17: return "Good afternoon."
+        case 17..<22: return "Good evening."
+        default: return "The late hours."
+        }
+    }
+}
+
+/// The places the trail can take you, in the order you climb them. Grouped the
+/// way the mentor thinks about them: the path (where time goes), the mind (what
+/// it taught you), the watch (what could be handed to a machine).
 enum Destination: String, CaseIterable, Identifiable {
     case today, time, themes, tasks, practice, scrolls, radar
 
@@ -58,7 +200,7 @@ enum Destination: String, CaseIterable, Identifiable {
     }
 
     /// The band this place belongs to — the eyebrow every page wears, and the
-    /// heading the sidebar groups it under.
+    /// name of the stretch of mountain it stands on.
     var region: String {
         switch self {
         case .today: return "Basecamp"
@@ -95,8 +237,9 @@ enum Destination: String, CaseIterable, Identifiable {
     }
 }
 
-/// One NavigationStack with the routes every page may push — task pages,
-/// theme pages, the suggestion queue — and the paper ground behind all of it.
+/// One NavigationStack with the routes every page may push — task pages, theme
+/// pages, the suggestion queue. No ground of its own: the scroll it sits in
+/// supplies that, and the mountain shows through it.
 struct DetailStack<Content: View>: View {
     @ViewBuilder var content: Content
 
@@ -114,258 +257,5 @@ struct DetailStack<Content: View>: View {
                 }
         }
         .scrollContentBackground(.hidden)
-        .background(Dojo.paper)
-    }
-}
-
-/// The sidebar: Shifu's mark up top, the places strung along a dashed trail,
-/// the daemon's controls, and the mountain he lives on holding up the bottom.
-///
-/// Rows are hand-drawn rather than a `List(selection:)` so the selected row
-/// wears the accent — the system sidebar paints selection in the user's OS
-/// accent color, which fights the warm palette everywhere it isn't orange.
-struct SidebarView: View {
-    @EnvironmentObject private var store: LedgerStore
-    @Binding var selection: Destination
-
-    /// Where the station discs are centred, and so where the trail runs.
-    private static let trailX: CGFloat = 24
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    row(.today)
-                    ForEach(Destination.groups, id: \.name) { group in
-                        sectionLabel(group.name)
-                        ForEach(group.places) { place in
-                            row(place)
-                        }
-                    }
-                }
-                // Behind, not in front: the trail is drawn to the rows' own
-                // height, so it starts and stops at the first and last station.
-                .background(alignment: .top) { trail }
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-                .padding(.bottom, 12)
-            }
-            Spacer(minLength: 0)
-            StatusFooter()
-            footerScene
-        }
-        .background(Dojo.sidebar)
-    }
-
-    /// The dashed line the stations sit on. Drawn behind the rows and inset at
-    /// both ends so it reads as a route, not a rule.
-    private var trail: some View {
-        GeometryReader { proxy in
-            Path { path in
-                path.move(to: CGPoint(x: Self.trailX, y: 14))
-                path.addLine(to: CGPoint(x: Self.trailX, y: proxy.size.height - 14))
-            }
-            .stroke(
-                Dojo.accent.opacity(0.24),
-                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [2, 5]))
-        }
-        .allowsHitTesting(false)
-    }
-
-    private var footerScene: some View {
-        MountainScene(detail: .compact)
-            .frame(height: 76)
-            .mask(
-                LinearGradient(
-                    colors: [.clear, .black],
-                    startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.7)))
-            .allowsHitTesting(false)
-    }
-
-    private func sectionLabel(_ title: String) -> some View {
-        Eyebrow(title)
-            .padding(.leading, 42)
-            .padding(.top, 16)
-            .padding(.bottom, 5)
-    }
-
-    private func row(_ destination: Destination) -> some View {
-        SidebarRow(
-            destination: destination,
-            badge: badge(destination),
-            trailX: Self.trailX,
-            selection: $selection)
-    }
-
-    /// What deserves a number: cards waiting to be reviewed, automations
-    /// waiting to be judged. Everything else earns attention by being visited.
-    private func badge(_ destination: Destination) -> Int? {
-        switch destination {
-        case .practice: return store.dueNotes.count + store.inboxNotes.count
-        case .radar: return store.suggestions.count
-        default: return nil
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            SenseiFigure(size: 40, mood: store.isPaused ? .resting : .serene)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("SHIFU")
-                    .font(Dojo.label(14, .bold))
-                    .tracking(3)
-                Text("your time, mentored")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 8)
-    }
-}
-
-extension Destination {
-    /// The sidebar's groups, in trail order, with Today pulled out as its own
-    /// ungrouped first stop.
-    static var groups: [(name: String, places: [Destination])] {
-        [("The path", [.time, .themes, .tasks]),
-         ("The mind", [.practice, .scrolls]),
-         ("The watch", [.radar])]
-    }
-}
-
-/// One station on the trail: a disc on the dashed line, the title, and an
-/// optional count. The current place fills its disc with terracotta.
-private struct SidebarRow: View {
-    let destination: Destination
-    let badge: Int?
-    let trailX: CGFloat
-    @Binding var selection: Destination
-    @State private var hovering = false
-
-    private var isSelected: Bool { selection == destination }
-
-    var body: some View {
-        Button {
-            selection = destination
-        } label: {
-            HStack(spacing: 10) {
-                station
-                Text(destination.title)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                Spacer(minLength: 4)
-                if let badge, badge > 0 {
-                    Text("\(badge)")
-                        .font(Dojo.label(10, .bold))
-                        .foregroundStyle(Dojo.accentText)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Dojo.accentSoft, in: Capsule())
-                }
-            }
-            .padding(.leading, trailX - 24)
-            .padding(.trailing, 10)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering && !isSelected ? Color.primary.opacity(0.05) : Color.clear))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .accessibilityLabel(destination.title)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    private var station: some View {
-        ZStack {
-            Circle()
-                .fill(isSelected ? Dojo.accent : Dojo.sidebar)
-                .frame(width: 26, height: 26)
-            Circle()
-                .strokeBorder(
-                    isSelected ? Color.clear : Dojo.hairline, lineWidth: 1)
-                .frame(width: 26, height: 26)
-            Image(systemName: destination.symbol)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(isSelected ? Color.white : .secondary)
-        }
-        .frame(width: 48, alignment: .center)
-    }
-}
-
-/// Capture state, pause controls, Work Mode, and the door to Settings —
-/// the daemon's whole control surface (§6), pinned under the trail.
-private struct StatusFooter: View {
-    @EnvironmentObject private var store: LedgerStore
-    @Environment(\.openSettings) private var openSettings
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(store.isPaused ? Color.secondary : Dojo.jade)
-                    .frame(width: 7, height: 7)
-                    .shadow(
-                        color: store.isPaused ? .clear : Dojo.jade.opacity(0.8),
-                        radius: 4)
-                Eyebrow(
-                    store.isPaused ? "asleep" : "watching",
-                    color: store.isPaused ? .secondary : Dojo.jade)
-                Spacer()
-                pauseMenu
-                Button {
-                    openSettings()
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("Settings")
-            }
-            if let until = store.pausedUntil {
-                Text("until \(until, format: .dateTime.hour().minute())")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Toggle(isOn: workModeBinding) {
-                Text("Work Mode")
-                    .font(.caption)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .help("Glow when you wander off the work path")
-        }
-        .padding(11)
-        .dojoCard(padding: 0)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 10)
-    }
-
-    private var pauseMenu: some View {
-        Menu {
-            if store.isPaused {
-                Button("Wake Shifu") { store.resume() }
-            } else {
-                Button("Rest 1 hour") {
-                    store.pause(until: Date().addingTimeInterval(3_600))
-                }
-                Button("Rest until tomorrow") {
-                    store.pause(until: Calendar.current.startOfDay(
-                        for: Date().addingTimeInterval(86_400)))
-                }
-            }
-        } label: {
-            Image(systemName: store.isPaused ? "play.circle" : "pause.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(store.isPaused ? "Wake Shifu" : "Let Shifu rest")
-    }
-
-    private var workModeBinding: Binding<Bool> {
-        Binding(get: { store.workModeOn }, set: { _ in store.toggleWorkMode() })
     }
 }

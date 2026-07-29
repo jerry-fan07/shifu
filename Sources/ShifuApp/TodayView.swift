@@ -1,116 +1,51 @@
 import ShifuCore
 import SwiftUI
 
-/// The mentor's front page (design.md §7): the mountain and the hour of the day,
-/// then today's total, then the day drawn as stepping stones, then the log.
-/// Everything here is a read the other pages already own — this page is the
-/// "how goes the day" glance, and the only one that is mostly picture.
+/// The mentor's front page (design.md §7): today's total, the counts that want
+/// attention, the day drawn as stepping stones, then the log. The window itself
+/// carries the picture now — the camp, the hour's sky, and Shifu standing on the
+/// terrace beside this scroll — so the page is only the reading.
 struct TodayView: View {
     @EnvironmentObject private var store: LedgerStore
-
-    private var sky: SkyTime { SkyTime.current() }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if store.isPaused { pausedBanner }
-                heroCard
-                statRow
+                totalStrip
+                statGrid
                 trailSection
                 pathSection
             }
             .padding(20)
-            .frame(maxWidth: 820, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Dojo.paper)
-        // No navigation title: the hero already says the day, and an empty
-        // toolbar strip lets the scene start at the top of the pane.
         .onAppear {
             store.refresh()
             store.runAnalysis()
         }
     }
 
-    // MARK: - Hero
-
-    /// Scene on top, numbers on the surface strip below it. Splitting them is
-    /// what lets the sky change all day without the type ever fighting it: the
-    /// only words over the painting sit in the upper sky, which is the one band
-    /// each palette guarantees a contrast for.
-    private var heroCard: some View {
-        VStack(spacing: 0) {
-            ShifuScene(
-                time: sky,
-                mood: store.isPaused ? .resting : .watching,
-                petSize: 88)
-                .frame(height: 208)
-                // A wash under the text column only. The palettes already pick
-                // an ink that reads on the upper sky; this is insurance for the
-                // narrow window, where the peaks creep left behind the words.
-                .overlay(alignment: .leading) {
-                    LinearGradient(
-                        colors: [
-                            sky.palette.skyColors[0].opacity(0.55),
-                            sky.palette.skyColors[0].opacity(0)
-                        ],
-                        startPoint: .leading, endPoint: .trailing)
-                        .frame(width: 380)
-                }
-                .overlay(alignment: .topLeading) { greeting }
-            totalStrip
-        }
-        .background(Dojo.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Dojo.hairline, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.07), radius: 12, y: 3)
-    }
-
-    private var greeting: some View {
-        let palette = sky.palette
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-                .uppercased())
-                .font(Dojo.label())
-                .tracking(1.6)
-                .foregroundStyle(palette.secondaryTextColor)
-            Text(greetingLine)
-                .font(Dojo.display(30))
-                .foregroundStyle(palette.textColor)
-            Text("“\(Wisdom.daily())”")
-                .font(Dojo.voice(size: 14.5))
-                .foregroundStyle(palette.secondaryTextColor)
-                .frame(maxWidth: 310, alignment: .leading)
-        }
-        .padding(22)
-    }
+    // MARK: - The day's total
 
     private var totalStrip: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 12) {
-            Text(TimeBreakdown.duration(trackedTodayMs))
-                .font(Dojo.display(34))
-                .monospacedDigit()
-            Eyebrow("tracked today")
-            Spacer(minLength: 12)
-            ForEach(topCategories, id: \.name) { entry in
-                DojoChip(
-                    text: "\(TimeBreakdown.duration(entry.ms)) \(entry.name)",
-                    dot: categoryColors[entry.name] ?? TimePalette.otherColor)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text(TimeBreakdown.duration(trackedTodayMs))
+                    .font(Dojo.display(38))
+                    .monospacedDigit()
+                Eyebrow("tracked today")
+                Spacer(minLength: 0)
             }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-    }
-
-    private var greetingLine: String {
-        switch Calendar.current.component(.hour, from: Date()) {
-        case 5..<12: return "Good morning."
-        case 12..<17: return "Good afternoon."
-        case 17..<22: return "Good evening."
-        default: return "The late hours."
+            if !topCategories.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(topCategories, id: \.name) { entry in
+                        DojoChip(
+                            text: "\(TimeBreakdown.duration(entry.ms)) \(entry.name)",
+                            dot: categoryColors[entry.name] ?? TimePalette.otherColor)
+                    }
+                }
+            }
         }
     }
 
@@ -133,13 +68,18 @@ struct TodayView: View {
 
     // MARK: - Numbers that want attention
 
-    private var statRow: some View {
-        HStack(spacing: 10) {
+    /// Two by two rather than a row: the scroll beside the mountain is a
+    /// column, and four tiles abreast would set the window's whole width.
+    private var statGrid: some View {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(), spacing: 10, alignment: .leading), count: 2),
+            spacing: 10
+        ) {
             StatTile(value: store.dueNotes.count, label: "cards due", accented: true)
             StatTile(value: store.inboxNotes.count, label: "in inbox")
             StatTile(value: store.reviewsToday, label: "reviewed")
             StatTile(value: store.suggestions.count, label: "on radar")
-            Spacer()
         }
     }
 

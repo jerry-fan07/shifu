@@ -47,7 +47,6 @@ struct TimeView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
         }
-        .frame(minWidth: 640, minHeight: 500)
         .onAppear { store.refresh() }
     }
 

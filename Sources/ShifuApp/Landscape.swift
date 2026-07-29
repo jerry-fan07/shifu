@@ -24,27 +24,31 @@ enum SkyTime: String, CaseIterable {
         case .dawn:
             return SkyPalette(
                 sky: [0xA9C4E4, 0xD9C3C4, 0xEFC9AC, 0xF9E6CC],
-                ridges: [0xAAA8C8, 0x827FA3, 0x57527D, 0x342F54],
+                ridges: [0xAAA8C8, 0x827FA3, 0x57527D, 0x342F54, 0x231F3E],
                 ink: 0x2A2745, onDark: false,
-                orb: 0xFFE9C4, fog: 0xFBE7D2, fogOpacity: 0.34)
+                orb: 0xFFE9C4, fog: 0xFBE7D2, fogOpacity: 0.34,
+                tread: 0x7C74A6, vermilion: 0xD1613A, lantern: 0xFFD79A)
         case .day:
             return SkyPalette(
                 sky: [0x7FB2DE, 0xA9CDE6, 0xCFE0E9, 0xEDE7DA],
-                ridges: [0xA8C0CB, 0x7997A7, 0x4F6F7F, 0x2E4A57],
+                ridges: [0xA8C0CB, 0x7997A7, 0x4F6F7F, 0x2E4A57, 0x1E333D],
                 ink: 0x1E3340, onDark: false,
-                orb: 0xFFF6DE, fog: 0xFFFFFF, fogOpacity: 0.30)
+                orb: 0xFFF6DE, fog: 0xFFFFFF, fogOpacity: 0.30,
+                tread: 0x6E8C97, vermilion: 0xC2542F, lantern: 0xFFE9B8)
         case .dusk:
             return SkyPalette(
                 sky: [0x2E3566, 0x6B4877, 0xC06C64, 0xEFA469],
-                ridges: [0x6E5683, 0x4C3B65, 0x2F2447, 0x18122F],
+                ridges: [0x6E5683, 0x4C3B65, 0x2F2447, 0x18122F, 0x100B22],
                 ink: 0xF7EBE0, onDark: true,
-                orb: 0xFFD79A, fog: 0xF3A472, fogOpacity: 0.24)
+                orb: 0xFFD79A, fog: 0xF3A472, fogOpacity: 0.24,
+                tread: 0x574468, vermilion: 0xE0703F, lantern: 0xFFC46A)
         case .night:
             return SkyPalette(
                 sky: [0x080C1C, 0x101731, 0x1B2444, 0x2A3459],
-                ridges: [0x33406E, 0x26305A, 0x1A2144, 0x10142C],
+                ridges: [0x33406E, 0x26305A, 0x1A2144, 0x10142C, 0x090C1E],
                 ink: 0xE9EEFA, onDark: true,
-                orb: 0xEFF3FF, fog: 0x7E8FC0, fogOpacity: 0.18)
+                orb: 0xEFF3FF, fog: 0x7E8FC0, fogOpacity: 0.18,
+                tread: 0x2E3A66, vermilion: 0x8C4632, lantern: 0xFFB85C)
         }
     }
 }
@@ -53,8 +57,8 @@ enum SkyTime: String, CaseIterable {
 /// list; `Color` conversion happens once at draw time.
 struct SkyPalette {
     let sky: [UInt32]
-    /// Far → near. Four layers is enough for depth and few enough that each
-    /// one still reads as a distinct plane.
+    /// Far → near, then the bank in front of everything. Five planes is enough
+    /// for depth and few enough that each one still reads as distinct.
     let ridges: [UInt32]
     let ink: UInt32
     /// True when text over this sky has to be light — drives `textColor`.
@@ -62,6 +66,13 @@ struct SkyPalette {
     let orb: UInt32
     let fog: UInt32
     let fogOpacity: Double
+    /// The lit top of a stone step, a shade up from the plane it is cut into.
+    /// In flat colour that one band *is* the read of a staircase.
+    let tread: UInt32
+    /// Temple lacquer — warm at every hour, a dull oxide at night.
+    let vermilion: UInt32
+    /// Lantern flame and lit windows.
+    let lantern: UInt32
 
     var skyColors: [Color] { sky.map(Color.init(illustration:)) }
     var ridgeColors: [Color] { ridges.map(Color.init(illustration:)) }
@@ -71,6 +82,12 @@ struct SkyPalette {
     var secondaryTextColor: Color { textColor.opacity(onDark ? 0.72 : 0.66) }
     var orbColor: Color { Color(illustration: orb) }
     var fogColor: Color { Color(illustration: fog) }
+    var treadColor: Color { Color(illustration: tread) }
+    var vermilionColor: Color { Color(illustration: vermilion) }
+    var lanternColor: Color { Color(illustration: lantern) }
+    /// The near stone the terraces are cut from, and the darker bank in front.
+    var stoneColor: Color { Color(illustration: ridges[3]) }
+    var deepColor: Color { Color(illustration: ridges[4]) }
 }
 
 extension Color {

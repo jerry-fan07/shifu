@@ -70,7 +70,6 @@ struct MergeReviewView: View {
                         + "tasks that look like the same work.")
             }
         }
-        .background(Dojo.paper)
         .navigationTitle("Merge review")
         .onAppear { store.refresh() }
     }

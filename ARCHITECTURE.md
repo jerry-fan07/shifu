@@ -230,7 +230,10 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
-| The main window's sidebar, pages, and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
+| The main window's layout, camera flights, pages and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
+| The trail — where places live and how you pick one | [`ShifuApp/TrailRail.swift`](Sources/ShifuApp/TrailRail.swift); a place's spot on the mountain is `Destination.stationIndex` / `.landmark` in [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) |
+| The mountain: terrain, camera math, ridgelines | [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) — `WorldMap.runs` is the one source of truth for the stair |
+| Painting the mountain, and the temples on it | [`ShifuApp/WorldStage.swift`](Sources/ShifuApp/WorldStage.swift), [`ShifuApp/WorldLandmarks.swift`](Sources/ShifuApp/WorldLandmarks.swift) |
 | The app's look — colors, cards, wisdom, the sensei | [`ShifuApp/Dojo.swift`](Sources/ShifuApp/Dojo.swift), [`ShifuApp/SenseiView.swift`](Sources/ShifuApp/SenseiView.swift) |
 | CLI commands | [`shifu-cli/main.swift`](Sources/shifu-cli/main.swift) |
 | The analyzer's stage order | [`shifu-analyzer/main.swift`](Sources/shifu-analyzer/main.swift) |

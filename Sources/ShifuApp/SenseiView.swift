@@ -34,8 +34,9 @@ struct SenseiFigure: View {
 }
 
 /// The sprite sheet. Rows are read as characters; `palette` maps each to a
-/// color and `.` is transparent.
-private enum SenseiSprite {
+/// color and `.` is transparent. Not private: the world paints him straight
+/// into its own Canvas rather than compositing a second view over it.
+enum SenseiSprite {
     static let columns = 16
     static let rows = 16
 
@@ -104,9 +105,16 @@ private enum SenseiSprite {
     static func draw(
         mood: SenseiFigure.Mood, into context: inout GraphicsContext, size: CGSize
     ) {
-        let cell = cellSize(in: size)
-        let originX = snap((size.width - cell * CGFloat(columns)) / 2)
-        let originY = snap((size.height - cell * CGFloat(rows)) / 2)
+        draw(mood: mood, into: &context, in: CGRect(origin: .zero, size: size))
+    }
+
+    /// Centred in an arbitrary rect — how the world plants him on a step.
+    static func draw(
+        mood: SenseiFigure.Mood, into context: inout GraphicsContext, in rect: CGRect
+    ) {
+        let cell = cellSize(in: rect.size)
+        let originX = snap(rect.minX + (rect.width - cell * CGFloat(columns)) / 2)
+        let originY = snap(rect.minY + (rect.height - cell * CGFloat(rows)) / 2)
         for (row, line) in grid(mood: mood).enumerated() {
             // Fill runs of one color as a single rect — no seams between
             // neighbouring pixels, and ~50 fills instead of 256.

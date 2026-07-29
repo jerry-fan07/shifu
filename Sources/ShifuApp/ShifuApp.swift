@@ -2,8 +2,9 @@ import ShifuCore
 import SwiftUI
 
 // Shifu.app — a full desktop app with a menu bar companion (design.md §7).
-// The main window carries the sidebar and pages; the menu bar item stays the
-// always-visible surface for state, pause, and Work Mode.
+// The main window is the mountain itself, with the trail and the current
+// place's scroll over it; the menu bar item stays the always-visible surface
+// for state, pause, and Work Mode.
 @main
 struct ShifuApp: App {
     @StateObject private var store = LedgerStore()
@@ -22,7 +23,10 @@ struct ShifuApp: App {
                     }
                 }
         }
-        .defaultSize(width: 1080, height: 700)
+        .defaultSize(width: 1_280, height: 820)
+        // The mountain runs to all four edges; a title bar would slice the top
+        // off the sky, and the window names its own place anyway.
+        .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra {
             Text(store.todaySummaryLine)

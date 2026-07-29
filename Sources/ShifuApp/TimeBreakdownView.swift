@@ -85,7 +85,7 @@ struct TimeBreakdownView: View {
             if let top = slices.first {
                 VStack(spacing: 0) {
                     Text(percent(top.share))
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .font(Dojo.display(17))
                         .monospacedDigit()
                     Text(lens.display(top.name))
                         .font(.caption2)
