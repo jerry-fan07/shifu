@@ -35,6 +35,35 @@ guard force || onACPower() else {
 
 try ShifuPaths.ensureHomeExists()
 let database = try ShifuDatabase.open(at: ShifuPaths.database)
+
+// `--build-deck <key>`: the app asking for one deck to be built (§5.2). Only
+// this binary may reach the network, so a deck build is a launch of it. This
+// runs before the ledger rebuild and exits — the request is interactive, the
+// user is watching a "Building…" row, and the hourly rebuild would both delay
+// it and give the concurrent hourly run something to fight over.
+if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.count {
+    let deckKey = args[flagIndex + 1]
+    guard let deckBackend = try DeepSeekBackend.ifConfigured(database: database) else {
+        // The UI gates this path on a configured backend, so reaching here
+        // means the key was removed mid-flight. The deck stays `pending` and
+        // the drain picks it up once a key exists — never a failure.
+        print("no DeepSeek key — deck \(deckKey) stays pending")
+        exit(0)
+    }
+    let deckVault = VaultStore(database: database)
+    do {
+        if let cards = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: deckVault, backend: deckBackend) {
+            print("deck \(deckKey): \(cards) cards")
+        } else {
+            print("deck \(deckKey): already building elsewhere")
+        }
+    } catch {
+        print("deck build failed (retries on the next drain): \(error)")
+    }
+    exit(0)
+}
+
 let classifier = try RulesClassifier(database: database)
 
 let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -151,16 +180,18 @@ do {
     print("auto-merge failed (retries next run): \(error)")
 }
 
-// Knowledge extraction over learning/novel-work blocks (§5.1).
+// Nothing writes knowledge notes automatically any more (§5.1): the vault's
+// cards come from decks the user asked for, and nothing else.
 if let backend {
+    // Decks the app asked for but never got built — its `--build-deck` launch
+    // hit a machine with no key, or died mid-build (§5.2). Costs one indexed
+    // query when there is nothing waiting.
     do {
-        let candidates = try await KnowledgeExtractor.run(
-            database: database, vault: vault, backend: backend, from: from, to: nowMs)
-        if candidates > 0 {
-            print("vault: \(candidates) new inbox candidates")
-        }
+        let built = try await DeckBuilder.drainPending(
+            database: database, vault: vault, backend: backend)
+        if built > 0 { print("decks: \(built) built") }
     } catch {
-        print("extraction failed (blocks stay unprocessed next run): \(error)")
+        print("deck build failed (retries next run): \(error)")
     }
 }
 
@@ -176,6 +207,22 @@ do {
     }
 } catch {
     print("work notes failed (retries next run): \(error)")
+}
+
+// Per-task overview documents (vault-features.md §2.1): the day notes are the
+// diary, this is the documentation. Runs right after the day notes it reads,
+// fast slot, hash-gated on *completed* days — so at most one generation per
+// task per day however often the analyzer runs.
+if let backend {
+    do {
+        let overviewSummary = try await TaskOverviewCompiler.run(
+            database: database, vault: vault, backend: backend)
+        if overviewSummary.written > 0 {
+            print("task overviews: \(overviewSummary.written) compiled")
+        }
+    } catch {
+        print("task overviews failed (retries next run): \(error)")
+    }
 }
 
 // Vault search index reconcile (vault-features.md §4): write-through hooks
@@ -248,6 +295,19 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
         }
     }
 
+    // Deck proposals (§5.2), same weekly cadence: cards are user-requested
+    // now, so without this the feature waits on the user thinking to ask.
+    // The fast slot — judging one task against its own evidence is a labeling
+    // call, and the caps inside bound it to two per run. Fail-soft: an
+    // unevaluated task simply waits for next week.
+    if let backend {
+        do {
+            let proposed = try await DeckSuggester.run(database: database, backend: backend)
+            if proposed > 0 { print("decks: \(proposed) deck suggestions") }
+        } catch {
+            print("deck suggester failed (retry next week): \(error)")
+        }
+    }
 }
 
 // Daily digest at/after the configured hour (default 18:00, §4.3).

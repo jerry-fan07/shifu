@@ -1,16 +1,18 @@
 import ShifuCore
 import SwiftUI
 
-/// *Cards* tab home (design.md §5.2): review-activity heatmap, deck picker,
-/// and an urgency overview of every card. Inbox triage and the review
-/// session are separate screens pushed from here.
+/// *Cards* tab home (design.md §5.2): suggested decks, review-activity
+/// heatmap, deck picker, and an urgency overview of every card. The review
+/// session is a separate screen pushed from here.
+///
+/// There is no inbox. Nothing proposes a card any more — a card exists
+/// because a deck was asked for, so there is nothing to triage.
 struct CardsTabView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var path: [Screen] = []
     @State private var editingCard: Note?
 
     enum Screen: Hashable {
-        case inbox
         case review
     }
 
@@ -19,6 +21,7 @@ struct CardsTabView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     statsRow
+                    suggestionsSection
                     activitySection
                     deckRow
                     cardsSection
@@ -27,7 +30,6 @@ struct CardsTabView: View {
             }
             .navigationDestination(for: Screen.self) { screen in
                 switch screen {
-                case .inbox: InboxView()
                 case .review: ReviewSessionView()
                 }
             }
@@ -43,7 +45,7 @@ struct CardsTabView: View {
     private var statsRow: some View {
         HStack(spacing: 12) {
             StatTile(value: store.dueNotes.count, label: "due now")
-            StatTile(value: store.inboxNotes.count, label: "in inbox")
+            StatTile(value: store.decks.count, label: "decks")
             StatTile(value: store.allCards.count, label: "cards")
             StatTile(value: store.reviewsToday, label: "reviewed today")
             Spacer()
@@ -58,28 +60,59 @@ struct CardsTabView: View {
         }
     }
 
+    // MARK: - Deck suggestions (design.md §5.2)
+
+    /// Proposed decks and the decks still filling in. Cards are user-requested
+    /// now, so this section is where most of them start: the samples are real
+    /// cards, which is what makes the offer judgeable rather than a guess.
+    @ViewBuilder private var suggestionsSection: some View {
+        let building = store.decks.filter { $0.status != .ready }
+        if !store.deckSuggestions.isEmpty || !building.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Suggested decks")
+                    .font(.headline)
+                ForEach(store.deckSuggestions) { suggestion in
+                    DeckSuggestionCard(suggestion: suggestion)
+                }
+                ForEach(building) { deck in
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Building “\(deck.title)”…")
+                        Text("finishes with the next analysis if DeepSeek is unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Deck + navigation
+
+    /// Decks first, then themes, then tasks: a deck is a thing the user asked
+    /// for, the other two are filters over whatever happens to be there.
+    /// Only `ready` decks appear — picking one mid-build would show a
+    /// half-empty deck and read as a bug.
+    private var deckOptions: [(label: String, value: ReviewDeck)] {
+        var options: [(label: String, value: ReviewDeck)] = [("All notes", .all)]
+        options += store.decks.filter { $0.status == .ready }.map {
+            ("Deck · \($0.title)", ReviewDeck.deck(key: $0.key, name: $0.title))
+        }
+        options += store.themes.map {
+            ("Theme · \($0.name)", ReviewDeck.theme(key: $0.key, name: $0.name))
+        }
+        options += store.recentTasks.map {
+            ("Task · \($0.task.name)",
+             ReviewDeck.task(key: $0.task.key, name: $0.task.name))
+        }
+        return options
+    }
 
     private var deckRow: some View {
         HStack {
-            Picker("Deck", selection: $store.reviewDeck) {
-                Text("All notes").tag(ReviewDeck.all)
-                ForEach(store.themes) { theme in
-                    Text("Theme · \(theme.name)")
-                        .tag(ReviewDeck.theme(key: theme.key, name: theme.name))
-                }
-                ForEach(store.recentTasks) { overview in
-                    Text("Task · \(overview.task.name)")
-                        .tag(ReviewDeck.task(key: overview.task.key, name: overview.task.name))
-                }
-            }
-            .frame(maxWidth: 320)
+            FilterMenu(options: deckOptions, selection: $store.reviewDeck)
             Spacer()
-            Button {
-                path.append(.inbox)
-            } label: {
-                Label("Inbox · \(store.inboxNotes.count)", systemImage: "tray")
-            }
             Button {
                 path.append(.review)
             } label: {
@@ -114,38 +147,14 @@ struct CardsTabView: View {
         }
     }
 
-    /// How many inbox candidates the empty deck state surfaces.
-    private static let maxStarterCandidates = 3
-
-    /// Empty deck: seed it right here — the freshest reviewable inbox
-    /// candidates with their triage actions, instead of a dead end.
-    @ViewBuilder private var emptyDeckView: some View {
-        let candidates = store.inboxNotes.filter { $0.questionAnswer != nil }
-        if candidates.isEmpty {
-            ContentUnavailableView(
-                "No cards yet", systemImage: "rectangle.stack",
-                description: Text("Keep inbox candidates with a Q/A to build your deck.")
-            )
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("No cards yet — keep a recent candidate to start your deck:")
-                    .foregroundStyle(.secondary)
-                ForEach(candidates.prefix(Self.maxStarterCandidates)) { note in
-                    InboxRowView(
-                        note: note,
-                        onKeep: { store.keep(note) },
-                        onDiscard: { store.discard(note) },
-                        onEdit: { editingCard = note })
-                    Divider()
-                }
-                if store.inboxNotes.count > Self.maxStarterCandidates {
-                    Button("See all \(store.inboxNotes.count) in the inbox") {
-                        path.append(.inbox)
-                    }
-                    .buttonStyle(.link)
-                }
-            }
-        }
+    /// Empty deck. Cards come from decks the user asked for (§5.2) and from
+    /// nowhere else, so that is the only thing the empty state can point at.
+    private var emptyDeckView: some View {
+        ContentUnavailableView(
+            "No cards yet", systemImage: "rectangle.stack",
+            description: Text("Cards come from decks. Accept a suggested deck above, "
+                + "or open a task in the Vault tab and ask for one.")
+        )
     }
 
     private var urgencyLegend: some View {
@@ -161,6 +170,53 @@ struct CardsTabView: View {
                 }
             }
         }
+    }
+}
+
+/// One proposed deck: what it would be called, which task it came out of,
+/// and its sample cards — the samples being the whole point, since they are
+/// the deck's real first cards rather than a preview of them.
+private struct DeckSuggestionCard: View {
+    @EnvironmentObject private var store: LedgerStore
+    let suggestion: DeckStore.PendingSuggestion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(suggestion.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text("from task \(suggestion.taskName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if store.hasLLMBackend {
+                    Button("Create") { store.acceptDeckSuggestion(suggestion) }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    // Without a key the build could never run, and the deck
+                    // would sit "Building…" forever (§5.2).
+                    Text("Needs DeepSeek (Settings)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Dismiss") { store.dismissDeckSuggestion(suggestion) }
+            }
+            ForEach(Array(suggestion.samples.enumerated()), id: \.offset) { _, card in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(card.topic)
+                        .font(.caption.weight(.medium))
+                        .frame(width: 110, alignment: .leading)
+                    Text(CardMarkup.plainText(card.question))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -281,7 +337,10 @@ private struct CardListRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(note.topic).bold()
                     if let qa = note.questionAnswer {
-                        Text(qa.question.replacingOccurrences(of: "\n", with: " "))
+                        // One styled line won't fit here, so the markup is
+                        // flattened rather than left as raw LaTeX.
+                        Text(CardMarkup.plainText(qa.question)
+                            .replacingOccurrences(of: "\n", with: " "))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -307,134 +366,5 @@ private struct CardListRow: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(status.color.opacity(0.12), in: Capsule())
-    }
-}
-
-/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One green
-/// hue, light→dark with count (sequential ramp); zero-days sit on the
-/// recessive surface. Tooltips carry the exact numbers.
-struct ReviewHeatmapView: View {
-    let counts: [Date: Int]
-    var now: Date = Date()
-
-    private static let cellSize: CGFloat = 12
-    private static let gap: CGFloat = 3
-
-    var body: some View {
-        let weeks = weekStarts()
-        VStack(alignment: .leading, spacing: 4) {
-            monthLabels(weeks: weeks)
-            HStack(alignment: .top, spacing: Self.gap) {
-                weekdayLabels
-                ForEach(weeks, id: \.self) { weekStart in
-                    weekColumn(weekStart)
-                }
-            }
-            legend
-        }
-    }
-
-    /// Start of each displayed week, oldest first, current week last. Columns
-    /// run Monday→Sunday like the rest of the app.
-    private func weekStarts() -> [Date] {
-        let calendar = Calendar.current
-        let thisWeek = calendar.startOfWeek(for: now)
-        return (0..<LedgerStore.HeatmapSpan.weeks).compactMap { offset in
-            calendar.date(
-                byAdding: .weekOfYear,
-                value: offset - (LedgerStore.HeatmapSpan.weeks - 1),
-                to: thisWeek)
-        }
-    }
-
-    private func weekColumn(_ weekStart: Date) -> some View {
-        let calendar = Calendar.current
-        return VStack(spacing: Self.gap) {
-            ForEach(0..<7, id: \.self) { dayOffset in
-                if let day = calendar.date(byAdding: .day, value: dayOffset, to: weekStart),
-                   day <= now {
-                    let count = counts[calendar.startOfDay(for: day)] ?? 0
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(Self.rampColor(count))
-                        .frame(width: Self.cellSize, height: Self.cellSize)
-                        .help("\(count) review\(count == 1 ? "" : "s") · "
-                            + day.formatted(.dateTime.month(.abbreviated).day()))
-                } else {
-                    Color.clear
-                        .frame(width: Self.cellSize, height: Self.cellSize)
-                }
-            }
-        }
-    }
-
-    /// Month abbreviation over each column that starts a new month; labels
-    /// overflow their column like GitHub's.
-    private func monthLabels(weeks: [Date]) -> some View {
-        let calendar = Calendar.current
-        return HStack(alignment: .top, spacing: Self.gap) {
-            Color.clear.frame(width: 26, height: 1)   // over the weekday gutter
-            ForEach(Array(weeks.enumerated()), id: \.offset) { index, weekStart in
-                let month = calendar.component(.month, from: weekStart)
-                let previous = index > 0
-                    ? calendar.component(.month, from: weeks[index - 1]) : 0
-                ZStack(alignment: .topLeading) {
-                    Color.clear.frame(width: Self.cellSize, height: 12)
-                    if index > 0, month != previous {
-                        Text(weekStart.formatted(.dateTime.month(.abbreviated)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                    }
-                }
-            }
-        }
-    }
-
-    private var weekdayLabels: some View {
-        let calendar = Calendar.current.mondayFirst
-        let symbols = calendar.veryShortStandaloneWeekdaySymbols
-        return VStack(spacing: Self.gap) {
-            // Every other row, so the labels don't crowd: Mon, Wed, Fri.
-            ForEach(0..<7, id: \.self) { row in
-                Text(row.isMultiple(of: 2)
-                     ? symbols[(calendar.firstWeekday - 1 + row) % 7] : "")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 23, height: Self.cellSize)
-            }
-        }
-    }
-
-    private var legend: some View {
-        HStack(spacing: 3) {
-            Text("\(counts.values.reduce(0, +)) reviews in the last "
-                + "\(LedgerStore.HeatmapSpan.weeks) weeks")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Less")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            ForEach([0, 1, 3, 6, 10], id: \.self) { step in
-                RoundedRectangle(cornerRadius: 2.5)
-                    .fill(Self.rampColor(step))
-                    .frame(width: 10, height: 10)
-            }
-            Text("More")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Quantized sequential ramp: one hue, intensity tracks count, and it
-    /// adapts to light/dark because it's an opacity over the surface.
-    static func rampColor(_ count: Int) -> Color {
-        switch count {
-        case 0: return Color.primary.opacity(0.06)
-        case 1...2: return .green.opacity(0.30)
-        case 3...5: return .green.opacity(0.55)
-        case 6...9: return .green.opacity(0.80)
-        default: return .green
-        }
     }
 }

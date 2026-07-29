@@ -76,16 +76,21 @@ struct TaskListFilter: Equatable {
     }
 }
 
-/// What the review session pulls cards from (design.md §5.2): everything, one
-/// theme's tasks, or a single task.
+/// What the review session pulls cards from (design.md §5.2): everything, a
+/// deck the user asked for, one theme's tasks, or a single task.
+///
+/// Only `deck` is a persisted thing; the other three are runtime filters over
+/// the same card set, which is why they carry their names inline.
 enum ReviewDeck: Hashable {
     case all
+    case deck(key: String, name: String)
     case theme(key: String, name: String)
     case task(key: String, name: String)
 
     var label: String {
         switch self {
         case .all: return "All notes"
+        case .deck(_, let name): return name
         case .theme(_, let name): return name
         case .task(_, let name): return name
         }

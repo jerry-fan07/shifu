@@ -9,6 +9,7 @@ public enum FrontMatter {
     public enum Kind: String, Sendable {
         case knowledge
         case work
+        case taskOverview = "task_overview"
     }
 
     /// A parsed note file: frontmatter as flat strings, plus the trimmed body.
@@ -18,8 +19,22 @@ public enum FrontMatter {
         public var fields: [String: String]
         public var body: String
 
-        public var kind: Kind {
-            fields["kind"].flatMap(Kind.init(rawValue:)) ?? .knowledge
+        /// The declared kind, or nil when `kind:` names something this binary
+        /// doesn't know. Only an *absent* field means `.knowledge` (the pre-V1
+        /// rationale above); an unrecognized *string* is deliberately not
+        /// knowledge, so `doc.kind == .knowledge` guards reject a newer
+        /// binary's note instead of leaking it into the inbox and review
+        /// queues until every binary catches up.
+        public var kind: Kind? {
+            guard let raw = fields["kind"] else { return .knowledge }
+            return Kind(rawValue: raw)
+        }
+
+        /// The `kind:` string as written in the file — what the index stores,
+        /// so an older binary's reconcile round-trips a kind it can't parse
+        /// rather than relabeling it `knowledge`.
+        public var rawKind: String {
+            fields["kind"] ?? Kind.knowledge.rawValue
         }
     }
 

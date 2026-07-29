@@ -46,9 +46,11 @@ Sources/ShifuCore/
                Radar (+RadarDescriber), DigestGenerator, Embedder
   LLM/         LLMBackend protocol + LLMTokens
                (DeepSeekBackend, the only implementation, lives in shifu-analyzer — invariant 1)
-  Vault/       Note, WorkNote, FrontMatter, FSRS, VaultStore, VaultIndexer,
-               VaultSearch, TaskStore (+TaskMerging, TaskPrune), ThemeStore,
-               KnowledgeExtractor, WorkNoteCompiler
+  Vault/       Note, WorkNote, TaskOverview, FrontMatter, FSRS, VaultStore,
+               VaultIndexer, VaultSearch, TaskStore (+TaskMerging, TaskPrune),
+               ThemeStore, DeckStore, CardCandidates,
+               WorkNoteCompiler, TaskOverviewCompiler,
+               DeckSuggester, DeckBuilder
 ```
 
 ---
@@ -82,12 +84,22 @@ right of `observations` happens in `shifu-analyzer`.
                             ├──▶ ThemeClusterer ──▶ LLM ──▶ [activities].theme_key
                             │                               [themes] + narratives
                             │
-                            ├──▶ KnowledgeExtractor ──▶ vault/**.md  (inbox notes)
-                            ├──▶ WorkNoteCompiler   ──▶ vault/**.md  (per task-day)
+                            ├──▶ DeckBuilder.drainPending ──▶ vault/**.md (deck cards)
+                            ├──▶ WorkNoteCompiler   ──▶ vault/work/**.md (per task-day,
+                            │                                             two tiers)
+                            ├──▶ TaskOverviewCompiler ──▶ vault/tasks/*.md (per task)
                             │
                             ├──▶ VaultIndexer ──▶ [vault_index] [vault_fts] [vault_vectors]
                             │
-                            └──▶ PatternMiner ──▶ Radar ──▶ [suggestions]
+                            ├──▶ PatternMiner ──▶ Radar ──▶ [suggestions]
+                            └──▶ DeckSuggester ──▶ LLM ──▶ [deck_suggestions]   (weekly)
+
+        └─────────────────────────────────────────────────────────────────────┘
+
+        ┌────── shifu-analyzer --build-deck <key> (on request from the app) ──────┐
+
+  [decks] claim (CAS) ──▶ DeckBuilder ──▶ LLM ──▶ vault/**.md (kept, FSRS-seeded,
+                                                  `deck:`-stamped) ──▶ [decks] ready
 
         └─────────────────────────────────────────────────────────────────────┘
 
@@ -175,12 +187,14 @@ order, and some of that ordering is load-bearing:
 7. **`TaskMerges.writeSignatures`** — re-derives durable per-block signatures
    while the source window titles still exist (they die with the 14-day
    retention).
-8. **`KnowledgeExtractor.run`** then **`WorkNoteCompiler.run`** — write
-   Markdown into `~/Shifu/vault/`.
+8. **`DeckBuilder.drainPending`** (decks whose requested build never ran),
+   **`WorkNoteCompiler.run`** (day notes, detailed tier for work/learning-
+   dominant days) then **`TaskOverviewCompiler.run`** (per-task overview docs)
+   — write Markdown into `~/Shifu/vault/`.
 9. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
    this syncs the disposable index. Runs *after* task grouping so
    `task_key` → task/project resolution is current.
-10. **Weekly block** (`PatternMiner` → `Radar` → merge/theme suggestions),
+10. **Weekly block** (`PatternMiner` → `Radar` → merge/theme/deck suggestions),
     then the **daily digest**. Note `TaskMerges.autoMerge`
     is *not* in it: it drains the stored suggestion queue rather than minting
     it, so it runs beside `TaskStore.prune` every pass, and needs no embedder.
@@ -219,8 +233,12 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Screenshot + OCR mechanics | [`shifud/OCRCapture.swift`](Sources/shifud/OCRCapture.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
-| What gets extracted into notes | [`Vault/KnowledgeExtractor.swift`](Sources/ShifuCore/Vault/KnowledgeExtractor.swift) |
-| Per-task-day work notes | [`Vault/WorkNoteCompiler.swift`](Sources/ShifuCore/Vault/WorkNoteCompiler.swift) |
+| The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |
+| Decks: rows, statuses, build claims | [`Vault/DeckStore.swift`](Sources/ShifuCore/Vault/DeckStore.swift) |
+| Whether a task is offered a deck | [`Vault/DeckSuggester.swift`](Sources/ShifuCore/Vault/DeckSuggester.swift) |
+| What a deck's cards are made of | [`Vault/DeckBuilder.swift`](Sources/ShifuCore/Vault/DeckBuilder.swift) |
+| Per-task-day work notes + tiering | [`Vault/WorkNoteCompiler.swift`](Sources/ShifuCore/Vault/WorkNoteCompiler.swift) |
+| Per-task overview documents | [`Vault/TaskOverviewCompiler.swift`](Sources/ShifuCore/Vault/TaskOverviewCompiler.swift) |
 | Search ranking / hybrid retrieval | [`Vault/VaultSearch.swift`](Sources/ShifuCore/Vault/VaultSearch.swift) |
 | Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
@@ -238,7 +256,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v16 in
+The schema is defined *only* as migrations v1–v18 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -329,6 +347,16 @@ for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 **`theme_suggestions`** (v13, unique `task_id`; replaced the v9
 `project_suggestions`, dropped in v14).
 
+**`decks`** (v18, unique `key` *and* `task_key` — one deck per task; status
+`pending → building → ready`, advanced only through `DeckStore`'s
+compare-and-set, which is what keeps two analyzer processes from building the
+same deck. No `card_count` column on purpose: review-time pruning would make a
+stored count wrong within the session, so it is always derived from
+`vault_index.deck_key`) and **`deck_suggestions`** (v18, unique **`task_key`**
+— not `task_id`: the row is permanent, and prune/merge delete task rows while
+SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
+task).
+
 ### Disposable tables — rebuildable, never authoritative
 
 `vault_index`, `vault_fts` (FTS5 virtual, rowid tied to `vault_index.id`), and
@@ -343,6 +371,9 @@ than external-content.
 ~/Shifu/
   shifu.db      SQLite (WAL). Optionally SQLCipher-encrypted (`shifu encrypt`)
   vault/        Markdown notes — source of truth, opens in Obsidian
+    YYYY/MM/    knowledge notes: deck cards (nothing else writes here)
+    work/       per-(task, day) work notes
+    tasks/      per-task living overview documents
   digests/      daily digest markdown
   logs/         daemon logs
   bin/          installed binaries (shifud, shifu-analyzer, shifu)
@@ -369,7 +400,7 @@ This is where each is actually enforced, and what would catch a regression.
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
 | 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
-| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches` and `Radar.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; every prompt-budget computation reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow` |
+| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
 **Invariants 4 and 5 have no automated guard** because both live in `shifud`,
@@ -426,7 +457,12 @@ orphan good data.
 ## 7. Extension recipes
 
 **Add a database migration.** Append `migrator.registerMigration("v17")` in
-`ShifuDatabase.migrator`. Never edit v1–v16 — they have run on real machines.
+`ShifuDatabase.migrator`. Never edit v1–v18 — they have run on real machines.
+Pick the next number by checking what has actually *run* (`select identifier
+from grdb_migrations`), not just what is in this file: parallel branches pick
+"the next version" independently, and a duplicate identifier is not a
+conflict — GRDB skips it silently, and the missing table surfaces at query
+time. v17 belongs to another branch for exactly this reason.
 Additive column changes want `.notNull().defaults(to:)` so existing rows stay
 valid.
 
@@ -478,7 +514,7 @@ dictionary in `run()`, plus a line in `usage`.
 **Add a vault note kind.** Add a `FrontMatter.Kind` case; `VaultIndexer` and
 `VaultSearch` filter on it. Knowledge-note queries must keep excluding other
 kinds — `Note.parse` returns nil for non-`.knowledge` files precisely so work
-and project notes can never enter the inbox or review queue.
+and project notes can never enter the review queue.
 
 ---
 

@@ -11,19 +11,35 @@ public enum CardMarkup {
         case displayMath([MathRun])
         case inlineCode(String)
         case codeBlock(code: String, language: String?)
+
+        /// Segments that own their own line, so the surrounding text shouldn't
+        /// keep the newlines that separated them.
+        var isBlock: Bool {
+            switch self {
+            case .displayMath, .codeBlock: return true
+            case .text, .inlineMath, .inlineCode: return false
+            }
+        }
     }
 
     public enum Script: Sendable { case normal, raised, lowered }
+
+    /// The one typographic distinction that separates real math from italicised
+    /// ASCII (TeX's default math italic): variables lean, while digits,
+    /// operators, uppercase Greek, function names and `\text` stand upright.
+    public enum Style: Sendable { case variable, upright }
 
     /// One styled slice of converted math: baseline text, or a raised /
     /// lowered run (exponents, indices, fraction halves).
     public struct MathRun: Equatable, Sendable {
         public var text: String
         public var script: Script
+        public var style: Style
 
-        public init(_ text: String, script: Script = .normal) {
+        public init(_ text: String, script: Script = .normal, style: Style = .variable) {
             self.text = text
             self.script = script
+            self.style = style
         }
     }
 
@@ -43,10 +59,17 @@ public enum CardMarkup {
                 plain.append("$")   // escaped dollar stays literal
                 index += 2
             } else if let (segment, next) = delimitedSegment(chars, at: index) {
+                // A block stands on its own line, so the blank space that put
+                // it there isn't text — leaving it in adds an empty paragraph
+                // above and a stray leading newline below.
+                if segment.isBlock {
+                    while let last = plain.last, last.isWhitespace { plain.removeLast() }
+                }
                 if !plain.isEmpty { result.append(.text(plain)) }
                 plain = ""
                 result.append(segment)
                 index = next
+                if segment.isBlock, index < chars.count, chars[index] == "\n" { index += 1 }
             } else {
                 plain.append(chars[index])
                 index += 1
@@ -158,132 +181,47 @@ public enum CardMarkup {
                      language: tag.isEmpty ? nil : tag, end: chars.count)
     }
 
-    // MARK: - LaTeX → styled runs
+    // MARK: - Plain text
 
-    static let symbols: [String: String] = [
-        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε",
-        "zeta": "ζ", "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ",
-        "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "pi": "π", "rho": "ρ",
-        "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ", "chi": "χ",
-        "psi": "ψ", "omega": "ω", "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ",
-        "Lambda": "Λ", "Xi": "Ξ", "Pi": "Π", "Sigma": "Σ", "Phi": "Φ",
-        "Psi": "Ψ", "Omega": "Ω",
-        "times": "×", "cdot": "·", "div": "÷", "pm": "±", "mp": "∓",
-        "le": "≤", "leq": "≤", "ge": "≥", "geq": "≥", "ne": "≠", "neq": "≠",
-        "approx": "≈", "equiv": "≡", "sim": "∼", "propto": "∝", "infty": "∞",
-        "to": "→", "rightarrow": "→", "leftarrow": "←", "Rightarrow": "⇒",
-        "Leftarrow": "⇐", "implies": "⇒", "iff": "⇔", "mapsto": "↦",
-        "in": "∈", "notin": "∉", "subset": "⊂", "subseteq": "⊆",
-        "supset": "⊃", "cup": "∪", "cap": "∩", "setminus": "∖",
-        "emptyset": "∅", "varnothing": "∅", "forall": "∀", "exists": "∃",
-        "neg": "¬", "land": "∧", "lor": "∨", "wedge": "∧", "vee": "∨",
-        "nabla": "∇", "partial": "∂", "sum": "∑", "prod": "∏", "int": "∫",
-        "oint": "∮", "cdots": "⋯", "dots": "…", "ldots": "…", "vdots": "⋮",
-        "angle": "∠", "perp": "⊥", "parallel": "∥", "hbar": "ℏ", "ell": "ℓ",
-        "degree": "°", "circ": "∘", "star": "⋆", "bullet": "•",
-        "oplus": "⊕", "otimes": "⊗", "langle": "⟨", "rangle": "⟩",
-        "lfloor": "⌊", "rfloor": "⌋", "lceil": "⌈", "rceil": "⌉",
-        "mid": "|", "|": "‖", "quad": "  ", "qquad": "    ",
-        ",": " ", ";": " ", " ": " ", "\\": "\n"
+    private static let superscripts: [Character: Character] = [
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶",
+        "7": "⁷", "8": "⁸", "9": "⁹", "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼",
+        "(": "⁽", ")": "⁾", "n": "ⁿ", "i": "ⁱ", "T": "ᵀ", "j": "ʲ", "k": "ᵏ",
+        "m": "ᵐ", "p": "ᵖ", "x": "ˣ", "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ",
+        "e": "ᵉ", "t": "ᵗ", "r": "ʳ", "s": "ˢ", "*": "*", "'": "′"
     ]
 
-    /// Converts one LaTeX span into runs. Handles symbol commands, `^`/`_`
-    /// scripts, `\frac` (raised numerator ⁄ lowered denominator), `\sqrt`,
-    /// and `\text`; unknown commands degrade to their bare name so nothing
-    /// ever disappears from a card.
-    public static func mathRuns(_ latex: String) -> [MathRun] {
-        var runs: [MathRun] = []
-        convert(Array(latex), from: 0, to: latex.count, script: .normal, into: &runs)
-        return coalesce(runs)
-    }
+    private static let subscripts: [Character: Character] = [
+        "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄", "5": "₅", "6": "₆",
+        "7": "₇", "8": "₈", "9": "₉", "+": "₊", "-": "₋", "−": "₋", "=": "₌",
+        "(": "₍", ")": "₎", "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ",
+        "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ", "o": "ₒ", "p": "ₚ", "r": "ᵣ",
+        "s": "ₛ", "t": "ₜ", "u": "ᵤ", "v": "ᵥ", "x": "ₓ", ",": ","
+    ]
 
-    private static func convert(
-        _ chars: [Character], from start: Int, to end: Int,
-        script: Script, into runs: inout [MathRun]
-    ) {
-        var index = start
-        func append(_ text: String) {
-            if !text.isEmpty { runs.append(MathRun(text, script: script)) }
-        }
-        while index < end {
-            let char = chars[index]
-            if char == "\\" {
-                let (command, next) = readCommand(chars, after: index, limit: end)
-                index = next
-                switch command {
-                case "frac":
-                    let numerator = readGroup(chars, at: &index, limit: end)
-                    let denominator = readGroup(chars, at: &index, limit: end)
-                    // Raised-over-lowered around a fraction slash reads as a
-                    // built-up fraction at card sizes; nested scripts flatten.
-                    convert(Array(numerator), from: 0, to: numerator.count,
-                            script: .raised, into: &runs)
-                    runs.append(MathRun("⁄", script: script))
-                    convert(Array(denominator), from: 0, to: denominator.count,
-                            script: .lowered, into: &runs)
-                case "sqrt":
-                    let radicand = readGroup(chars, at: &index, limit: end)
-                    append(radicand.count > 1 ? "√(\(radicand))" : "√\(radicand)")
-                case "text", "mathrm", "operatorname":
-                    append(readGroup(chars, at: &index, limit: end))
-                case "left", "right", "big", "Big", "displaystyle":
-                    break   // sizing/delimiter hints — the glyph itself follows
-                default:
-                    append(symbols[command] ?? command)
-                }
-            } else if char == "^" || char == "_" {
-                index += 1
-                let target: Script = char == "^" ? .raised : .lowered
-                let group = readGroup(chars, at: &index, limit: end)
-                convert(Array(group), from: 0, to: group.count, script: target, into: &runs)
-            } else if char == "{" || char == "}" {
-                index += 1   // bare braces only group; drop them
-            } else {
-                append(String(char))
-                index += 1
+    /// A single-line, delimiter-free rendering for places that can't style
+    /// text — list-row snippets and the `shifu review` terminal UI. Scripts
+    /// become Unicode super/subscripts when every character has one, and fall
+    /// back to `^(…)` / `_(…)` when they don't.
+    public static func plainText(_ text: String) -> String {
+        var result = ""
+        for segment in segments(text) {
+            switch segment {
+            case .text(let plain): result += plain
+            case .inlineCode(let code): result += code
+            case .inlineMath(let runs): result += flatten(runs)
+            // Blocks had the newlines that set them apart trimmed off in
+            // `segments`, so they'd otherwise run into the surrounding words.
+            case .codeBlock(let code, _): result += " \(code) "
+            case .displayMath(let runs): result += " \(flatten(runs)) "
             }
         }
+        return result.trimmingCharacters(in: .whitespaces)
     }
 
-    /// `\command` name after a backslash: a letter word, or one symbol char.
-    private static func readCommand(
-        _ chars: [Character], after backslash: Int, limit: Int
-    ) -> (name: String, next: Int) {
-        var index = backslash + 1
-        guard index < limit else { return ("", index) }
-        if !chars[index].isLetter {
-            return (String(chars[index]), index + 1)
-        }
-        var name = ""
-        while index < limit, chars[index].isLetter {
-            name.append(chars[index])
-            index += 1
-        }
-        return (name, index)
-    }
-
-    /// The `{…}` group at `index` (brace-balanced), or the single character
-    /// there — the two argument shapes LaTeX allows.
-    private static func readGroup(_ chars: [Character], at index: inout Int, limit: Int) -> String {
-        guard index < limit else { return "" }
-        guard chars[index] == "{" else {
-            defer { index += 1 }
-            return String(chars[index])
-        }
-        var depth = 1
-        var cursor = index + 1
-        var group = ""
-        while cursor < limit, depth > 0 {
-            if chars[cursor] == "{" { depth += 1 }
-            if chars[cursor] == "}" { depth -= 1 }
-            if depth > 0 { group.append(chars[cursor]) }
-            cursor += 1
-        }
-        index = cursor
-        return group
-    }
-
-    private static func coalesce(_ runs: [MathRun]) -> [MathRun] {
+    private static func flatten(_ runs: [MathRun]) -> String {
+        // Style splits are invisible here, and a script that spans two of them
+        // ("x" + " → 0") must be mapped as one piece or neither half fits.
         var merged: [MathRun] = []
         for run in runs {
             if let last = merged.last, last.script == run.script {
@@ -292,6 +230,47 @@ public enum CardMarkup {
                 merged.append(run)
             }
         }
-        return merged
+        merged = merged.map { run in
+            var run = run
+            run.text = unspaced(run.text, script: run.script)
+            return run
+        }
+        return merged.indices.map { index in
+            // A fraction's halves are already spelled out by the slash between
+            // them, so they read better flat: "a⁄b", not "ᵃ⁄_b".
+            let touchesSlash = (index > 0 && merged[index - 1].text == "⁄")
+                || (index + 1 < merged.count && merged[index + 1].text == "⁄")
+            return touchesSlash ? merged[index].text : scripted(merged[index])
+        }.joined()
+    }
+
+    /// Undoes the typographic spacing, which only means something to a
+    /// renderer that can draw fractional gaps. Italic correction goes
+    /// entirely; the operator gaps become ordinary spaces at the baseline and
+    /// nothing at all inside a script, where they'd otherwise stop the run
+    /// mapping to Unicode super/subscripts ("∑ᵢ₌₁ⁿ" rather than "∑_(i = 1)").
+    private static func unspaced(_ text: String, script: Script) -> String {
+        String(text.compactMap { char in
+            switch char {
+            case italicCorrection: return nil
+            case relationSpace, operatorSpace: return script == .normal ? " " : nil
+            default: return char
+            }
+        })
+    }
+
+    private static func scripted(_ run: MathRun) -> String {
+        let table: [Character: Character]
+        let marker: String
+        switch run.script {
+        case .normal: return run.text
+        case .raised: (table, marker) = (superscripts, "^")
+        case .lowered: (table, marker) = (subscripts, "_")
+        }
+        let mapped = run.text.map { table[$0] }
+        guard !mapped.contains(where: { $0 == nil }) else {
+            return run.text.count == 1 ? "\(marker)\(run.text)" : "\(marker)(\(run.text))"
+        }
+        return String(mapped.compactMap { $0 })
     }
 }
