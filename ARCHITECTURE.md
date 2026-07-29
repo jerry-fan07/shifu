@@ -255,7 +255,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v17 in
+The schema is defined *only* as migrations v1–v18 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -336,12 +336,12 @@ for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 **`theme_suggestions`** (v13, unique `task_id`; replaced the v9
 `project_suggestions`, dropped in v14).
 
-**`decks`** (v17, unique `key` *and* `task_key` — one deck per task; status
+**`decks`** (v18, unique `key` *and* `task_key` — one deck per task; status
 `pending → building → ready`, advanced only through `DeckStore`'s
 compare-and-set, which is what keeps two analyzer processes from building the
 same deck. No `card_count` column on purpose: review-time pruning would make a
 stored count wrong within the session, so it is always derived from
-`vault_index.deck_key`) and **`deck_suggestions`** (v17, unique **`task_key`**
+`vault_index.deck_key`) and **`deck_suggestions`** (v18, unique **`task_key`**
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
 task).
@@ -446,7 +446,12 @@ orphan good data.
 ## 7. Extension recipes
 
 **Add a database migration.** Append `migrator.registerMigration("v17")` in
-`ShifuDatabase.migrator`. Never edit v1–v17 — they have run on real machines.
+`ShifuDatabase.migrator`. Never edit v1–v18 — they have run on real machines.
+Pick the next number by checking what has actually *run* (`select identifier
+from grdb_migrations`), not just what is in this file: parallel branches pick
+"the next version" independently, and a duplicate identifier is not a
+conflict — GRDB skips it silently, and the missing table surfaces at query
+time. v17 belongs to another branch for exactly this reason.
 Additive column changes want `.notNull().defaults(to:)` so existing rows stay
 valid.
 

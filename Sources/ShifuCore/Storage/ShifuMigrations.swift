@@ -373,8 +373,14 @@ extension ShifuDatabase {
                 """)
         }
 
-        migrator.registerMigration("v17") { db in
-            // User-requested flashcard decks (design.md §5.2). Automatic
+        migrator.registerMigration("v18") { db in
+            // User-requested flashcard decks (design.md §5.2).
+            //
+            // v18, not v17: a parallel branch registered its own "v17" and its
+            // binary reached the dogfood DB first. GRDB keys `grdb_migrations`
+            // on the identifier string, so a duplicate number is not a
+            // conflict — it is a *silent skip*, surfacing later as "no such
+            // table: decks" at query time rather than at open. Automatic
             // extraction no longer writes cards at all — a deck is the only
             // way one is born, and the request *is* the confirmation, so deck
             // cards skip the inbox and land kept.
