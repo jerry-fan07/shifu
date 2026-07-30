@@ -2,226 +2,232 @@ import AppKit
 import ShifuCore
 import SwiftUI
 
-/// First-run onboarding (design.md §7): four screens — what's captured,
-/// permissions, exclusions, analysis backend — under a scene that walks from
-/// dusk to daylight as you go, so finishing the flow lands on a morning.
-/// Local-only is the default.
+/// First run (design.md §7): four steps — what is captured, the two
+/// permissions, what stays unseen, and whether a model may be consulted.
+/// Local-only is the default, and every screen's job is to make the next one
+/// unsurprising.
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var page = 0
+    @State private var step = 0
     @State private var backend = "deepseek"
     @State private var apiKey = ""
 
-    private static let pageCount = 4
-    /// One sky per step. The arc is deliberate: you arrive at night and leave
-    /// in daylight.
-    private static let skies: [SkyTime] = [.dusk, .night, .dawn, .day]
-
-    private var sky: SkyTime { Self.skies[min(page, Self.skies.count - 1)] }
+    private static let steps = 4
 
     var body: some View {
-        VStack(spacing: 0) {
-            banner
+        VStack(alignment: .leading, spacing: 0) {
+            ticks
+            Text(title)
+                .font(Instrument.sans(24, .semibold))
+                .tracking(-0.36)
+                .foregroundStyle(Instrument.ink)
+                .padding(.bottom, 10)
             ScrollView {
-                Group {
-                    switch page {
-                    case 0: whatPage
+                VStack(alignment: .leading, spacing: 0) {
+                    switch step {
+                    case 0: capturePage
                     case 1: permissionsPage
                     case 2: exclusionsPage
                     default: backendPage
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 34)
-                .padding(.vertical, 24)
             }
-            Divider()
+            Rule(weight: .section)
             footer
         }
-        .frame(width: 660, height: 620)
-        .background(Dojo.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Dojo.hairline, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.14), radius: 24, y: 8)
+        .padding(.horizontal, 30)
+        .padding(.top, 26)
+        .frame(maxWidth: 560, maxHeight: 460)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Dojo.paper)
+        .background(Instrument.ground)
     }
 
-    private var banner: some View {
-        ShifuScene(
-            time: sky, mood: page == Self.pageCount - 1 ? .proud : .serene,
-            petSize: 84)
-            .frame(height: 190)
-            .overlay(alignment: .leading) {
-                LinearGradient(
-                    colors: [
-                        sky.palette.skyColors[0].opacity(0.55),
-                        sky.palette.skyColors[0].opacity(0)
-                    ],
-                    startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 300)
+    /// Four ticks, not a percentage: the flow is short enough to count.
+    private var ticks: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<Self.steps, id: \.self) { index in
+                Capsule()
+                    .fill(index <= step ? Instrument.accent : Instrument.well)
+                    .frame(width: 34, height: 3)
             }
-            .overlay(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("SHIFU · STEP \(page + 1) OF \(Self.pageCount)")
-                        .font(Dojo.label())
-                        .tracking(1.6)
-                        .foregroundStyle(sky.palette.secondaryTextColor)
-                    Text(title)
-                        .font(Dojo.display(26))
-                        // Narrow enough that the longest title wraps before it
-                        // reaches the temple on the mid ridge.
-                        .frame(maxWidth: 250, alignment: .leading)
-                        .foregroundStyle(sky.palette.textColor)
-                }
-                .padding(22)
-            }
-            .animation(.easeInOut(duration: 0.45), value: page)
+        }
+        .padding(.bottom, 18)
     }
 
     private var title: String {
-        switch page {
-        case 0: return "I watch you work."
-        case 1: return "Two permissions."
-        case 2: return "What stays unseen."
-        default: return "A mentor may consult."
+        switch step {
+        case 0: return "It watches you work."
+        case 1: return "Two permissions, then it's watching"
+        case 2: return "What stays unseen"
+        default: return "A model may be consulted"
         }
     }
 
     private var footer: some View {
-        HStack {
-            if page > 0 {
-                Button("Back") { withAnimation { page -= 1 } }
+        HStack(spacing: 12) {
+            if step > 0 {
+                InlineLink("Back", size: 12.5) { step -= 1 }
             }
-            Spacer()
-            HStack(spacing: 6) {
-                ForEach(0..<Self.pageCount, id: \.self) { dot in
-                    Capsule()
-                        .fill(dot == page ? Dojo.accent : Dojo.well)
-                        .frame(width: dot == page ? 16 : 6, height: 6)
-                }
-            }
-            .animation(.easeInOut(duration: 0.25), value: page)
-            Spacer()
-            if page < Self.pageCount - 1 {
-                Button("Next") { withAnimation { page += 1 } }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+            Figure(note, size: 11, color: Instrument.ghost)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if step < Self.steps - 1 {
+                SolidButton(title: "Next") { step += 1 }
             } else {
-                Button("Begin the practice") { finish() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+                SolidButton(title: "Begin", action: finish)
             }
         }
-        .padding(.horizontal, 22)
         .padding(.vertical, 14)
     }
 
-    private var whatPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Literal strings, not concatenations: Text only parses the
-            // **markdown** through its LocalizedStringKey initializer.
-            Text("""
-            Not to judge — to remember. I capture **text and metadata** about \
-            what's on your screen — app, window title, visible text — and turn it \
-            into a time ledger, a knowledge vault, and automation suggestions.
-            """)
-            Text("""
-            Raw captured text is deleted after 14 days; the distilled work notes \
-            in your vault persist beyond that window.
-            """)
-            promises
+    /// The promise that matters most on each step, in the register that says
+    /// it is a rule rather than a reassurance.
+    private var note: String {
+        switch step {
+        case 0: return "Raw text is deleted after 14 days."
+        case 1: return "Pixels are never saved. Screenshots live in memory for one OCR call."
+        case 2: return "Exclusions are enforced before capture, not filtered after."
+        default: return "Nothing leaves this Mac until you add a key."
         }
     }
 
-    private var promises: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Eyebrow("what I never do")
-            ForEach([
-                "never record keystrokes",
-                "never save screenshots — pixels live in memory only for OCR",
-                "never send raw captures anywhere — analysis sends only redacted "
-                    + "text samples to DeepSeek, and only after you add an API key"
-            ], id: \.self) { line in
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Dojo.accentText)
-                    Text(line)
+    // MARK: - Steps
+
+    private var capturePage: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            prose("""
+            Not to judge — to remember. Shifu captures **text and metadata** about what is \
+            on your screen — app, window title, visible text — and turns it into a time \
+            ledger, a knowledge vault, and automation suggestions.
+            """)
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow("What it never does")
+                ForEach([
+                    "never records keystrokes",
+                    "never saves screenshots — pixels live in memory only, for OCR",
+                    "never sends raw captures anywhere"
+                ], id: \.self) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Figure("×", size: 12, weight: .medium, color: Instrument.alert)
+                        Text(line)
+                            .font(Instrument.sans(13))
+                            .foregroundStyle(Instrument.body)
+                    }
                 }
             }
+            .padding(.top, 2)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Dojo.well, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("""
-            The capture daemon (`shifud`, installed at ~/Shifu/bin) needs two \
-            permissions, granted in System Settings → Privacy & Security:
-
-            • **Accessibility** — window titles and visible text (the cheap path)
-            • **Screen Recording** — the OCR fallback for apps that expose no text
-
-            Without them Shifu degrades gracefully to app-switch metadata only.
+            prose("""
+            The capture daemon runs from `~/Shifu/bin` and needs both, from System \
+            Settings → Privacy & Security. Shifu can't read the daemon's grant state from \
+            here — the ledger filling up is the proof.
             """)
-            HStack {
-                Button("Open Accessibility Settings") {
-                    NSWorkspace.shared.open(URL(string:
-                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+            permission(
+                "Accessibility",
+                detail: "Window titles and visible text — the cheap path.",
+                url: "x-apple.systempreferences:com.apple.preference.security"
+                    + "?Privacy_Accessibility")
+            permission(
+                "Screen Recording",
+                detail: "The OCR fallback for apps that expose no text. Without it Shifu "
+                    + "keeps working on metadata alone.",
+                url: "x-apple.systempreferences:com.apple.preference.security"
+                    + "?Privacy_ScreenCapture")
+        }
+    }
+
+    private func permission(_ name: String, detail: String, url: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            StatusDot(color: Instrument.alert)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(name)
+                        .font(Instrument.sans(13.5, .semibold))
+                        .foregroundStyle(Instrument.ink)
+                    Spacer(minLength: 0)
+                    SolidButton(title: "Open Settings") {
+                        if let target = URL(string: url) { NSWorkspace.shared.open(target) }
+                    }
                 }
-                Button("Open Screen Recording Settings") {
-                    NSWorkspace.shared.open(URL(string:
-                        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                }
+                Text(detail)
+                    .font(Instrument.sans(12.5))
+                    .foregroundStyle(Instrument.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private var exclusionsPage: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("""
-            Exclusions are enforced **before** capture — excluded content is never \
-            read, only opaque "private time" duration is counted:
-
-            • password managers and Keychain
-            • banking, payment, and health sites
-            • private/incognito browser windows (always, not configurable)
-            • credit cards, SSNs, and secret-shaped strings are redacted from all \
-            text before it ever touches disk
+            prose("""
+            Excluded content is never read. Only an opaque "private time" duration is \
+            counted, and it shows on the ribbon as hatching rather than as a gap.
             """)
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow("Never inspected")
+                ForEach([
+                    "password managers and Keychain",
+                    "banking, payment, and health sites",
+                    "private and incognito browser windows — always, not configurable",
+                    "cards, SSNs, and secret-shaped strings, redacted before any write"
+                ], id: \.self) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Figure("·", size: 12, weight: .medium, color: Instrument.ghost)
+                        Text(line)
+                            .font(Instrument.sans(13))
+                            .foregroundStyle(Instrument.body)
+                    }
+                }
+            }
+            .padding(.top, 2)
         }
     }
 
     private var backendPage: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Task naming, ambiguous-time classification, and knowledge "
-                + "extraction use DeepSeek. Without an API key those stages are "
-                + "skipped and Shifu runs on rules alone.")
-            Picker("", selection: $backend) {
-                Text("DeepSeek — sends redacted text samples once a key is set").tag("deepseek")
-                Text("Rules only — no AI, nothing ever leaves this Mac").tag("off")
-            }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
+            prose("""
+            Task naming, ambiguous-time classification, and knowledge extraction use \
+            DeepSeek. Without a key those stages are skipped and Shifu runs on rules alone.
+            """)
+            SegmentedBar(
+                options: [("DeepSeek", "deepseek"), ("Rules only", "off")],
+                selection: $backend)
             if backend == "deepseek" {
                 SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                Text("Defaults: deepseek-v4-flash for classification, deepseek-v4-pro "
-                    + "for task grouping; change either in Settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Only derived text samples are sent, after exclusions and "
-                    + "redaction. Never pixels.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .textFieldStyle(.plain)
+                    .font(Instrument.mono(12))
+                    .foregroundStyle(Instrument.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Instrument.edge, lineWidth: 1)
+                    }
+                Text("Only derived text samples are sent, after exclusions and redaction. "
+                    + "Never pixels. Defaults: deepseek-v4-flash for classification, "
+                    + "deepseek-v4-pro for grouping — change either in Settings.")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// Body copy. A literal string, not a concatenation: `Text` only parses
+    /// the **markdown** through its LocalizedStringKey initializer.
+    private func prose(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(Instrument.sans(14))
+            .lineSpacing(5)
+            .foregroundStyle(Instrument.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 470, alignment: .leading)
     }
 
     private func finish() {

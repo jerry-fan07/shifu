@@ -13,6 +13,8 @@ extension LedgerStore {
         var cards: [Note] = []
         var due: [Note] = []
         var reviewsByDay: [Date: Int] = [:]
+        /// Everything the vault holds, cards or not — what the Notes row counts.
+        var total = 0
     }
 
     /// One vault walk feeding the review queue and the Cards screens.
@@ -21,6 +23,7 @@ extension LedgerStore {
     func vaultSnapshot() -> VaultSnapshot {
         var snapshot = VaultSnapshot()
         let notes = (try? vault.allNotes()) ?? []
+        snapshot.total = notes.count
         snapshot.cards = notes
             .filter { $0.state == .kept && $0.questionAnswer != nil }
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
@@ -53,6 +56,40 @@ extension LedgerStore {
 
     var reviewsToday: Int {
         reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
+    }
+
+    /// Consecutive days ending today with at least one review. Today counts
+    /// only once it has one, so an unstarted morning doesn't read as a break —
+    /// the run is measured back from yesterday until then.
+    var reviewStreak: Int? {
+        let calendar = Calendar.current
+        var day = calendar.startOfDay(for: Date())
+        if reviewsByDay[day] == nil {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: day)
+            else { return nil }
+            day = yesterday
+        }
+        var run = 0
+        while let count = reviewsByDay[day], count > 0 {
+            run += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day)
+            else { break }
+            day = previous
+        }
+        return run > 0 ? run : nil
+    }
+
+    /// The middle scheduled interval across cards that have been reviewed at
+    /// least once — the one number that says whether the deck is settling or
+    /// still churning. Nil until something has been graded.
+    var medianIntervalDays: Int? {
+        let intervals = allCards
+            .compactMap { $0.srs }
+            .filter { $0.reps > 0 }
+            .map(\.intervalDays)
+            .sorted()
+        guard !intervals.isEmpty else { return nil }
+        return Int(intervals[intervals.count / 2].rounded())
     }
 
     func discard(_ note: Note) {

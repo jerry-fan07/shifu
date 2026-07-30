@@ -1,416 +1,251 @@
 import ShifuCore
 import SwiftUI
 
-/// Navigation value for pushing a theme page — distinct from the bare Int64
-/// used for task pages, so one NavigationStack can route both.
-struct ThemeRoute: Hashable {
-    let id: Int64
-}
-
-/// The Vault tab's *Themes* mode (design.md §5.3): the user's broad ongoing
-/// initiatives, most recently active first, laid out as a grid of cards
-/// rather than a vertical list.
+/// The Vault's *Themes* place (design.md §5.3): the few long arcs the user's
+/// work belongs to, as one table — total, this week, eight weeks of shape, and
+/// how many tasks sit in each.
 ///
-/// Every theme here is one the user made — by hand, or by accepting one of the
-/// clusterer's proposals, which sit in their own section *below* the grid.
-/// Nothing crosses that line on its own.
-struct ThemeListView: View {
+/// Every theme here is one the user made, by hand or by accepting a proposal.
+/// The clusterer's proposals sit below the table and are never counted as
+/// themes; nothing crosses that line on its own.
+struct ThemesView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var editing: ThemeStore.Overview?
+    @EnvironmentObject private var router: Router
+    @State private var sort: Sort = .week
     @State private var isCreating = false
+    @State private var editing: ThemeStore.Overview?
+    /// Eight weeks of blocks, read once on appear: the sparklines, the task
+    /// counts, and the unfiled-time line all come out of this one query.
+    @State private var blocks: [LedgerBuilder.LabeledActivity] = []
 
-    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 340), spacing: 12)]
+    enum Sort: String, CaseIterable, Hashable {
+        case week = "this week"
+        case total = "all time"
+        case recent = "last touched"
+    }
+
+    /// How far back a sparkline reaches, and therefore what "Tasks" counts.
+    static let weeks = 8
+    /// A theme with nothing in it this long reads as dormant rather than slow.
+    private static let quietDays = 7
 
     var body: some View {
-        PageScaffold(destination: .themes) {
-            Button("New Theme", systemImage: "plus") { isCreating = true }
-                .controlSize(.small)
-                .help("Themes are yours to create — Shifu only files time into them")
-        } content: {
-            grid
+        VStack(spacing: 0) {
+            PageHead("Themes", subtitle: subtitle) {
+                HStack(spacing: 6) {
+                    FilterMenu(
+                        prefix: "Sort", options: Sort.allCases.map { ($0.rawValue, $0) },
+                        selection: $sort)
+                    SolidButton(title: "New theme") { isCreating = true }
+                }
+            }
+            PageBody {
+                if store.themes.isEmpty {
+                    BlankSlate(
+                        "No themes yet. A theme is a broad initiative you want your hours "
+                            + "grouped under — \"Q3 pricing\", \"Travel\". Name the ones you "
+                            + "care about; I file time into them and suggest others I notice.")
+                } else {
+                    table
+                }
+                proposals
+                unfiled
+            }
         }
         .sheet(isPresented: $isCreating) { ThemeEditSheet(theme: nil) }
         .sheet(item: $editing) { ThemeEditSheet(theme: $0) }
-        .onAppear { store.refresh() }
-    }
-
-    private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(store.themes) { theme in
-                    themeCell(theme)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-            if !store.themeProposals.isEmpty {
-                suggested
-            }
-        }
-        // Overlaid rather than placed inside the grid so it centers in the
-        // full content area instead of hugging the top-leading corner.
-        .overlay {
-            if store.themes.isEmpty && store.themeProposals.isEmpty {
-                SenseiEmptyState(
-                    "No themes yet",
-                    message: "Themes are the broad initiatives you want your time "
-                        + "grouped under — \"YC Startup School\", \"Travel\". Name the "
-                        + "ones you care about; I will file your hours into them, and "
-                        + "suggest others I notice."
-                ) {
-                    Button("New Theme") { isCreating = true }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
+        .onAppear {
+            store.refresh()
+            blocks = store.activities(sinceWeeksAgo: Self.weeks)
         }
     }
 
-    /// The card, plus its edit button layered *over* the navigation link
-    /// rather than inside it — a button nested in a NavigationLink's label
-    /// doesn't reliably get the click on macOS. Deleting lives one level in,
-    /// in the edit sheet, so there is a single confirmed path to it.
-    private func themeCell(_ theme: ThemeStore.Overview) -> some View {
-        ZStack(alignment: .topTrailing) {
-            NavigationLink(value: ThemeRoute(id: theme.id)) {
-                ThemeCardView(theme: theme)
+    private var subtitle: String {
+        let moved = store.themes.filter { $0.weekMs > 0 }.count
+        guard !store.themes.isEmpty else {
+            return "The initiatives your time clusters into."
+        }
+        return "\(store.themes.count) initiative\(store.themes.count == 1 ? "" : "s") "
+            + "your time clusters into · \(moved) moved this week"
+    }
+
+    // MARK: - Table
+
+    private var table: some View {
+        let runs = LedgerShapes.weeklyTotals(blocks, weeks: Self.weeks) { $0.themeName }
+        let taskCounts = tasksPerTheme()
+        return VStack(alignment: .leading, spacing: 0) {
+            ColumnHead {
+                Text("Theme").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Total").frame(width: 84, alignment: .trailing)
+                Text("This week").frame(width: 84, alignment: .trailing)
+                Text("\(Self.weeks) weeks").frame(width: 108, alignment: .leading)
+                Text("Tasks").frame(width: 48, alignment: .trailing)
             }
-            .buttonStyle(.plain)
-            Button {
-                editing = theme
-            } label: {
-                Image(systemName: "pencil")
-                    .foregroundStyle(.secondary)
-                    .padding(6)
-                    .contentShape(Rectangle())
+            ForEach(sorted) { theme in
+                row(
+                    theme,
+                    run: runs[theme.name] ?? Array(repeating: 0, count: Self.weeks),
+                    tasks: taskCounts[theme.name] ?? 0)
             }
-            .buttonStyle(.plain)
-            .help("Rename, describe, or delete this theme")
-            .padding(6)
         }
     }
 
-    /// The clusterer's proposals (design.md §5.3). Deliberately below the
-    /// grid, visually distinct, and never counted as themes: this is the
-    /// model's opinion of what the user is up to, waiting for a yes.
-    private var suggested: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeading(
-                "Noticed · \(store.themeProposals.count)", trailing: "not themes yet")
-            HStack(alignment: .top) {
-                Text("Initiatives Shifu noticed in your time. Adding one creates the "
-                    + "theme and files the blocks behind it; nothing is added on its own.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 460, alignment: .leading)
-                Spacer()
-                Button("Dismiss all", action: store.dismissAllThemeProposals)
-                    .buttonStyle(.link)
-                    .font(.caption)
-                    .help("Clears these for good — a dismissed suggestion never comes back")
-            }
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(store.themeProposals) { proposal in
-                    ProposalCardView(proposal: proposal)
-                }
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 20)
-    }
-}
-
-/// One theme as a rectangular card in the Themes grid: name, gist, and
-/// time footer, uniform height so the grid reads as tiles.
-private struct ThemeCardView: View {
-    let theme: ThemeStore.Overview
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(theme.name)
-                .font(.headline)
-                .lineLimit(2)
-                // Room for the edit menu sitting in the corner above.
-                .padding(.trailing, 20)
-            if let gist = theme.gist, !gist.isEmpty {
-                Text(gist)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            Spacer(minLength: 0)
-            HStack(alignment: .firstTextBaseline) {
-                Text(LedgerStore.hours(theme.totalMs))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if theme.weekMs > 0 {
-                    Text("\(LedgerStore.hours(theme.weekMs)) this week")
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .font(.caption)
-        }
-        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-        .dojoCard(padding: 12)
-        .contentShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-/// One suggestion, shaped like a theme card so the two read as the same kind
-/// of thing — but dashed and unfilled, because it isn't one yet. The evidence
-/// line is the whole argument for saying yes: how much time is already behind
-/// this idea.
-private struct ProposalCardView: View {
-    @EnvironmentObject private var store: LedgerStore
-    let proposal: ThemeProposals.Pending
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(proposal.name)
-                .font(.headline)
-                .lineLimit(2)
-            if let gist = proposal.gist, !gist.isEmpty {
-                Text(gist)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-            }
-            Spacer(minLength: 0)
-            Text("\(LedgerStore.hours(proposal.totalMs)) across "
-                + "\(proposal.blockCount) block\(proposal.blockCount == 1 ? "" : "s")")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
-            HStack {
-                Button("Add") { store.acceptThemeProposal(proposal) }
-                    .buttonStyle(.borderedProminent)
-                Button("Dismiss") { store.dismissThemeProposal(proposal) }
-                Spacer()
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    Dojo.accent.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-        }
-    }
-}
-
-/// Create a theme, or edit the name and gist of one. Both live in one sheet:
-/// the fields are identical, and the only difference is whether there is a
-/// row behind them to delete.
-struct ThemeEditSheet: View {
-    @EnvironmentObject private var store: LedgerStore
-    @Environment(\.dismiss) private var dismiss
-    /// nil when creating.
-    let theme: ThemeStore.Overview?
-
-    @State private var name: String
-    @State private var gist: String
-    @State private var confirmingDelete = false
-
-    init(theme: ThemeStore.Overview?) {
-        self.theme = theme
-        _name = State(initialValue: theme?.name ?? "")
-        _gist = State(initialValue: theme?.gist ?? "")
-    }
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(theme == nil ? "New theme" : "Edit theme")
-                .font(.title3)
-                .bold()
-            field("Name", prompt: "YC Startup School", text: $name)
-            field("Description (optional)", prompt: "Program sessions, applications, "
-                + "and everything around them.", text: $gist)
-            Text(theme == nil
-                ? "Shifu will file matching time into this theme from the next "
-                    + "analysis run on."
-                : "Renaming keeps the theme's history — its time stays filed here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            footer
-        }
-        .padding(20)
-        .frame(minWidth: 420)
-        .confirmationDialog(
-            "Delete \"\(theme?.name ?? "")\"?", isPresented: $confirmingDelete
-        ) {
-            Button("Delete theme", role: .destructive) {
-                if let theme { store.deleteTheme(theme.id) }
-                dismiss()
-            }
-        } message: {
-            Text("The time stays in your ledger — it just stops being filed under "
-                + "this theme, and Shifu won't suggest it again.")
+    private var sorted: [ThemeStore.Overview] {
+        switch sort {
+        case .week: return store.themes.sorted { $0.weekMs > $1.weekMs }
+        case .total: return store.themes.sorted { $0.totalMs > $1.totalMs }
+        case .recent: return store.themes.sorted { $0.lastActiveAt > $1.lastActiveAt }
         }
     }
 
-    private func field(
-        _ label: String, prompt: String, text: Binding<String>
+    private func row(
+        _ theme: ThemeStore.Overview, run: [Double], tasks: Int
     ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField(prompt, text: text)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    private var footer: some View {
-        HStack {
-            if theme != nil {
-                Button("Delete…", role: .destructive) { confirmingDelete = true }
-            }
-            Spacer()
-            Button("Cancel") { dismiss() }
-                .keyboardShortcut(.cancelAction)
-            Button(theme == nil ? "Create" : "Save") {
-                if let theme {
-                    store.updateTheme(theme.id, name: name, gist: gist)
-                } else {
-                    store.createTheme(named: name, gist: gist)
-                }
-                dismiss()
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .disabled(trimmedName.isEmpty)
-        }
-    }
-}
-
-/// One theme as a full page: the running narrative, day-by-day history,
-/// the tasks the theme's time flowed through (each links to its task page),
-/// and recent raw activity.
-struct ThemeDetailView: View {
-    @EnvironmentObject private var store: LedgerStore
-    @Environment(\.dismiss) private var dismiss
-    let themeID: Int64
-
-    @State private var detail: ThemeStore.Detail?
-    @State private var name = ""
-    @State private var editing: ThemeStore.Overview?
-
-    var body: some View {
-        Group {
-            if let detail {
-                content(detail)
-            } else {
-                ContentUnavailableView("Theme not found", systemImage: "questionmark.square")
-            }
-        }
-        .sheet(item: $editing, onDismiss: reload) { ThemeEditSheet(theme: $0) }
-        .onAppear(perform: reload)
-    }
-
-    private func reload() {
-        detail = store.themeDetail(themeID)
-        name = detail?.overview.name ?? ""
-        // Deleted from the edit sheet: there is no page left to stand on.
-        if detail == nil { dismiss() }
-    }
-
-    private func content(_ detail: ThemeStore.Detail) -> some View {
-        List {
-            Section {
-                header(detail)
-            }
-            if let summary = detail.overview.summary, !summary.isEmpty {
-                Section("The story so far") {
-                    Text(summary)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                }
-            }
-            if !detail.days.isEmpty {
-                Section("History") {
-                    ForEach(detail.days) { day in
-                        dayRow(day)
-                    }
-                }
-            }
-            if !detail.tasks.isEmpty {
-                Section("Tasks in this theme") {
-                    ForEach(detail.tasks) { task in
-                        NavigationLink(value: task.taskID) {
-                            HStack {
-                                Text(task.name)
-                                Spacer()
-                                Text(LedgerStore.hours(task.ms))
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
+        let quiet = quietFor(theme)
+        return Button {
+            router.open(.theme(theme.id))
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 14) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(theme.name)
+                            .font(Instrument.sans(13.5, .semibold))
+                            .foregroundStyle(quiet == nil ? Instrument.ink : Instrument.muted)
+                            .lineLimit(1)
+                        if let quiet {
+                            Eyebrow(quiet, tracking: 0.6)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Figure(
+                        TimeBreakdown.duration(theme.totalMs),
+                        color: quiet == nil ? Instrument.ink : Instrument.muted)
+                        .frame(width: 84, alignment: .trailing)
+                    Figure(
+                        theme.weekMs > 0 ? TimeBreakdown.duration(theme.weekMs) : "—",
+                        color: theme.weekMs > 0 ? Instrument.ink : Instrument.ghost)
+                        .frame(width: 84, alignment: .trailing)
+                    Sparkline(values: run, dormant: quiet != nil)
+                        .frame(width: 108, alignment: .leading)
+                    Figure("\(tasks)", color: Instrument.muted)
+                        .frame(width: 48, alignment: .trailing)
+                }
+                if let gist = theme.gist, !gist.isEmpty {
+                    Text(gist)
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: 470, alignment: .leading)
                 }
             }
-            if !detail.recent.isEmpty {
-                Section("Recent activity") {
-                    ForEach(detail.recent) { line in
-                        ActivityLineRow(line: line)
+            .padding(.top, 10)
+            .padding(.bottom, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Rule() }
+    }
+
+    /// "QUIET 9 DAYS" — nil while the theme is still moving. A theme going
+    /// quiet is the most useful thing this table can tell you, and it is
+    /// invisible in a total.
+    private func quietFor(_ theme: ThemeStore.Overview) -> String? {
+        let last = Date(timeIntervalSince1970: Double(theme.lastActiveAt) / 1_000)
+        let days = Calendar.current.dateComponents(
+            [.day], from: last, to: Date()).day ?? 0
+        guard days >= Self.quietDays else { return nil }
+        return days >= 21 ? "quiet \(days / 7) weeks" : "quiet \(days) days"
+    }
+
+    /// Distinct tasks each theme's blocks passed through in the sparkline's
+    /// window — the same eight weeks the shape beside it covers, so the two
+    /// numbers in a row are answers to the same question.
+    private func tasksPerTheme() -> [String: Int] {
+        var names: [String: Set<String>] = [:]
+        for block in blocks {
+            guard let theme = block.themeName, let task = block.taskName else { continue }
+            names[theme, default: []].insert(task)
+        }
+        return names.mapValues(\.count)
+    }
+
+    // MARK: - Below the table
+
+    /// What the clusterer thinks you are up to, waiting for a yes. Below the
+    /// table, in a quieter register, and never counted in the theme total.
+    @ViewBuilder private var proposals: some View {
+        if !store.themeProposals.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Eyebrow("Noticed · \(store.themeProposals.count)")
+                    Text("not themes yet")
+                        .font(Instrument.sans(11.5))
+                        .foregroundStyle(Instrument.ghost)
+                    Spacer()
+                    InlineLink("Dismiss all", action: store.dismissAllThemeProposals)
+                }
+                .padding(.top, 18)
+                .padding(.bottom, 8)
+                ForEach(store.themeProposals) { proposal in
+                    Rule()
+                    proposalRow(proposal)
+                }
+            }
+        }
+    }
+
+    private func proposalRow(_ proposal: ThemeProposals.Pending) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(proposal.name)
+                    .font(Instrument.sans(13.5, .semibold))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                Figure(
+                    "\(TimeBreakdown.duration(proposal.totalMs)) · "
+                        + "\(proposal.blockCount) block\(proposal.blockCount == 1 ? "" : "s")",
+                    size: 11, color: Instrument.muted)
+            }
+            if let gist = proposal.gist, !gist.isEmpty {
+                Text(gist)
+                    .font(Instrument.sans(12.5))
+                    .foregroundStyle(Instrument.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 470, alignment: .leading)
+            }
+            HStack(spacing: 10) {
+                SolidButton(title: "Add") { store.acceptThemeProposal(proposal) }
+                OutlineButton(title: "Dismiss") { store.dismissThemeProposal(proposal) }
+            }
+            .padding(.top, 4)
+        }
+        .padding(.vertical, 10)
+    }
+
+    /// The line that closes the page: hours this week that belong to nothing.
+    /// It is the only place in the app that number appears, and it is the
+    /// reason to open the Tasks list.
+    @ViewBuilder private var unfiled: some View {
+        let calendar = Calendar.current
+        let weekStart = calendar.startOfWeek(for: Date())
+        let loose = blocks
+            .filter {
+                $0.themeName == nil
+                    && $0.startedAt >= Int64(weekStart.timeIntervalSince1970 * 1_000)
+            }
+            .reduce(0) { $0 + $1.durationMs }
+        if loose > 60_000 {
+            QuietLine {
+                HStack(spacing: 4) {
+                    Text("\(TimeBreakdown.duration(loose)) this week sits in no theme —")
+                    InlineLink("file it", size: 12.5) {
+                        store.taskFilter.theme = .unassigned
+                        store.loadTasksSoon()
+                        router.go(to: .tasks)
                     }
                 }
             }
-        }
-        .listStyle(.inset)
-        .navigationTitle(detail.overview.name)
-        .toolbar {
-            Button("Edit", systemImage: "pencil") { editing = detail.overview }
-        }
-    }
-
-    @ViewBuilder private func header(_ detail: ThemeStore.Detail) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TextField("Theme name", text: $name)
-                .textFieldStyle(.plain)
-                .font(.title2.bold())
-                .onSubmit {
-                    store.renameTheme(themeID, to: name)
-                    reload()
-                }
-            if let gist = detail.overview.gist, !gist.isEmpty {
-                Text(gist)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 12) {
-                Label(LedgerStore.hours(detail.overview.totalMs), systemImage: "clock")
-                    .monospacedDigit()
-                Label {
-                    Text(Date(timeIntervalSince1970:
-                            Double(detail.overview.lastActiveAt) / 1_000),
-                         format: .relative(presentation: .named))
-                } icon: {
-                    Image(systemName: "sparkles")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func dayRow(_ day: ThemeStore.DayEntry) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(Date(timeIntervalSince1970: Double(day.dayStart) / 1_000),
-                 format: .dateTime.weekday(.abbreviated).day().month())
-                .monospacedDigit()
-                .frame(width: 110, alignment: .leading)
-            Text(day.summary)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer()
-            Text(LedgerStore.hours(day.durationMs))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
         }
     }
 }
