@@ -117,10 +117,10 @@ struct SegmentedBar<Option: Hashable>: View {
     }
 }
 
-/// A menu of options with a checkmark on the current one, wearing the
-/// outlined-pill look. Deliberately not a menu-style `Picker`: those don't
-/// commit their selection on this machine's macOS, so every "pick one of
-/// these" control in the app is built this way.
+/// A menu of options with a check on the current one, wearing the outlined
+/// pill. Neither a `Picker` nor a `Menu`: menu-style Pickers don't commit
+/// their selection on this machine's macOS, and AppKit's menu can't be
+/// dressed — so it is a `DropdownButton`, which draws its own panel.
 struct FilterMenu<Option: Hashable>: View {
     /// Shown before the value — "Sort: this week". Omitted when nil.
     var prefix: String?
@@ -137,42 +137,13 @@ struct FilterMenu<Option: Hashable>: View {
     }
 
     var body: some View {
-        // The pill is drawn *around* the Menu, not inside its label: a
-        // borderless menu re-lays its label out and keeps only the text, so
-        // padding and a border placed in there are silently dropped and the
-        // control reads as a bare word.
-        HStack(spacing: 4) {
-            Menu {
-                ForEach(options, id: \.value) { option in
-                    Button {
-                        selection = option.value
-                    } label: {
-                        if option.value == selection {
-                            Label(option.label, systemImage: "checkmark")
-                        } else {
-                            Text(option.label)
-                        }
-                    }
+        DropdownButton(
+            label: label,
+            entries: options.map { option in
+                DropdownEntry(option.label, isOn: option.value == selection) {
+                    selection = option.value
                 }
-            } label: {
-                Text(label)
-                    .font(Instrument.sans(12))
-                    .foregroundStyle(Instrument.railInk)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            Text("⌄")
-                .font(Instrument.sans(10))
-                .foregroundStyle(Instrument.faint)
-                .baselineOffset(2)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .overlay {
-            RoundedRectangle(cornerRadius: 6).strokeBorder(Instrument.edge, lineWidth: 1)
-        }
-        .fixedSize()
+            })
     }
 
     private var label: String {
@@ -183,38 +154,16 @@ struct FilterMenu<Option: Hashable>: View {
 }
 
 /// A menu of actions wearing the same outlined pill as `FilterMenu` — "New
-/// deck" over the tasks one could be made from. Same Menu-of-Buttons
-/// construction, for the same macOS reason, and the pill likewise drawn
-/// around the Menu rather than in its label.
+/// deck" over the tasks one could be made from. Nothing is checked: none of
+/// these is a current state.
 struct ActionMenu: View {
     let title: String
     let options: [(label: String, action: () -> Void)]
 
     var body: some View {
-        HStack(spacing: 4) {
-            Menu {
-                ForEach(Array(options.enumerated()), id: \.offset) { _, option in
-                    Button(option.label) { option.action() }
-                }
-            } label: {
-                Text(title)
-                    .font(Instrument.sans(12))
-                    .foregroundStyle(Instrument.railInk)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            Text("⌄")
-                .font(Instrument.sans(10))
-                .foregroundStyle(Instrument.faint)
-                .baselineOffset(2)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .overlay {
-            RoundedRectangle(cornerRadius: 6).strokeBorder(Instrument.edge, lineWidth: 1)
-        }
-        .fixedSize()
+        DropdownButton(
+            label: title,
+            entries: options.map { DropdownEntry($0.label, action: $0.action) })
     }
 }
 

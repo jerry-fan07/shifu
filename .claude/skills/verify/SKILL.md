@@ -52,14 +52,27 @@ pointed at real rows:
 - **Long real names.** Topics and task names run to 60 characters where the
   design mocked 12.
 
+## The drop-down needs its own camera
+
+Every "pick one of these" is a `DropdownButton`, and its panel lives in a
+child window — so it is never in a `WindowShots` composite, whatever is open.
+`DropdownShots` hosts a bench, drives a **real click** through `NSApp`, asserts
+the panel opened, and writes the composite:
+
+```bash
+SHIFU_SHOTS=/tmp/shifu-shots swift test --filter DropdownShots
+```
+
+It has to activate this process — expect the focus to jump for ten seconds.
+Two such tests can't share a process: each pumps the runloop, and the second
+one never runs. Keep it one test.
+
 ## Gotchas
 
-- `Menu` + `.menuStyle(.borderlessButton)` **keeps only the label's text** —
-  padding, borders, and extra views inside the label are dropped. Decorate the
-  `Menu` itself, from outside. (Same family as the macOS 26 menu-`Picker` bug
-  that made every "pick one of these" control a `Menu` of `Button`s.)
 - The harness freezes Core Animation and starves `Task.sleep`, so it cannot
   verify animation timing — only static layout.
-- Interaction (clicks, hover, keyboard) is **not** covered. `onHover` fires
-  from wherever the real mouse happens to be, which shows up as a random row
-  looking selected.
+- Interaction (clicks, hover, keyboard) is **not** covered by `WindowShots`.
+  `onHover` fires from wherever the real mouse happens to be, which shows up
+  as a random row looking selected. A click only lands if the process is
+  active *and* the event goes through `NSApp.postEvent` + `nextEvent` —
+  `window.sendEvent` never reaches a SwiftUI gesture (`DropdownShots.click`).
