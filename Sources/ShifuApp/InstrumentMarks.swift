@@ -155,9 +155,10 @@ struct BarStack: Identifiable {
 
 /// The Timeline's chart: one column per slot of clock, stacked by group —
 /// the "how much at 10 AM" the Breakdown's ribbon deliberately doesn't
-/// answer. Columns scale to the busiest slot, and that one column carries
-/// its figure; every other value rides in a tooltip, the legend under the
-/// chart, and the block list below.
+/// answer. The scale is ruled: hairlines at round durations, each with its
+/// figure in the gutter, so *every* column reads as an amount rather than
+/// only against its tallest neighbour. Exact values still ride in a tooltip,
+/// the legend under the chart, and the block list below.
 struct StackedBars: View {
     let stacks: [BarStack]
     var height: CGFloat = 108
@@ -166,68 +167,138 @@ struct StackedBars: View {
     /// the slot ticks alone.
     var endTick: String?
 
-    /// Column thickness, capped so the band keeps its air — a column that
-    /// fills its slot reads as a region, not a mark.
-    private static let thickness: CGFloat = 20
+    /// Between slots — the columns themselves sit centred in what's left.
+    private static let spacing: CGFloat = 4
+    /// The widest a column may be drawn, however much room its slot has: past
+    /// this a column reads as a region rather than a mark.
+    private static let maxThickness: CGFloat = 34
+    /// Ground that always stays between neighbouring columns, so a narrow
+    /// window thins the bars instead of running them together.
+    private static let minAir: CGFloat = 9
     /// The ground showing between stacked segments, so neighbouring groups
     /// separate without a stroke that isn't data.
     private static let gap: CGFloat = 2
-    /// Room above the columns for the peak's figure.
-    private static let labelSpace: CGFloat = 18
+    /// The gutter the grid's figures sit in, left of the plot.
+    private static let axisWidth: CGFloat = 36
+    private static let axisGap: CGFloat = 7
+    /// At most this many grid marks — more and the band reads as ruled paper.
+    private static let marks = 4
+    /// The steps a grid mark may take, coarsest last. Round durations only:
+    /// the point of the grid is that a column lands near a figure you can
+    /// hold in your head.
+    private static let steps: [Int64] = [
+        60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000,
+        3_600_000, 7_200_000, 10_800_000, 21_600_000, 43_200_000
+    ]
 
     private var peakMs: Int64 { stacks.map(\.totalMs).max() ?? 0 }
-    /// The first column that reaches the peak — the one that gets a figure.
-    private var peakID: Int? {
-        guard peakMs > 0 else { return nil }
-        return stacks.first { $0.totalMs == peakMs }?.id
+
+    /// The smallest step that rules the peak in `marks` lines or fewer.
+    private var step: Int64 {
+        // A slot is a day at most, which the last step rules four times over;
+        // the fallback is only here to keep this total.
+        Self.steps.first { peakMs <= $0 * Int64(Self.marks) } ?? 43_200_000
     }
+
+    /// The top of the scale: a whole number of steps, so the highest mark is
+    /// the top of the band rather than a line floating under the peak.
+    private var ceilingMs: Int64 { (peakMs + step - 1) / step * step }
+
+    private var levels: [Int64] {
+        Array(stride(from: step, through: ceilingMs, by: Int(step)))
+    }
+
+    /// The band less the topmost mark's own hairline, so a column at the
+    /// ceiling meets that line instead of running a pixel past it.
+    private var plotHeight: CGFloat { max(1, height - 1) }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 4) {
-                ForEach(stacks) { stack in column(stack) }
-            }
-            .frame(height: height + Self.labelSpace, alignment: .bottom)
-            Rule()
-            ZStack(alignment: .trailing) {
-                HStack(spacing: 4) {
-                    ForEach(stacks) { stack in
-                        Text(stack.tick)
-                            .font(Instrument.mono(10))
-                            .foregroundStyle(Instrument.ghost)
-                            .frame(maxWidth: .infinity)
-                    }
+            GeometryReader { proxy in
+                ZStack(alignment: .bottomLeading) {
+                    grid
+                    columns(thickness: thickness(across: proxy.size.width))
                 }
-                if let endTick {
-                    Text(endTick)
-                        .font(Instrument.mono(10))
-                        .foregroundStyle(Instrument.ghost)
-                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
-            .padding(.top, 5)
+            .frame(height: height)
+            Rule().padding(.leading, Self.axisWidth)
+            ticks
         }
     }
 
-    private func column(_ stack: BarStack) -> some View {
-        VStack(spacing: 4) {
-            if stack.id == peakID {
-                Figure(
-                    TimeBreakdown.duration(stack.totalMs),
-                    size: 10, color: Instrument.muted)
-                    .fixedSize()
+    /// The scale, ruled across the plot and drawn behind the columns — a mark
+    /// is a reference to read a column against, not something laid over it.
+    private var grid: some View {
+        ZStack(alignment: .bottomLeading) {
+            ForEach(levels, id: \.self) { level in
+                mark(level)
+                    .offset(y: -plotHeight * CGFloat(Double(level) / Double(max(1, ceilingMs))))
             }
-            segments(stack)
         }
-        .frame(maxWidth: .infinity, alignment: .bottom)
+    }
+
+    /// One mark: its figure in the gutter, its hairline across the plot. The
+    /// row is pinned to a 1pt frame so the line, not the label, is what sits
+    /// at the level.
+    private func mark(_ level: Int64) -> some View {
+        HStack(spacing: Self.axisGap) {
+            Text(Self.axisLabel(level))
+                .font(Instrument.mono(9.5))
+                .foregroundStyle(Instrument.ghost)
+                .fixedSize()
+                .frame(width: Self.axisWidth - Self.axisGap, alignment: .trailing)
+            Rectangle().fill(Instrument.hairline).frame(height: 1)
+        }
+        .frame(height: 1)
+    }
+
+    private func columns(thickness: CGFloat) -> some View {
+        HStack(alignment: .bottom, spacing: Self.spacing) {
+            ForEach(stacks) { stack in
+                segments(stack, thickness: thickness)
+                    .frame(maxWidth: .infinity, alignment: .bottom)
+            }
+        }
+        .padding(.leading, Self.axisWidth)
+    }
+
+    private var ticks: some View {
+        ZStack(alignment: .trailing) {
+            HStack(spacing: Self.spacing) {
+                ForEach(stacks) { stack in
+                    Text(stack.tick)
+                        .font(Instrument.mono(10))
+                        .foregroundStyle(Instrument.ghost)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            if let endTick {
+                Text(endTick)
+                    .font(Instrument.mono(10))
+                    .foregroundStyle(Instrument.ghost)
+            }
+        }
+        .padding(.leading, Self.axisWidth)
+        .padding(.top, 5)
+    }
+
+    /// A column takes its slot less the air, up to the cap — the day's
+    /// twenty-four columns thin down on a narrow window instead of touching,
+    /// and the week's seven don't read as threads on a wide one.
+    private func thickness(across width: CGFloat) -> CGFloat {
+        let count = CGFloat(max(1, stacks.count))
+        let slot = (width - Self.axisWidth - Self.spacing * (count - 1)) / count
+        return max(3, min(Self.maxThickness, slot - Self.minAir))
     }
 
     /// The column itself. Segment heights share the column's scaled height
     /// after the gaps take theirs, so the cap sits at the slot's true total;
     /// the cap is rounded and the baseline square.
-    private func segments(_ stack: BarStack) -> some View {
+    private func segments(_ stack: BarStack, thickness: CGFloat) -> some View {
         let room = max(
             0,
-            height * CGFloat(Double(stack.totalMs) / Double(max(1, peakMs)))
+            plotHeight * CGFloat(Double(stack.totalMs) / Double(max(1, ceilingMs)))
                 - CGFloat(max(0, stack.segments.count - 1)) * Self.gap)
         return VStack(spacing: Self.gap) {
             ForEach(stack.segments.reversed()) { segment in
@@ -237,8 +308,17 @@ struct StackedBars: View {
                     .help(segment.caption)
             }
         }
-        .frame(width: Self.thickness)
+        .frame(width: thickness)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+    }
+
+    /// A mark's figure — the axis's register, tighter than the block list's:
+    /// "45m", "2h", "1h30".
+    private static func axisLabel(_ ms: Int64) -> String {
+        let minutes = Int(ms / 60_000)
+        guard minutes >= 60 else { return "\(minutes)m" }
+        let rest = minutes % 60
+        return rest == 0 ? "\(minutes / 60)h" : "\(minutes / 60)h\(rest)"
     }
 
     @ViewBuilder private func fill(for segment: BarStack.Segment) -> some View {
