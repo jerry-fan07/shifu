@@ -1,8 +1,9 @@
 import ShifuCore
 import SwiftUI
 
-/// Turns labelled blocks into the two shapes the Instrument layout draws: the
-/// day as a single ribbon, and eight weeks of a theme as a sparkline.
+/// Turns labelled blocks into the shapes the Instrument layout draws: the day
+/// as a single ribbon, the Timeline's stacked bars, and eight weeks of a theme
+/// as a sparkline.
 ///
 /// Pure functions over already-read rows — no database, no clock of their own —
 /// so what the ribbon claims can be checked in a test.
@@ -137,6 +138,65 @@ enum LedgerShapes {
         }
         segments.append(RibbonSegment(
             id: segments.count, weight: 1, fill: fill, caption: caption))
+    }
+
+    /// One column's stretch of clock, with the axis label it wears — empty
+    /// for hours that go unticked.
+    struct Slot {
+        let tick: String
+        let from: Date
+        let to: Date
+    }
+
+    /// The Timeline's chart: each slot of clock tallied and stacked by group.
+    /// Slots are whatever stretch the caller cuts — the hours of a day, the
+    /// days of a week.
+    ///
+    /// Groups stack in `order` — the Breakdown's ranking — so a group holds
+    /// the same place in every column; anything `order` doesn't name is still
+    /// drawn, after it, rather than silently dropped. A label the palette
+    /// doesn't carry folds into "Other" the way the table folds it, and
+    /// private time rides on top, hatched, whatever the lens is.
+    static func bars(
+        _ activities: [LedgerBuilder.LabeledActivity], lens: TimeLens,
+        colors: [String: Color], order: [String], slots: [Slot]
+    ) -> [BarStack] {
+        slots.enumerated().map { index, slot in
+            let fromMs = Int64(slot.from.timeIntervalSince1970 * 1_000)
+            let toMs = Int64(slot.to.timeIntervalSince1970 * 1_000)
+            var tallies: [String: Int64] = [:]
+            var privateMs: Int64 = 0
+            for activity in activities {
+                let ms = min(activity.endedAt, toMs) - max(activity.startedAt, fromMs)
+                guard ms > 0 else { continue }
+                guard activity.category != "private" else {
+                    privateMs += ms
+                    continue
+                }
+                let label = lens.label(activity)
+                let group = colors[label] != nil ? label : TimeBreakdown.otherLabel
+                tallies[group, default: 0] += ms
+            }
+
+            let ranked = order.filter { tallies[$0] != nil }
+                + tallies.keys
+                    .filter { !order.contains($0) }
+                    .sorted { (tallies[$0] ?? 0) > (tallies[$1] ?? 0) }
+            var segments = ranked.enumerated().map { position, name in
+                BarStack.Segment(
+                    id: position, ms: tallies[name] ?? 0,
+                    fill: .series(colors[name] ?? Instrument.other),
+                    caption: "\(lens.display(name)) — "
+                        + TimeBreakdown.duration(tallies[name] ?? 0))
+            }
+            if privateMs > 0 {
+                segments.append(BarStack.Segment(
+                    id: segments.count, ms: privateMs, fill: .hidden,
+                    caption: "Private — never read · "
+                        + TimeBreakdown.duration(privateMs)))
+            }
+            return BarStack(id: index, tick: slot.tick, segments: segments)
+        }
     }
 
     /// The hours to tick under a rail: at most `limit`, evenly spaced, always

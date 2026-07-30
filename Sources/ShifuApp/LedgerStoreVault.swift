@@ -29,6 +29,17 @@ extension LedgerStore {
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
         let now = Date()
         snapshot.due = snapshot.cards.filter { $0.srs.map { $0.due <= now } ?? true }
+        // Deck review settings (§5.2): paused decks sit out, capped decks
+        // introduce only today's allowance of new cards. The cards list keeps
+        // everything — settings shape the queue, not the shelf. Sorted
+        // earliest-due first above, so the allowance goes to the oldest cards.
+        if let database = try? db() {
+            snapshot.due = ReviewGate.schedulable(
+                snapshot.due,
+                decks: (try? DeckStore.decks(database: database)) ?? [],
+                introducedToday: (try? ReviewGate.introducedToday(
+                    database: database, now: now)) ?? [:])
+        }
         // A week of slack so the heatmap's week-aligned first column has
         // counts for its leading days too.
         let heatmapStart = Calendar.current.date(
@@ -52,6 +63,18 @@ extension LedgerStore {
     enum HeatmapSpan {
         static let weeks = 26
         static let days = weeks * 7
+    }
+
+    /// Cards outside every live deck: kept before decks existed, or stamped
+    /// for a deck whose task has since been pruned or merged away. They still
+    /// serve the All queue (§5.2) — shared by the Decks shelf row and the
+    /// page behind it.
+    var looseCards: [Note] {
+        let live = Set(decks.map(\.key))
+        return allCards.filter { card in
+            guard let deck = card.deck else { return true }
+            return !live.contains(deck)
+        }
     }
 
     var reviewsToday: Int {

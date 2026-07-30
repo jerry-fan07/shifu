@@ -182,6 +182,42 @@ struct FilterMenu<Option: Hashable>: View {
     }
 }
 
+/// A menu of actions wearing the same outlined pill as `FilterMenu` — "New
+/// deck" over the tasks one could be made from. Same Menu-of-Buttons
+/// construction, for the same macOS reason, and the pill likewise drawn
+/// around the Menu rather than in its label.
+struct ActionMenu: View {
+    let title: String
+    let options: [(label: String, action: () -> Void)]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Menu {
+                ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                    Button(option.label) { option.action() }
+                }
+            } label: {
+                Text(title)
+                    .font(Instrument.sans(12))
+                    .foregroundStyle(Instrument.railInk)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            Text("⌄")
+                .font(Instrument.sans(10))
+                .foregroundStyle(Instrument.faint)
+                .baselineOffset(2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .overlay {
+            RoundedRectangle(cornerRadius: 6).strokeBorder(Instrument.edge, lineWidth: 1)
+        }
+        .fixedSize()
+    }
+}
+
 /// A small outlined tag — a theme on a task row, a filter that is on.
 struct Tag: View {
     let text: String

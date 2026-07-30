@@ -34,33 +34,66 @@ import Testing
         let store = LedgerStore()
         store.refresh()
 
+        // A crashed run may have left the ledger's persisted Day/Week window
+        // flipped, which would silently turn every day shot into a week shot.
+        UserDefaults.standard.removeObject(forKey: "shifu.ledger.week")
+
         for place in Place.allCases {
-            let router = Router()
-            router.go(to: place)
             shoot(
-                MainWindow(router: router).environmentObject(store),
-                to: directory.appendingPathComponent("\(place.rawValue).png"),
-                dark: place == .week || place == .deck)
+                place, as: place.rawValue,
+                dark: place == .timeline || place == .decks,
+                store: store, into: directory)
         }
 
-        // The two pages that only exist behind a row, so the source list has
+        // The Day/Week window is view state, not a place, so the ledger pages
+        // get a second pass with it flipped.
+        UserDefaults.standard.set(true, forKey: "shifu.ledger.week")
+        defer { UserDefaults.standard.removeObject(forKey: "shifu.ledger.week") }
+        for place in [Place.breakdown, .timeline] {
+            shoot(
+                place, as: "\(place.rawValue)-week", dark: place == .timeline,
+                store: store, into: directory)
+        }
+
+        // The pages that only exist behind a row, so the source list has
         // something to become.
         if let theme = store.themes.first {
-            let router = Router()
-            router.go(to: .themes)
-            router.open(.theme(theme.id))
             shoot(
-                MainWindow(router: router).environmentObject(store),
-                to: directory.appendingPathComponent("theme-page.png"), dark: false)
+                .themes, route: .theme(theme.id), as: "theme-page", dark: false,
+                store: store, into: directory)
         }
         if let task = store.filteredTasks.first?.task.id {
-            let router = Router()
-            router.go(to: .tasks)
-            router.open(.task(task))
             shoot(
-                MainWindow(router: router).environmentObject(store),
-                to: directory.appendingPathComponent("task-page.png"), dark: true)
+                .tasks, route: .task(task), as: "task-page", dark: true,
+                store: store, into: directory)
         }
+        if let deck = store.decks.first {
+            shoot(
+                .decks, route: .deck(deck.id), as: "deck-page", dark: false,
+                store: store, into: directory)
+        }
+        let liveDecks = Set(store.decks.map(\.key))
+        if store.allCards.contains(where: { card in
+            card.deck.map { !liveDecks.contains($0) } ?? true
+        }) {
+            shoot(
+                .decks, route: .looseCards, as: "loose-cards", dark: true,
+                store: store, into: directory)
+        }
+    }
+
+    /// One shot: the window pointed at `place`, optionally with a pushed
+    /// `route` over it, written as `name`.png.
+    @MainActor private func shoot(
+        _ place: Place, route: Route? = nil, as name: String, dark: Bool,
+        store: LedgerStore, into directory: URL
+    ) {
+        let router = Router()
+        router.go(to: place)
+        if let route { router.open(route) }
+        shoot(
+            MainWindow(router: router).environmentObject(store),
+            to: directory.appendingPathComponent("\(name).png"), dark: dark)
     }
 
     /// Hosts a view in an offscreen window, lets it settle, and writes what

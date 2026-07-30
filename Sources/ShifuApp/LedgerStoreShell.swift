@@ -18,12 +18,6 @@ extension LedgerStore {
 
     var todayBlockCount: Int { todayActivities.count }
 
-    /// Nil before the week has anything in it — an empty row reads better than
-    /// a row that says nought.
-    var weekTotalLabel: String? {
-        weekMs > 0 ? TimeBreakdown.duration(weekMs) : nil
-    }
-
     /// How far the ledger reaches. Not "when the analyzer last ran" — that
     /// would be a number about Shifu; this is a number about your day, and it
     /// is the one that explains a screen emptier than the morning felt.

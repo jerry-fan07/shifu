@@ -466,6 +466,26 @@ extension ShifuDatabase {
                           columns: ["deck_key"])
         }
 
+        migrator.registerMigration("v19") { db in
+            // Decks grew review settings (design.md §5.2). `paused` takes a
+            // deck's cards out of every queue and count; `new_per_day` caps
+            // how many never-reviewed cards a deck may introduce per local
+            // day — the setting a hundred-card deck needs, since deck cards
+            // are born due-now and would otherwise land in the queue all at
+            // once. NULL is uncapped; existing decks get the same default new
+            // ones are minted with, because a cap only bites when a deck is
+            // bigger than a day's appetite anyway.
+            //
+            // (Numbered v19 against what has actually *run* — see the v18
+            // note on silent skips.)
+            try db.alter(table: "decks") { table in
+                table.add(column: "paused", .boolean).notNull().defaults(to: false)
+                table.add(column: "new_per_day", .integer)
+            }
+            try db.execute(sql: "UPDATE decks SET new_per_day = ?",
+                           arguments: [DeckStore.defaultNewPerDay])
+        }
+
         return migrator
     }
 }

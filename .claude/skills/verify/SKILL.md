@@ -32,7 +32,7 @@ renderer didn't crash, nothing more.
 |---|---|
 | Empty install | `SHIFU_HOME=$(mktemp -d)` — blank slates, no counts, no crash |
 | Minimum window | `SHIFU_SHOT_WIDTH=960` — the `minWidth` the shell declares |
-| Dark mode | already covered: Week and Deck render dark, the rest light |
+| Dark mode | already covered: Timeline and Deck render dark, the rest light |
 
 ## What real data breaks that mock data doesn't
 

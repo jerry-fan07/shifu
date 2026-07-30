@@ -68,4 +68,36 @@ extension LedgerStore {
         guard let database = try? db() else { return nil }
         return (try? DeckStore.deck(taskKey: taskKey, database: database)) ?? nil
     }
+
+    // MARK: - Management (deck page, design.md §5.2)
+
+    func renameDeck(key: String, to title: String) {
+        if let database = try? db() {
+            try? DeckStore.rename(key: key, to: title, database: database)
+        }
+        refreshSoon()
+    }
+
+    /// Deletes the deck and its cards — `DeckStore.delete` owns the
+    /// semantics; the confirmation dialog owns the asking.
+    func deleteDeck(_ deck: DeckStore.Deck) {
+        if let database = try? db() {
+            try? DeckStore.delete(deck, database: database, vault: vault)
+        }
+        refreshSoon()
+    }
+
+    func setDeckPaused(key: String, _ paused: Bool) {
+        if let database = try? db() {
+            try? DeckStore.setPaused(key: key, paused, database: database)
+        }
+        refreshSoon()
+    }
+
+    func setDeckNewPerDay(key: String, _ cap: Int?) {
+        if let database = try? db() {
+            try? DeckStore.setNewPerDay(key: key, cap, database: database)
+        }
+        refreshSoon()
+    }
 }

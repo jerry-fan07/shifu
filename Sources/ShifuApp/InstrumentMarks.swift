@@ -1,9 +1,9 @@
 import SwiftUI
 
 // The marks that carry a number without spelling it out: status pips,
-// series swatches, meters, the day's ribbon, and a theme's sparkline.
-// Every one of them sits beside the figure it draws — none is ever the
-// only place a value appears.
+// series swatches, meters, the day's ribbon, the Timeline's stacked bars,
+// and a theme's sparkline. Every one of them sits beside the figure it
+// draws — none is ever the only place a value appears.
 
 /// The state pip — watching, resting, granted.
 struct StatusDot: View {
@@ -78,8 +78,8 @@ struct RibbonSegment: Identifiable {
 }
 
 /// The day as it actually happened: a single rail, cut where the work changed.
-/// Replaces a bar chart because a bar chart says "how much at 10 AM" and this
-/// says "what the morning was".
+/// Says "what the morning was" — "how much at 10 AM" is `StackedBars`'
+/// question, over on the Timeline.
 struct Ribbon: View {
     let segments: [RibbonSegment]
     var height: CGFloat = 30
@@ -127,6 +127,126 @@ struct RibbonAxis: View {
         }
         .padding(.leading, leading)
         .padding(.top, 5)
+    }
+}
+
+/// One column of the Timeline's chart: a slot of clock — an hour of the day,
+/// a day of the week — with the tracked time inside it stacked by group.
+/// Built by `LedgerShapes.bars`.
+struct BarStack: Identifiable {
+    struct Segment: Identifiable {
+        let id: Int
+        let ms: Int64
+        /// `.series` or `.hidden` — a slot with nothing in it draws no column
+        /// at all, so `.gap` never occurs here.
+        let fill: RibbonSegment.Fill
+        /// What the tooltip says: the group and how much of the slot it held.
+        let caption: String
+    }
+
+    let id: Int
+    /// The axis label under the column. Empty for hours that go unticked.
+    let tick: String
+    /// Baseline first; private time rides on top, hatched.
+    let segments: [Segment]
+
+    var totalMs: Int64 { segments.reduce(0) { $0 + $1.ms } }
+}
+
+/// The Timeline's chart: one column per slot of clock, stacked by group —
+/// the "how much at 10 AM" the Breakdown's ribbon deliberately doesn't
+/// answer. Columns scale to the busiest slot, and that one column carries
+/// its figure; every other value rides in a tooltip, the legend under the
+/// chart, and the block list below.
+struct StackedBars: View {
+    let stacks: [BarStack]
+    var height: CGFloat = 108
+    /// A label pinned to the axis's trailing edge — the day chart's "24", the
+    /// closing boundary a per-slot tick can't name. Nil leaves the axis to
+    /// the slot ticks alone.
+    var endTick: String?
+
+    /// Column thickness, capped so the band keeps its air — a column that
+    /// fills its slot reads as a region, not a mark.
+    private static let thickness: CGFloat = 20
+    /// The ground showing between stacked segments, so neighbouring groups
+    /// separate without a stroke that isn't data.
+    private static let gap: CGFloat = 2
+    /// Room above the columns for the peak's figure.
+    private static let labelSpace: CGFloat = 18
+
+    private var peakMs: Int64 { stacks.map(\.totalMs).max() ?? 0 }
+    /// The first column that reaches the peak — the one that gets a figure.
+    private var peakID: Int? {
+        guard peakMs > 0 else { return nil }
+        return stacks.first { $0.totalMs == peakMs }?.id
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .bottom, spacing: 4) {
+                ForEach(stacks) { stack in column(stack) }
+            }
+            .frame(height: height + Self.labelSpace, alignment: .bottom)
+            Rule()
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 4) {
+                    ForEach(stacks) { stack in
+                        Text(stack.tick)
+                            .font(Instrument.mono(10))
+                            .foregroundStyle(Instrument.ghost)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                if let endTick {
+                    Text(endTick)
+                        .font(Instrument.mono(10))
+                        .foregroundStyle(Instrument.ghost)
+                }
+            }
+            .padding(.top, 5)
+        }
+    }
+
+    private func column(_ stack: BarStack) -> some View {
+        VStack(spacing: 4) {
+            if stack.id == peakID {
+                Figure(
+                    TimeBreakdown.duration(stack.totalMs),
+                    size: 10, color: Instrument.muted)
+                    .fixedSize()
+            }
+            segments(stack)
+        }
+        .frame(maxWidth: .infinity, alignment: .bottom)
+    }
+
+    /// The column itself. Segment heights share the column's scaled height
+    /// after the gaps take theirs, so the cap sits at the slot's true total;
+    /// the cap is rounded and the baseline square.
+    private func segments(_ stack: BarStack) -> some View {
+        let room = max(
+            0,
+            height * CGFloat(Double(stack.totalMs) / Double(max(1, peakMs)))
+                - CGFloat(max(0, stack.segments.count - 1)) * Self.gap)
+        return VStack(spacing: Self.gap) {
+            ForEach(stack.segments.reversed()) { segment in
+                fill(for: segment)
+                    .frame(height: max(
+                        1, room * CGFloat(Double(segment.ms) / Double(max(1, stack.totalMs)))))
+                    .help(segment.caption)
+            }
+        }
+        .frame(width: Self.thickness)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4))
+    }
+
+    @ViewBuilder private func fill(for segment: BarStack.Segment) -> some View {
+        switch segment.fill {
+        case .series(let color): Rectangle().fill(color)
+        case .gap: Color.clear
+        case .hidden: Hatch()
+        }
     }
 }
 

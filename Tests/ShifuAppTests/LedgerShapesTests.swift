@@ -4,9 +4,10 @@ import SwiftUI
 import Testing
 @testable import ShifuApp
 
-/// The ribbon's arithmetic. Both suites here pin regressions found by looking
-/// at the thing on a real ledger rather than by reasoning about it: a rail that
-/// spanned three days, and a rail shredded into two hundred hairlines.
+/// The ribbon's and the bars' arithmetic. The clock and ribbon suites pin
+/// regressions found by looking at the thing on a real ledger rather than by
+/// reasoning about it: a rail that spanned three days, and a rail shredded
+/// into two hundred hairlines.
 @Suite struct LedgerClockTests {
     static let calendar = Calendar(identifier: .gregorian)
 
@@ -137,5 +138,76 @@ import Testing
         // This week is the last bucket, and the ones before it stay empty.
         #expect(runs["drafting"]?.last == 3_600_000)
         #expect(runs["drafting"]?.dropLast().allSatisfy { $0 == 0 } == true)
+    }
+}
+
+/// The Timeline's chart. Stacked bars answer "how much at 10 AM", so what
+/// each column claims has to be the clipped truth of its slot.
+@Suite struct LedgerBarTests {
+    typealias Fixture = LedgerClockTests
+
+    static func hourSlots(_ hours: Range<Int>) -> [LedgerShapes.Slot] {
+        hours.map {
+            LedgerShapes.Slot(tick: "\($0)", from: Fixture.at($0), to: Fixture.at($0 + 1))
+        }
+    }
+
+    @Test func aBlockIsSplitAcrossTheHoursItSpans() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9, 30), to: Fixture.at(11, 30))],
+            lens: .category, colors: ["work": Instrument.strong],
+            order: ["work"], slots: Self.hourSlots(9..<13))
+        #expect(stacks.map(\.totalMs) == [1_800_000, 3_600_000, 1_800_000, 0])
+        #expect(stacks.last?.segments.isEmpty == true)
+    }
+
+    /// The stack keeps the Breakdown's ranking in every column, so a group
+    /// sits at the same height of the pile all day.
+    @Test func groupsStackInTheGivenOrder() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 20)),
+             Fixture.block(
+                from: Fixture.at(9, 20), to: Fixture.at(9, 50),
+                category: "communication")],
+            lens: .category,
+            colors: ["work": Instrument.strong, "communication": Instrument.mid],
+            order: ["communication", "work"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.map(\.ms) == [1_800_000, 1_200_000])
+    }
+
+    /// Private time is hatched whatever the lens is — same claim the ribbon
+    /// makes — and rides on top of the stack.
+    @Test func privateTimeRidesOnTopHatched() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 30)),
+             Fixture.block(
+                from: Fixture.at(9, 30), to: Fixture.at(10), category: "private")],
+            lens: .category, colors: ["work": Instrument.strong],
+            order: ["work"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.count == 2)
+        #expect(stacks.first?.segments.last?.fill == .hidden)
+        #expect(stacks.first?.totalMs == 3_600_000)
+    }
+
+    /// A label the palette doesn't carry folds into "Other" the way the
+    /// table folds it, rather than minting a colour of its own.
+    @Test func aGroupThePaletteDoesNotNameFoldsIntoOther() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10), task: "stray")],
+            lens: .task, colors: ["Other": Instrument.other],
+            order: ["Other"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.count == 1)
+        #expect(stacks.first?.segments.first?.caption.hasPrefix("Other") == true)
+    }
+
+    /// Time in a group the order forgot is still drawn — a chart that
+    /// silently drops a group is lying about the hour.
+    @Test func aGroupMissingFromTheOrderIsStillDrawn() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10))],
+            lens: .category, colors: ["work": Instrument.strong],
+            order: [], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.totalMs == 3_600_000)
+        #expect(stacks.first?.segments.first?.caption == "Work — 1h 0m")
     }
 }

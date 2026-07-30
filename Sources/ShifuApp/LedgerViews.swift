@@ -1,19 +1,17 @@
 import ShifuCore
 import SwiftUI
 
-/// The Ledger's three places (design.md §7). All three read the same blocks
-/// through the same lens; they differ only in what they draw over them.
+/// The Ledger's two places (design.md §7). Both read the same blocks through
+/// the same lens and the same Day / Week window; they differ in what they
+/// draw over them.
 ///
-/// - *Breakdown* — where the time went: the day as one ribbon, then a ranked
-///   table with a meter per row.
-/// - *Timeline* — when it happened: the same ribbon, then every block in order.
-/// - *Week* — the same table over seven days, with one ribbon per day.
-///
-/// There is no bar chart anywhere. A bar chart answers "how much at 10 AM";
-/// the ribbon answers "what was the morning", which is the question a day
-/// actually raises.
+/// - *Breakdown* — where the time went: the window as a ribbon (one rail a
+///   day), then a ranked table with a meter per row.
+/// - *Timeline* — when it happened, in detail: stacked bars over the hours or
+///   days with each group's total under them, then every block in order. The
+///   ribbon says "what was the morning"; the bars say "how much at 10 AM".
 struct LedgerView: View {
-    enum Mode { case breakdown, timeline, week }
+    enum Mode { case breakdown, timeline }
 
     let mode: Mode
 
@@ -22,6 +20,9 @@ struct LedgerView: View {
     /// Kept across places and launches: the lens is how you read your ledger,
     /// not a per-screen preference.
     @AppStorage("shifu.ledger.lens") private var lensRaw = TimeLens.category.rawValue
+    /// The Day / Week window, persisted the same way — leaving for the
+    /// Timeline shouldn't snap the ledger back to today.
+    @AppStorage("shifu.ledger.week") private var isWeek = false
     /// Which group's apps are showing. Hover reveals them inline rather than
     /// opening a row, so scanning the table never costs a click.
     @State private var hovered: String?
@@ -37,8 +38,6 @@ struct LedgerView: View {
         nonmutating set { lensRaw = newValue.rawValue }
     }
 
-    private var isWeek: Bool { mode == .week }
-
     var body: some View {
         let window = range
         let blocks = isWeek ? weekBlocks : store.todayActivities
@@ -51,7 +50,11 @@ struct LedgerView: View {
             head(blocks: blocks, window: window)
             if !blocks.isEmpty {
                 Band {
-                    if isWeek {
+                    if mode == .timeline {
+                        TimelineChart(
+                            blocks: blocks, slices: slices, colors: colors,
+                            window: window, lens: lens, isWeek: isWeek)
+                    } else if isWeek {
                         weekRibbons(colors: colors)
                     } else {
                         dayRibbon(blocks: blocks, colors: colors, window: window)
@@ -61,7 +64,7 @@ struct LedgerView: View {
             table(blocks: blocks, slices: slices)
         }
         .onAppear(perform: load)
-        .onChange(of: mode) { _, _ in load() }
+        .onChange(of: isWeek) { _, _ in load() }
     }
 
     private func load() {
@@ -84,9 +87,7 @@ struct LedgerView: View {
             HStack(spacing: 6) {
                 SegmentedBar(
                     options: [("Day", false), ("Week", true)],
-                    selection: Binding(
-                        get: { isWeek },
-                        set: { router.go(to: $0 ? .week : dayPlace) }))
+                    selection: $isWeek)
                 SegmentedBar(
                     options: TimeLens.allCases.map { ($0.rawValue, $0) },
                     selection: Binding(get: { lens }, set: { lens = $0 }))
@@ -96,14 +97,18 @@ struct LedgerView: View {
 
     /// The line that turns a number into a fact: how it compares, how many
     /// pieces it came in, when the weight of it fell, and how much was never
-    /// read.
+    /// read. Always one line: when the head runs out of room the trailing
+    /// facts drop off whole, so a narrow window costs detail rather than
+    /// wrapping the head taller and jolting everything under it when the
+    /// window flips Day ↔ Week.
     private func summaryLine(
         blocks: [LedgerBuilder.LabeledActivity], total: Int64
     ) -> some View {
-        var parts: [String] = []
-        if let delta = deltaText(total: total) { parts.append(delta) }
-        parts.append("\(blocks.count) block\(blocks.count == 1 ? "" : "s")")
-        if let peak = peakText(blocks) { parts.append(peak) }
+        var parts: [(text: String, color: Color)] = []
+        if let delta = deltaText(total: total) { parts.append((delta, Instrument.muted)) }
+        parts.append(
+            ("\(blocks.count) block\(blocks.count == 1 ? "" : "s")", Instrument.muted))
+        if let peak = peakText(blocks) { parts.append((peak, Instrument.muted)) }
 
         // Read from the blocks rather than the slices: private time is a
         // category, and under the theme or task lens it is scattered through
@@ -111,15 +116,15 @@ struct LedgerView: View {
         let privateMs = blocks
             .filter { $0.category == "private" }
             .reduce(0) { $0 + $1.durationMs }
-        return HStack(spacing: 0) {
-            Text(parts.joined(separator: " · "))
-                .font(Instrument.sans(12.5))
-                .foregroundStyle(Instrument.muted)
-            if privateMs > 0 {
-                Text(" · \(TimeBreakdown.duration(privateMs)) private")
-                    .font(Instrument.sans(12.5))
-                    .foregroundStyle(Instrument.faint)
-            }
+        if privateMs > 0 {
+            parts.append(("\(TimeBreakdown.duration(privateMs)) private", Instrument.faint))
+        }
+
+        return ViewThatFits(in: .horizontal) {
+            if parts.count >= 4 { SummaryFacts(parts: parts.prefix(4)) }
+            if parts.count >= 3 { SummaryFacts(parts: parts.prefix(3)) }
+            if parts.count >= 2 { SummaryFacts(parts: parts.prefix(2)) }
+            SummaryFacts(parts: parts.prefix(1))
         }
     }
 
@@ -184,16 +189,21 @@ struct LedgerView: View {
                             + "hourly — the ledger fills in behind it.")
             }
         } else if mode == .timeline {
+            let timeWidth: CGFloat = isWeek ? 100 : 66
             PageBody {
                 ColumnHead {
-                    Text("Time").frame(width: 66, alignment: .leading)
+                    Text("Time").frame(width: timeWidth, alignment: .leading)
                     Text("Block").frame(maxWidth: .infinity, alignment: .leading)
                     Text("For").frame(width: 88, alignment: .trailing)
                     Text("Category").frame(width: 92, alignment: .trailing)
                 }
-                ForEach(blocks.sorted { $0.startedAt > $1.startedAt }, id: \.id) { block in
-                    BlockRow(block: block, lens: lens)
-                    Rule()
+                // Lazy because a week of heartbeat-sized blocks is a
+                // four-figure row count, and every row is the same height.
+                LazyVStack(spacing: 0) {
+                    ForEach(blocks.sorted { $0.startedAt > $1.startedAt }, id: \.id) { block in
+                        BlockRow(block: block, lens: lens, dated: isWeek)
+                        Rule()
+                    }
                 }
             }
         } else {
@@ -292,8 +302,6 @@ struct LedgerView: View {
 
     // MARK: - Window and figures
 
-    private var dayPlace: Place { mode == .timeline ? .timeline : .breakdown }
-
     private var range: (from: Date, to: Date) {
         let calendar = Calendar.current
         let now = Date()
@@ -344,20 +352,117 @@ struct LedgerView: View {
     }
 }
 
+/// One candidate row of the head's summary: the leading `parts`, dot-joined
+/// on a single line. `ViewThatFits` walks these longest-first, so the facts
+/// at the end of the line are the first to go.
+private struct SummaryFacts: View {
+    let parts: ArraySlice<(text: String, color: Color)>
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                Text((index == 0 ? "" : " · ") + part.text)
+                    .font(Instrument.sans(12.5))
+                    .foregroundStyle(part.color)
+            }
+        }
+        .lineLimit(1)
+    }
+}
+
+/// The Timeline's band: stacked bars over the day's hours — or the week's
+/// days — with each group's total under them. The strip is a breakdown rather
+/// than a color key: the block list below names no groups, so this is where
+/// the chart's series are spelled out.
+private struct TimelineChart: View {
+    let blocks: [LedgerBuilder.LabeledActivity]
+    let slices: [TimeSlice]
+    let colors: [String: Color]
+    let window: (from: Date, to: Date)
+    let lens: TimeLens
+    let isWeek: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            StackedBars(
+                stacks: LedgerShapes.bars(
+                    blocks, lens: lens, colors: colors, order: slices.map(\.name),
+                    slots: isWeek ? daySlots : hourSlots),
+                endTick: isWeek ? nil : "24")
+            legend
+        }
+    }
+
+    /// One slot per hour, midnight to midnight. The grid is fixed rather than
+    /// cut to the day's clock — where a column sits *is* where in the day you
+    /// were, and an empty evening should look like an empty evening.
+    private var hourSlots: [LedgerShapes.Slot] {
+        let calendar = Calendar.current
+        let ticked = Set(LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)))
+        let midnight = calendar.startOfDay(for: window.from)
+        return (0..<24).compactMap { hour in
+            guard let from = calendar.date(byAdding: .hour, value: hour, to: midnight),
+                  let to = calendar.date(byAdding: .hour, value: hour + 1, to: midnight)
+            else { return nil }
+            let label = String(format: "%02d", hour)
+            return LedgerShapes.Slot(
+                tick: ticked.contains(hour) ? label : "", from: from, to: to)
+        }
+    }
+
+    /// One slot per day, all seven — a day that hasn't happened yet draws no
+    /// column, so the week keeps its shape as it fills in.
+    private var daySlots: [LedgerShapes.Slot] {
+        let calendar = Calendar.current
+        return (0..<7).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: window.from),
+                  let next = calendar.date(byAdding: .day, value: 1, to: day)
+            else { return nil }
+            return LedgerShapes.Slot(
+                tick: day.formatted(.dateTime.weekday(.abbreviated)), from: day, to: next)
+        }
+    }
+
+    private var legend: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 150), spacing: 18, alignment: .leading)],
+            alignment: .leading, spacing: 7
+        ) {
+            ForEach(slices) { slice in
+                HStack(spacing: 7) {
+                    SeriesSwatch(color: slice.color, hatched: slice.name == "private")
+                    Text(lens.display(slice.name))
+                        .font(Instrument.sans(11.5))
+                        .foregroundStyle(Instrument.secondary)
+                        .lineLimit(1)
+                    Figure(
+                        TimeBreakdown.duration(slice.ms),
+                        size: 11, color: Instrument.faint)
+                }
+            }
+        }
+        .padding(.top, 12)
+    }
+}
+
 /// One raw block, in the Timeline's and the Breakdown's shared row shape:
 /// when it started, what it was, how long, and which group it belongs to.
 private struct BlockRow: View {
     let block: LedgerBuilder.LabeledActivity
     let lens: TimeLens
+    /// A week's list names the day; a day's doesn't have to.
+    var dated = false
 
     var body: some View {
         HStack(spacing: 12) {
             Figure(
                 Date(timeIntervalSince1970: Double(block.startedAt) / 1_000)
-                    .formatted(.dateTime.hour().minute()),
+                    .formatted(dated
+                        ? .dateTime.weekday(.abbreviated).hour().minute()
+                        : .dateTime.hour().minute()),
                 color: Instrument.faint)
                 .lineLimit(1)
-                .frame(width: 66, alignment: .leading)
+                .frame(width: dated ? 100 : 66, alignment: .leading)
             Text(title)
                 .font(Instrument.sans(12.5))
                 .foregroundStyle(Instrument.ink)

@@ -15,9 +15,6 @@ final class LedgerStore: ObservableObject {
     /// source list's counts, the Breakdown table, and the Timeline. The Time
     /// pages used to open this query on every body pass.
     @Published private(set) var todayActivities: [LedgerBuilder.LabeledActivity] = []
-    /// Tracked ms since Monday — the Week row's figure, from a SQL aggregate
-    /// rather than a second block read.
-    @Published private(set) var weekMs: Int64 = 0
     /// Everything in the vault, cards or not — the Notes row's count.
     @Published private(set) var noteCount = 0
     @Published private(set) var pausedUntil: Date?
@@ -163,12 +160,6 @@ final class LedgerStore: ObservableObject {
                 to: Int64(now.timeIntervalSince1970 * 1_000)
             )
             todayActivities = labeledActivities(from: start, to: now)
-            weekMs = try LedgerBuilder.totals(
-                database: db(),
-                from: Int64(Calendar.current.startOfWeek(for: now)
-                    .timeIntervalSince1970 * 1_000),
-                to: Int64(now.timeIntervalSince1970 * 1_000)
-            ).values.reduce(0, +)
             lastError = nil
         } catch {
             lastError = "\(error)"

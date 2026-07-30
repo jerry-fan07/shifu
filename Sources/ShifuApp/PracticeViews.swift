@@ -1,18 +1,20 @@
 import ShifuCore
 import SwiftUI
 
-// The Practice band's three places (design.md §5.2).
+// The Practice band's two places (design.md §5.2).
 //
 // - Due — the queue you are about to sit down with.
-// - Inbox — decks Shifu has drafted, waiting for a yes.
-// - Deck — everything you have kept, and the record of working it.
+// - Decks — everything you have kept, shelved by the deck that minted it,
+//   with the offers waiting to become one.
 //
 // Cards exist because a deck was asked for; nothing proposes a card on its
-// own, which is why the Inbox holds deck offers rather than loose cards.
+// own, which is why the offers are deck offers rather than loose cards.
 
 // MARK: - Due
 
-/// What is due now, and the one button that starts it.
+/// What is due now, the one button that starts it, and the heatmap of having
+/// shown up — the record of the habit lives with the queue, because this is
+/// the tab a session actually starts from.
 struct DueView: View {
     @EnvironmentObject private var store: LedgerStore
     @Environment(\.openWindow) private var openWindow
@@ -39,12 +41,15 @@ struct DueView: View {
                     .allowsHitTesting(!due.isEmpty)
                 }
             }
+            if !store.reviewsByDay.isEmpty {
+                Band { ReviewHeatmapView(counts: store.reviewsByDay) }
+            }
             PageBody {
                 if due.isEmpty {
                     BlankSlate(
                         store.allCards.isEmpty
-                            ? "No cards yet. Accept a deck in the Inbox, or open a task and "
-                                + "ask for one."
+                            ? "No cards yet. Accept or start a deck in Decks, or open a "
+                                + "task and ask for one."
                             : "Nothing due. The deck rests until the next card comes round.")
                 } else {
                     CardTable(cards: due) { editing = $0 }
@@ -65,10 +70,11 @@ struct DueView: View {
     /// Decks first, then themes, then tasks: a deck is a thing the user asked
     /// for, the other two are filters over whatever happens to be there. Only
     /// `ready` decks appear — picking one mid-build would show a half-empty
-    /// deck and read as a bug.
+    /// deck and read as a bug — and paused ones sit out here the way their
+    /// cards sit out the queue.
     private var deckOptions: [(label: String, value: ReviewDeck)] {
         var options: [(label: String, value: ReviewDeck)] = [("All notes", .all)]
-        options += store.decks.filter { $0.status == .ready }.map {
+        options += store.decks.filter { $0.status == .ready && !$0.paused }.map {
             ("Deck · \($0.title)", ReviewDeck.deck(key: $0.key, name: $0.title))
         }
         options += store.themes.map {
@@ -81,115 +87,105 @@ struct DueView: View {
     }
 }
 
-// MARK: - Deck
+// MARK: - Decks
 
-/// The whole deck, and the record of having worked it. The heatmap is the only
-/// picture in the app that is about you rather than about your time — which is
-/// why it earns the space.
-struct DeckView: View {
+/// The shelf as a list: one row per deck, the offers waiting above it, the
+/// strays at the end. Opening a row *is* the expansion — a deck's cards live
+/// on its own page (`DeckPage`), because a deck built for the long haul runs
+/// to hundreds of cards and a list that inlines them stops being a list. The
+/// old Inbox folds in as the Suggested band, an offer being nothing more
+/// than a deck that hasn't been said yes to.
+struct DecksView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var editing: Note?
+    @EnvironmentObject private var router: Router
 
     var body: some View {
         VStack(spacing: 0) {
             HeroHead(
-                figure: "\(store.allCards.count)",
-                caption: store.allCards.count == 1 ? "card kept" : "cards kept"
+                figure: "\(store.decks.count)",
+                caption: store.decks.count == 1 ? "deck kept" : "decks kept"
             ) {
                 Text(subtitle)
                     .font(Instrument.sans(12.5))
                     .foregroundStyle(Instrument.muted)
             } trailing: {
-                EmptyView()
-            }
-            if !store.reviewsByDay.isEmpty {
-                Band { ReviewHeatmapView(counts: store.reviewsByDay) }
+                newDeckControl
             }
             PageBody {
-                building
-                if store.allCards.isEmpty {
+                if store.decks.isEmpty, store.deckSuggestions.isEmpty,
+                   store.allCards.isEmpty {
                     BlankSlate(
-                        "No cards yet. Cards come from decks — accept one in the Inbox, or "
-                            + "open a task and ask for a deck.")
+                        "No decks yet. Shifu offers one when a task has enough reading "
+                            + "behind it, and New deck starts one from any recent task.")
                 } else {
-                    CardTable(cards: store.allCards) { editing = $0 }
+                    suggested
+                    shelf
                 }
             }
         }
         .onAppear { store.refresh() }
-        .sheet(item: $editing) { note in CardEditSheet(note: note) }
     }
 
     private var subtitle: String {
-        var parts = ["\(store.dueNotes.count) due"]
+        var parts = ["\(store.allCards.count) card\(store.allCards.count == 1 ? "" : "s") kept"]
+        parts.append("\(store.dueNotes.count) due")
         if let median = store.medianIntervalDays {
             parts.append("median interval \(median) day\(median == 1 ? "" : "s")")
         }
-        parts.append("\(store.decks.count) deck\(store.decks.count == 1 ? "" : "s")")
         return parts.joined(separator: " · ")
     }
 
-    /// Decks still filling in. Shown here rather than in the Inbox: they have
-    /// already been accepted, so there is nothing left to decide.
-    @ViewBuilder private var building: some View {
-        let pending = store.decks.filter { $0.status != .ready }
-        if !pending.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                Eyebrow("Building")
-                    .padding(.top, 12)
-                    .padding(.bottom, 6)
-                ForEach(pending) { deck in
-                    Rule()
-                    HStack(spacing: 9) {
-                        ProgressView().controlSize(.small)
-                        Text("“\(deck.title)”")
-                            .font(Instrument.sans(12.5))
-                            .foregroundStyle(Instrument.ink)
-                        Text("finishes with the next analysis run")
-                            .font(Instrument.sans(11.5))
-                            .foregroundStyle(Instrument.muted)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 7)
-                }
-            }
-            .padding(.bottom, 6)
+    // MARK: New deck
+
+    /// Mints a deck from any recent task that doesn't already have one — the
+    /// same one-deck-per-task route as the task page's button, and like it an
+    /// escape hatch from a dismissed or declined offer, which are otherwise
+    /// permanent. Gated on a configured key like every deck mint: without one
+    /// nothing could build the deck, and it would sit "building" forever.
+    @ViewBuilder private var newDeckControl: some View {
+        if !store.hasLLMBackend {
+            Text("A deck needs DeepSeek (Settings)")
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.ghost)
+        } else if !candidateTasks.isEmpty {
+            ActionMenu(
+                title: "New deck",
+                options: candidateTasks.map { overview in
+                    (overview.task.name, {
+                        store.createDeck(
+                            taskKey: overview.task.key, title: overview.task.name)
+                    })
+                })
         }
     }
-}
 
-// MARK: - Inbox
+    /// Recent tasks with no deck and no open offer. A task whose offer was
+    /// dismissed stays listed — that is the escape hatch working.
+    private var candidateTasks: [TaskStore.Overview] {
+        let spoken = Set(store.decks.map(\.taskKey))
+            .union(store.deckSuggestions.map(\.taskKey))
+        return store.recentTasks.filter { !spoken.contains($0.task.key) }
+    }
 
-/// Decks Shifu has drafted from a task, with their first cards already
-/// written — the samples being the whole point, since they are the deck's real
-/// cards rather than a preview of them. Keep what you want to remember; a
-/// dismissed offer is deleted, not filed.
-struct InboxView: View {
-    @EnvironmentObject private var store: LedgerStore
+    // MARK: Suggested (the former Inbox)
 
-    var body: some View {
-        VStack(spacing: 0) {
-            PageHead(
-                store.deckSuggestions.isEmpty
-                    ? "Inbox"
-                    : "Inbox · \(store.deckSuggestions.count) candidate"
-                        + "\(store.deckSuggestions.count == 1 ? "" : "s")",
-                subtitle: "Drawn from what you have been reading. Accepting one keeps its "
-                    + "sample cards immediately and builds the rest in the background."
-            )
-            PageBody {
-                if store.deckSuggestions.isEmpty {
-                    BlankSlate(
-                        "Nothing waiting. Shifu offers a deck when a task has enough "
-                            + "reading behind it to make cards worth keeping.")
-                }
+    /// Decks Shifu has drafted from a task, with their first cards already
+    /// written — the samples being the whole point, since they are the deck's
+    /// real cards rather than a preview of them. Keep writes them immediately
+    /// and builds the rest; a discarded offer is deleted, not filed.
+    @ViewBuilder private var suggested: some View {
+        if !store.deckSuggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Eyebrow("Suggested · from what you have been reading")
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
                 ForEach(store.deckSuggestions) { suggestion in
-                    candidate(suggestion)
                     Rule()
+                    candidate(suggestion)
                 }
             }
+            .padding(.bottom, 10)
         }
-        .onAppear { store.refresh() }
     }
 
     private func candidate(_ suggestion: DeckStore.PendingSuggestion) -> some View {
@@ -246,6 +242,111 @@ struct InboxView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    // MARK: The shelf
+
+    /// One row per deck — its state at a glance, its cards behind the click.
+    /// The strays close the list.
+    @ViewBuilder private var shelf: some View {
+        let groups = deckGroups
+        let loose = store.looseCards
+        if !groups.isEmpty || !loose.isEmpty {
+            ColumnHead {
+                Text("Deck").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Cards").frame(width: 84, alignment: .trailing)
+                Text("Due now").frame(width: 92, alignment: .trailing)
+            }
+            ForEach(groups) { group in
+                deckRow(group)
+            }
+            if !loose.isEmpty {
+                looseRow(loose)
+            }
+        }
+    }
+
+    private struct DeckGroup: Identifiable {
+        let deck: DeckStore.Deck
+        let cards: [Note]
+        var id: String { deck.key }
+    }
+
+    /// Cards under the deck that minted them, newest deck first — the order
+    /// `DeckStore.decks` already returns.
+    private var deckGroups: [DeckGroup] {
+        let byDeck = Dictionary(
+            grouping: store.allCards.filter { $0.deck != nil },
+            by: { $0.deck ?? "" })
+        return store.decks.map { DeckGroup(deck: $0, cards: byDeck[$0.key] ?? []) }
+    }
+
+    @ViewBuilder private func deckRow(_ group: DeckGroup) -> some View {
+        let due = store.dueNotes.filter { $0.deck == group.deck.key }.count
+        Button { router.open(.deck(group.deck.id)) } label: {
+            HStack(spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(group.deck.title)
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.ink)
+                        .lineLimit(1)
+                    // A deck minted from the task page wears the task's own
+                    // name, and "X from X" says nothing.
+                    if group.deck.title != group.deck.taskName {
+                        Figure("from \(group.deck.taskName)", size: 10.5,
+                               color: Instrument.faint)
+                            .lineLimit(1)
+                    }
+                    if group.deck.paused {
+                        Tag("Paused")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Figure("\(group.cards.count)", color: Instrument.muted)
+                    .frame(width: 84, alignment: .trailing)
+                if group.deck.status == .ready {
+                    // A paused deck's due count is honestly zero (the gate
+                    // holds its cards back), and the tag already says why.
+                    Figure("\(due)", color: due > 0 ? Instrument.accentText : Instrument.muted)
+                        .frame(width: 92, alignment: .trailing)
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Figure("building", color: Instrument.muted)
+                    }
+                    .frame(width: 92, alignment: .trailing)
+                }
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        Rule()
+    }
+
+    @ViewBuilder private func looseRow(_ loose: [Note]) -> some View {
+        let due = Set(store.dueNotes.map(\.id))
+        Button { router.open(.looseCards) } label: {
+            HStack(spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text("Loose cards")
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.ink)
+                    Figure("outside any deck", size: 10.5, color: Instrument.faint)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Figure("\(loose.count)", color: Instrument.muted)
+                    .frame(width: 84, alignment: .trailing)
+                let dueCount = loose.filter { due.contains($0.id) }.count
+                Figure("\(dueCount)",
+                       color: dueCount > 0 ? Instrument.accentText : Instrument.muted)
+                    .frame(width: 92, alignment: .trailing)
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        Rule()
+    }
 }
 
 // MARK: - The shared card table
@@ -259,38 +360,57 @@ struct CardTable: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ColumnHead {
-                Text("Card").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Topic").frame(width: 104, alignment: .leading)
-                Text("Due").frame(width: 92, alignment: .trailing)
-                Text("Difficulty").frame(width: 84, alignment: .trailing)
-            }
-            ForEach(cards) { note in
-                Button { onEdit(note) } label: {
-                    HStack(spacing: 14) {
-                        Text(question(note))
-                            .font(Instrument.sans(12.5))
-                            .foregroundStyle(Instrument.ink)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(note.topic)
-                            .font(Instrument.sans(12.5))
-                            .foregroundStyle(Instrument.muted)
-                            .lineLimit(1)
-                            .frame(width: 104, alignment: .leading)
-                        Figure(
-                            CardStatus.dueDescription(note),
-                            color: CardStatus(note: note).color)
-                            .frame(width: 92, alignment: .trailing)
-                        Figure(difficulty(note), color: Instrument.muted)
-                            .frame(width: 84, alignment: .trailing)
-                    }
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
+            CardColumnHead()
+            CardRows(cards: cards, onEdit: onEdit)
+        }
+    }
+}
+
+/// The four columns both card tables share, so the Decks shelf and the Due
+/// table can't drift apart.
+struct CardColumnHead: View {
+    var body: some View {
+        ColumnHead {
+            Text("Card").frame(maxWidth: .infinity, alignment: .leading)
+            Text("Topic").frame(width: 104, alignment: .leading)
+            Text("Due").frame(width: 92, alignment: .trailing)
+            Text("Difficulty").frame(width: 84, alignment: .trailing)
+        }
+    }
+}
+
+/// The rows without the head — the Decks shelf interleaves deck headers
+/// between groups of these under one shared column head.
+struct CardRows: View {
+    let cards: [Note]
+    var onEdit: (Note) -> Void
+
+    var body: some View {
+        ForEach(cards) { note in
+            Button { onEdit(note) } label: {
+                HStack(spacing: 14) {
+                    Text(question(note))
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.ink)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(note.topic)
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.muted)
+                        .lineLimit(1)
+                        .frame(width: 104, alignment: .leading)
+                    Figure(
+                        CardStatus.dueDescription(note),
+                        color: CardStatus(note: note).color)
+                        .frame(width: 92, alignment: .trailing)
+                    Figure(difficulty(note), color: Instrument.muted)
+                        .frame(width: 84, alignment: .trailing)
                 }
-                .buttonStyle(.plain)
-                Rule()
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            Rule()
         }
     }
 

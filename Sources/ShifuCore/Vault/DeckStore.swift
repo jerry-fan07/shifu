@@ -29,10 +29,16 @@ public enum DeckStore {
     /// it. A build is two LLM calls; an hour means the claimant crashed.
     public static let staleClaimMs: Int64 = 3_600_000
 
+    /// How many never-reviewed cards a freshly minted deck may introduce per
+    /// day. Chosen so a big deck drips in over weeks rather than landing due
+    /// all at once; the deck page can raise it, lower it, or lift it.
+    public static let defaultNewPerDay = 20
+
     /// One deck as the UI sees it. `cardCount` is derived from `vault_index`
     /// on every read, never stored — the user prunes cards during review, so a
     /// stored count would start drifting the moment the feature is used as
-    /// designed.
+    /// designed. `paused` and `newPerDay` are the deck's review settings,
+    /// applied by `ReviewGate` wherever a due queue is built.
     public struct Deck: Identifiable, Sendable, Equatable {
         public var id: Int64
         public var key: String
@@ -43,6 +49,9 @@ public enum DeckStore {
         public var createdAt: Int64
         public var builtAt: Int64?
         public var cardCount: Int
+        public var paused: Bool
+        /// Nil is uncapped.
+        public var newPerDay: Int?
     }
 
     /// The deck row the builder works from. No task name: a claim must not
@@ -95,7 +104,7 @@ public enum DeckStore {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
-                       t.name AS task_name,
+                       d.paused, d.new_per_day, t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -110,7 +119,7 @@ public enum DeckStore {
         try database.queue.read { db in
             try Row.fetchOne(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
-                       t.name AS task_name,
+                       d.paused, d.new_per_day, t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -248,12 +257,69 @@ public enum DeckStore {
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         try database.queue.write { db in
             try db.execute(sql: """
-                INSERT INTO decks (key, task_key, title, status, status_at, created_at)
-                VALUES (?, ?, ?, 'pending', ?, ?)
+                INSERT INTO decks (key, task_key, title, status, status_at, created_at,
+                                   new_per_day)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?)
                 ON CONFLICT(key) DO NOTHING
-                """, arguments: [deckKey, taskKey, trimmed, nowMs, nowMs])
+                """, arguments: [deckKey, taskKey, trimmed, nowMs, nowMs, defaultNewPerDay])
         }
         return deckKey
+    }
+
+    // MARK: - Management (design.md §5.2)
+
+    /// Retitles a deck. Cards carry the deck *key*, never the title, so a
+    /// rename touches one row and nothing else.
+    public static func rename(key deckKey: String, to title: String,
+                              database: ShifuDatabase) throws {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE decks SET title = ? WHERE key = ?",
+                           arguments: [trimmed, deckKey])
+        }
+    }
+
+    /// A paused deck's cards sit out every queue and every due count until it
+    /// is resumed — `ReviewGate` reads the flag, nothing else changes.
+    public static func setPaused(key deckKey: String, _ paused: Bool,
+                                 database: ShifuDatabase) throws {
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE decks SET paused = ? WHERE key = ?",
+                           arguments: [paused, deckKey])
+        }
+    }
+
+    /// Nil lifts the daily new-card cap.
+    public static func setNewPerDay(key deckKey: String, _ cap: Int?,
+                                    database: ShifuDatabase) throws {
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE decks SET new_per_day = ? WHERE key = ?",
+                           arguments: [cap, deckKey])
+        }
+    }
+
+    /// Deletes a deck *and the cards it minted* — the deck is why they exist,
+    /// so they go together rather than being orphaned into the loose group
+    /// (the §12 decision). The review log in `srs_reviews` stays: it records
+    /// what happened, not what is kept. A dismissed `deck_suggestions` row is
+    /// written under the task key so the weekly suggester can't propose back
+    /// what was just thrown away; the task page button and the New deck menu
+    /// remain the deliberate routes back.
+    public static func delete(_ deck: Deck, database: ShifuDatabase, vault: VaultStore,
+                              now: Date = Date()) throws {
+        for note in try vault.allNotes() where note.deck == deck.key {
+            try vault.discard(note)
+        }
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try database.queue.write { db in
+            try db.execute(sql: "DELETE FROM decks WHERE key = ?", arguments: [deck.key])
+            try db.execute(sql: """
+                INSERT INTO deck_suggestions (task_key, status, created_at)
+                VALUES (?, 'dismissed', ?)
+                ON CONFLICT(task_key) DO UPDATE SET status = 'dismissed'
+                """, arguments: [deck.taskKey, nowMs])
+        }
     }
 
     /// Writes one card into a deck: kept, FSRS-seeded, `deck:`-stamped, and
@@ -341,7 +407,8 @@ public enum DeckStore {
              taskName: row["task_name"], title: row["title"],
              status: Status(rawValue: row["status"]) ?? .pending,
              createdAt: row["created_at"], builtAt: row["built_at"],
-             cardCount: row["card_count"])
+             cardCount: row["card_count"], paused: row["paused"],
+             newPerDay: row["new_per_day"])
     }
 
     static func encodeSamples(_ samples: [SampleCard]) -> String {

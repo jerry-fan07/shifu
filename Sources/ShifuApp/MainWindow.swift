@@ -57,6 +57,10 @@ struct MainWindow: View {
             TaskPage(taskID: taskID)
         case .theme(let themeID):
             ThemePage(themeID: themeID)
+        case .deck(let deckID):
+            DeckPage(deckID: deckID)
+        case .looseCards:
+            LooseCardsPage()
         case .merges:
             MergeReviewView()
         }
@@ -69,6 +73,9 @@ struct MainWindow: View {
         case .none: return router.place.title
         case .task(let taskID): return store.taskDetail(taskID)?.task.name ?? "Task"
         case .theme(let themeID): return store.themeDetail(themeID)?.overview.name ?? "Theme"
+        case .deck(let deckID):
+            return store.decks.first { $0.id == deckID }?.title ?? "Deck"
+        case .looseCards: return "Loose cards"
         case .merges: return "Suggestions"
         }
     }
@@ -80,6 +87,10 @@ struct MainWindow: View {
 enum Route: Hashable {
     case task(Int64)
     case theme(Int64)
+    case deck(Int64)
+    /// The cards outside any live deck — a shelf row like the decks, so it
+    /// pages the same way, but with nothing to rename or configure.
+    case looseCards
     case merges
 }
 
@@ -190,6 +201,8 @@ private struct SourceList: View {
             case .none: Places()
             case .task(let taskID): TaskContents(taskID: taskID)
             case .theme(let themeID): ThemeContents(themeID: themeID)
+            case .deck(let deckID): DeckContents(deckID: deckID)
+            case .looseCards: LooseContents()
             case .merges: MergeContents()
             }
         }
@@ -198,7 +211,7 @@ private struct SourceList: View {
     }
 }
 
-/// The default contents: the ten places, with the count that says whether
+/// The default contents: the nine places, with the count that says whether
 /// going there is worth it.
 private struct Places: View {
     @EnvironmentObject private var store: LedgerStore
@@ -380,9 +393,9 @@ enum Region: String, CaseIterable, Identifiable {
 
 /// Everywhere the source list can take you.
 enum Place: String, CaseIterable, Identifiable {
-    case breakdown, timeline, week
+    case breakdown, timeline
     case themes, tasks, notes
-    case due, inbox, deck
+    case due, decks
     case radar
 
     var id: String { rawValue }
@@ -391,22 +404,20 @@ enum Place: String, CaseIterable, Identifiable {
         switch self {
         case .breakdown: return "Breakdown"
         case .timeline: return "Timeline"
-        case .week: return "Week"
         case .themes: return "Themes"
         case .tasks: return "Tasks"
         case .notes: return "Notes"
         case .due: return "Due"
-        case .inbox: return "Inbox"
-        case .deck: return "Deck"
+        case .decks: return "Decks"
         case .radar: return "Radar"
         }
     }
 
     var region: Region {
         switch self {
-        case .breakdown, .timeline, .week: return .ledger
+        case .breakdown, .timeline: return .ledger
         case .themes, .tasks, .notes: return .vault
-        case .due, .inbox, .deck: return .practice
+        case .due, .decks: return .practice
         case .radar: return .signals
         }
     }
@@ -419,13 +430,14 @@ enum Place: String, CaseIterable, Identifiable {
         // a instrument with nothing on it should look like one.
         case .breakdown: return store.todayMs > 0 ? store.todayTotalLabel : nil
         case .timeline: return store.todayBlockCount > 0 ? "\(store.todayBlockCount)" : nil
-        case .week: return store.weekTotalLabel
         case .themes: return count(store.themes.count)
         case .tasks: return count(store.matchingTaskCount)
         case .notes: return count(store.noteCount)
         case .due: return count(store.dueNotes.count)
-        case .inbox: return count(store.deckSuggestions.count)
-        case .deck: return count(store.allCards.count)
+        // Kept decks plus open offers: the number of deck-shaped things the
+        // page will show, not the cards inside them — Due already counts
+        // cards.
+        case .decks: return count(store.decks.count + store.deckSuggestions.count)
         case .radar: return count(store.suggestions.count)
         }
     }
@@ -436,13 +448,11 @@ enum Place: String, CaseIterable, Identifiable {
         switch self {
         case .breakdown: LedgerView(mode: .breakdown)
         case .timeline: LedgerView(mode: .timeline)
-        case .week: LedgerView(mode: .week)
         case .themes: ThemesView()
         case .tasks: TasksView()
         case .notes: NotesView()
         case .due: DueView()
-        case .inbox: InboxView()
-        case .deck: DeckView()
+        case .decks: DecksView()
         case .radar: RadarView()
         }
     }
