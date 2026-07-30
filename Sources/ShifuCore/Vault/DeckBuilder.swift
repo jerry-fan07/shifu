@@ -28,11 +28,15 @@ public enum DeckBuilder {
 
     // MARK: - Prompt (pure, testable)
 
-    static func prompt(title: String, taskName: String, blocks: [BlockText]) -> String {
-        """
+    static func prompt(
+        title: String, taskName: String, instructions: String?,
+        range: DeckStore.CardRange? = nil, written: Int = 0, blocks: [BlockText]
+    ) -> String {
+        let brief = instructionLines(instructions, written: written)
+        return """
         Create spaced-repetition flashcards for the deck "\(title)", built from the
         user's work on the task "\(taskName)".
-        Look for: definitions, facts, how-tos, error→fix pairs, shortcuts, new terms.
+        \(brief)Look for: definitions, facts, how-tos, error→fix pairs, shortcuts, new terms.
         Write cards that teach, not clippings: combine what the screen text shows with
         your own knowledge of the subject — define the terms involved, explain how or
         why it works, and add a concrete example or gotcha where you know one. Every
@@ -46,12 +50,59 @@ public enum DeckBuilder {
           "question": "recall question that names its subject",
           "answer": "answer, 2-4 sentences: the direct answer plus the why",
           "confidence": 0.8}]
-        Write at most \(maxCardsPerBatch) cards. Only genuinely reusable knowledge — no UI
-        chrome, no navigation text, no user's own writing.
+        \(budgetLine(instructions, range: range, written: written)) Only genuinely
+        reusable knowledge — no UI chrome, no navigation text, no user's own writing.
 
         Screen text excerpts:
         \(blocks.map(\.text).joined(separator: "\n---\n"))
         """
+    }
+
+    /// The user's own brief for the deck, when one was given. One operative
+    /// count, never two: the brief outranks the batch budget *by name*, and
+    /// `budgetLine` yields right where the model decides how many to write —
+    /// a lone precedence sentence up top loses to a concrete number beside
+    /// the format spec. `written` is what earlier batches already produced,
+    /// so a "3-4 cards" brief reads as a deck total rather than restarting
+    /// from zero every call.
+    private static func instructionLines(_ instructions: String?, written: Int) -> String {
+        guard let instructions, !instructions.isEmpty else { return "" }
+        var lines = """
+        The user gave instructions for this deck. They outrank every other rule in
+        this prompt, including the card budget below — a card count in them is a
+        total for the whole deck, not a per-response target:
+        \(instructions)
+        """
+        if written > 0 {
+            lines += "\n(\(written) card\(written == 1 ? "" : "s") from earlier passes "
+                + "already count toward that total; respond with an empty array if the "
+                + "instructions are already satisfied.)"
+        }
+        return lines + "\n\n"
+    }
+
+    /// The count directive — exactly one per prompt. The user's range when
+    /// one was picked (a deck total, tracked across batches; its ceiling is
+    /// *also* enforced in `build`, so this line is a promise rather than a
+    /// hope), the per-response ceiling otherwise, yielding to the brief
+    /// either way since the brief outranks the budget by name.
+    private static func budgetLine(
+        _ instructions: String?, range: DeckStore.CardRange?, written: Int
+    ) -> String {
+        if let range {
+            var line = "Write between \(range.lower) and \(range.upper) cards in "
+                + "total for this deck, across every response"
+            if written > 0 {
+                line += " — \(written) already written in earlier responses; "
+                    + "respond with an empty array once the total is met"
+            }
+            return line + "."
+        }
+        guard let instructions, !instructions.isEmpty else {
+            return "Write at most \(maxCardsPerBatch) cards."
+        }
+        return "Write at most \(maxCardsPerBatch) cards — fewer if the user's "
+            + "instructions above ask for fewer; their count wins."
     }
 
     // MARK: - Build
@@ -77,11 +128,19 @@ public enum DeckBuilder {
                 ?? claim.title
             var written = 0
             for batch in batches(blocks, claim: claim, taskName: taskName, backend: backend) {
+                // The range's top is enforced, not just asked for: a full
+                // deck skips its remaining batches without another call.
+                if let ceiling = claim.cardRange?.upper, written >= ceiling { break }
                 let response = try await backend.complete(
-                    prompt: prompt(title: claim.title, taskName: taskName, blocks: batch),
+                    prompt: prompt(title: claim.title, taskName: taskName,
+                                   instructions: claim.instructions,
+                                   range: claim.cardRange, written: written,
+                                   blocks: batch),
                     maxTokens: responseTokens)
                 written += try save(CardCandidates.parse(response), claim: claim,
-                                    vault: vault, now: now)
+                                    vault: vault,
+                                    limit: claim.cardRange.map { $0.upper - written },
+                                    now: now)
             }
             try DeckStore.markReady(key: deckKey, database: database, now: now)
             return written
@@ -151,19 +210,26 @@ public enum DeckBuilder {
             blocks,
             budget: backend.contextWindowTokens - backend.responseReserve(responseTokens)
         ) {
-            prompt(title: claim.title, taskName: taskName, blocks: $0)
+            // Sized with a nonzero `written` so the bookkeeping line a later
+            // batch carries is already inside the budget its batch was cut to.
+            prompt(title: claim.title, taskName: taskName,
+                   instructions: claim.instructions, range: claim.cardRange,
+                   written: maxCardsPerBatch, blocks: $0)
         }
     }
 
     /// Writes the batch's cards. Deck-scoped dedupe (§5.2) keeps a second
     /// batch from re-filing what the first one already wrote without letting
-    /// an unrelated vault note swallow a requested card.
+    /// an unrelated vault note swallow a requested card. `limit` is the
+    /// card range's remaining headroom — the hard half of the ceiling, for
+    /// when the model overshoots the prompt's ask anyway.
     private static func save(
         _ candidates: [CardCandidates.Candidate], claim: DeckStore.Claim,
-        vault: VaultStore, now: Date
+        vault: VaultStore, limit: Int? = nil, now: Date
     ) throws -> Int {
         var written = 0
         for candidate in candidates where candidate.confidence >= confidenceFloor {
+            if let limit, written >= limit { break }
             guard let question = candidate.question, let answer = candidate.answer,
                   !question.isEmpty, !answer.isEmpty else { continue }
             let card = DeckStore.SampleCard(
