@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Shifu's mark in the menu bar: three rails of a ribbon, rising. Flat and
-/// even when capture is paused, so the state is legible at 18 points without
-/// a badge.
+/// Shifu's mark in the menu bar: one mountain ridge, drawn in a single stroke.
+/// Worn down to foothills when capture is paused, so the state is legible at
+/// 18 points without a badge.
 ///
 /// `MenuBarExtra(systemImage:)` can only take an SF Symbol and none of them is
 /// this, so the figure is rendered once per state into an `NSImage` at menu
@@ -32,29 +32,43 @@ enum MenuBarMark {
     }
 }
 
-/// The mark itself, also usable on screen: three rails, rising while watching
-/// and level while resting.
+/// The mark itself, also usable on screen: one ridge, high while watching and
+/// worn down to two low hills while resting.
 struct InstrumentMark: View {
     var paused = false
-    var color: Color = .primary
 
-    private static let watching: [CGFloat] = [0.42, 0.68, 1.0]
-    private static let resting: [CGFloat] = [0.42, 0.42, 0.42]
+    /// The ridge as a polyline in unit space, y measured from the top. Both
+    /// states start and end on the same base line at the same x, so the mark
+    /// keeps its footing in the bar and only the country between changes.
+    private static let watching: [CGPoint] = [
+        .init(x: 0.08, y: 0.76), .init(x: 0.36, y: 0.24), .init(x: 0.56, y: 0.52),
+        .init(x: 0.70, y: 0.36), .init(x: 0.92, y: 0.76)
+    ]
+    /// Two tiny peaks whose valley drops all the way back to the base line —
+    /// at 18 points that reads as "smaller and calmer", where a flat line read
+    /// as "broken".
+    private static let resting: [CGPoint] = [
+        .init(x: 0.08, y: 0.76), .init(x: 0.30, y: 0.52), .init(x: 0.50, y: 0.76),
+        .init(x: 0.70, y: 0.52), .init(x: 0.92, y: 0.76)
+    ]
 
     var body: some View {
         GeometryReader { proxy in
-            let bars = paused ? Self.resting : Self.watching
-            let width = proxy.size.width / CGFloat(bars.count * 2 - 1)
-            HStack(alignment: .bottom, spacing: width) {
-                ForEach(Array(bars.enumerated()), id: \.offset) { _, fraction in
-                    RoundedRectangle(cornerRadius: width / 2.5)
-                        .fill(color)
-                        .frame(width: width, height: proxy.size.height * fraction)
+            let size = proxy.size
+            let points = paused ? Self.resting : Self.watching
+            Path { path in
+                for (index, point) in points.enumerated() {
+                    let place = CGPoint(x: point.x * size.width, y: point.y * size.height)
+                    if index == 0 { path.move(to: place) } else { path.addLine(to: place) }
                 }
             }
-            .frame(
-                width: proxy.size.width, height: proxy.size.height,
-                alignment: .bottomLeading)
+            // Round joins keep the peaks from splintering once the stroke is
+            // only ~2 pt wide; anything thinner disappears under a wallpaper.
+            .stroke(
+                Color.primary,
+                style: StrokeStyle(
+                    lineWidth: min(size.width, size.height) * 0.11,
+                    lineCap: .round, lineJoin: .round))
         }
     }
 }
