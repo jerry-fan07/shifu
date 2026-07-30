@@ -285,8 +285,10 @@ struct DecksView: View {
         Button { router.open(.deck(group.deck.id)) } label: {
             HStack(spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    // The deck's name carries the row the way a theme's does:
+                    // one size up from the table's figures, in semibold.
                     Text(group.deck.title)
-                        .font(Instrument.sans(12.5))
+                        .font(Instrument.sans(13.5, .semibold))
                         .foregroundStyle(Instrument.ink)
                         .lineLimit(1)
                     // A deck minted from the task page wears the task's own
@@ -329,7 +331,7 @@ struct DecksView: View {
             HStack(spacing: 14) {
                 HStack(alignment: .firstTextBaseline, spacing: 9) {
                     Text("Loose cards")
-                        .font(Instrument.sans(12.5))
+                        .font(Instrument.sans(13.5, .semibold))
                         .foregroundStyle(Instrument.ink)
                     Figure("outside any deck", size: 10.5, color: Instrument.faint)
                 }
