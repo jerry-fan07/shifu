@@ -83,6 +83,7 @@ struct DeckPage: View {
                     Text(subtitle(deck))
                         .font(Instrument.sans(12.5))
                         .foregroundStyle(Instrument.muted)
+                        .lineLimit(2)
                 } trailing: {
                     reviewSettings(deck)
                 }
@@ -107,6 +108,18 @@ struct DeckPage: View {
         if deck.title != deck.taskName { parts.append("from \(deck.taskName)") }
         let due = store.dueNotes.filter { $0.deck == deck.key }.count
         parts.append("\(due) due now")
+        // What the deck was asked to be — the size and the brief, as one part
+        // so "asked for" is never said twice.
+        switch (deck.cardRange, deck.instructions) {
+        case let (range?, brief?):
+            parts.append("asked for \(range.lower)–\(range.upper) cards — \(brief)")
+        case let (range?, nil):
+            parts.append("asked for \(range.lower)–\(range.upper) cards")
+        case let (nil, brief?):
+            parts.append("asked for: \(brief)")
+        case (nil, nil):
+            break
+        }
         if deck.status != .ready {
             parts.append("building — the rest arrive with the next analysis run")
         }

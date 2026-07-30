@@ -249,7 +249,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
 | Work Mode nudge behavior | [`shifud/WorkModeController.swift`](Sources/shifud/WorkModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
 | A user-tunable setting (key, default, bounds, UI copy) | [`Storage/SettingsCatalog.swift`](Sources/ShifuCore/Storage/SettingsCatalog.swift) — see §7 |
-| The Settings window itself | [`ShifuApp/SettingsView.swift`](Sources/ShifuApp/SettingsView.swift), [`ShifuApp/SettingsStore.swift`](Sources/ShifuApp/SettingsStore.swift) — usually you do **not** need to touch these |
+| The Settings place (a page in the main window, not a separate window) | [`ShifuApp/SettingsView.swift`](Sources/ShifuApp/SettingsView.swift), [`ShifuApp/SettingsStore.swift`](Sources/ShifuApp/SettingsStore.swift) — usually you do **not** need to touch these |
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
@@ -359,8 +359,12 @@ for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 **`decks`** (v18, unique `key` *and* `task_key` — one deck per task; status
 `pending → building → ready`, advanced only through `DeckStore`'s
 compare-and-set, which is what keeps two analyzer processes from building the
-same deck. No `card_count` column on purpose: review-time pruning would make a
-stored count wrong within the session, so it is always derived from
+same deck. v20 adds the optional `instructions` brief from the New deck page,
+stored on the row so drain retries in other processes still build what the
+user described; v21 adds its `cards_min`/`cards_max` range — both NULL is
+automatic, and `cards_max` is enforced by `DeckBuilder`, not just prompted
+for. No `card_count` column on purpose: review-time pruning would
+make a stored count wrong within the session, so it is always derived from
 `vault_index.deck_key`) and **`deck_suggestions`** (v18, unique **`task_key`**
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
@@ -497,7 +501,7 @@ invariant 1 (that is where `DeepSeekBackend` lives) — and wire selection into
 **Add a user setting.** Add one entry to `SettingsCatalog`
 (`Storage/SettingsCatalog.swift`) and append it to `ints` / `domainLists` /
 `choices` / `texts`. That
-is the whole job for storage, defaulting, bounds and UI: the Settings window
+is the whole job for storage, defaulting, bounds and UI: the Settings page
 renders from the catalog, and `Settings.value(_:database:)` clamps on read *and*
 write, so no caller ever restates a bound. Read it where it matters with
 `Settings.value(SettingsCatalog.yourSetting, database:)`.

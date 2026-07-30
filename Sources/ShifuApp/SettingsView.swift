@@ -1,22 +1,31 @@
 import ShifuCore
 import SwiftUI
 
-/// Settings (design.md §9), in the Instrument register: a label, its value in
-/// mono on the right, and one line underneath saying what it does. No boxes —
-/// a section is a rule and a heading.
+/// The Settings place (design.md §9), in the Instrument register: a label, its
+/// value in mono on the right, and one line underneath saying what it does. No
+/// boxes — a section is a rule and a heading. A place like any other rather
+/// than a separate window: the app is one instrument, and its dials are on it.
 ///
 /// Rendered *from* `SettingsCatalog` rather than from hand-written rows: adding
 /// a numeric setting to the catalog makes it appear here, correctly bounded and
-/// labelled, with no change to this file.
+/// labelled, with no change to this file. The one exception is Work Mode's own
+/// switch — live state, not a stored setting — which stands at the head of its
+/// section so the dials under it read as what the switch does.
 struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
+            PageHead(
+                "Settings",
+                subtitle: "Capture and analysis changes reach the running daemon "
+                    + "without a restart.")
+            PageBody {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(SettingsSection.allCases, id: \.self) { section in
-                        SettingsGroup(section: section)
+                    ForEach(
+                        Array(SettingsSection.allCases.enumerated()), id: \.element
+                    ) { index, section in
+                        SettingsGroup(section: section, ruled: index > 0)
                     }
                     if let error = store.lastError {
                         Text(error)
@@ -25,29 +34,22 @@ struct SettingsView: View {
                             .padding(.top, 10)
                     }
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // Full-bleed rows would strand each value a window's width from
+                // its label; the page is a column of dials, not a table.
+                .frame(maxWidth: 560, alignment: .leading)
             }
-            Rule(weight: .section)
-            Text("Capture and analysis changes apply to the running daemon without "
-                + "a restart.")
-                .font(Instrument.sans(11))
-                .foregroundStyle(Instrument.faint)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 9)
         }
-        .background(Instrument.ground)
-        .frame(width: 480, height: 610)
         .onAppear { store.load() }
     }
 }
 
 /// One catalog section, or nothing at all when everything in it is hidden.
+/// `ruled` separates it from the section above; the first sits directly under
+/// the page head's own rule.
 private struct SettingsGroup: View {
     @EnvironmentObject private var store: SettingsStore
     let section: SettingsSection
+    let ruled: Bool
 
     var body: some View {
         let ints = SettingsCatalog.ints.filter { $0.section == section }
@@ -56,19 +58,49 @@ private struct SettingsGroup: View {
             $0.section == section && store.isVisible($0)
         }
         let lists = SettingsCatalog.domainLists.filter { $0.section == section }
-        if !ints.isEmpty || !choices.isEmpty || !texts.isEmpty || !lists.isEmpty {
+        if section == .workMode || !ints.isEmpty || !choices.isEmpty
+            || !texts.isEmpty || !lists.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                Rule(weight: .section)
+                if ruled {
+                    Rule(weight: .section)
+                        .padding(.top, 6)
+                }
                 Eyebrow(section.rawValue, tracking: 1.2)
-                    .padding(.top, 8)
+                    .padding(.top, 16)
                     .padding(.bottom, 8)
+                if section == .workMode { WorkModeRow() }
                 ForEach(ints) { IntSettingRow(setting: $0) }
                 ForEach(choices) { ChoiceSettingRow(setting: $0) }
                 ForEach(texts) { TextSettingRow(setting: $0) }
                 ForEach(lists) { DomainListRow(setting: $0) }
             }
-            .padding(.top, 6)
         }
+    }
+}
+
+/// Work Mode's switch. Live state — the `work_mode` control file the daemon
+/// watches — not a catalog setting, so it reads through `LedgerStore` like the
+/// rail's copy of the same switch and there is nothing to store here.
+private struct WorkModeRow: View {
+    @EnvironmentObject private var ledger: LedgerStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Text("Work Mode")
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                Figure(
+                    ledger.workModeOn ? "on" : "off",
+                    color: Instrument.secondary)
+                ToggleSwitch(isOn: ledger.workModeOn) { ledger.toggleWorkMode() }
+            }
+            SettingHelp(
+                "A gentle glow when a distracting site holds the screen. The same "
+                    + "switch sits at the rail's foot and in the menu bar.")
+        }
+        .accessibilityLabel("Work Mode")
     }
 }
 

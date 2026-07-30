@@ -8,11 +8,13 @@ import SwiftUI
 @main
 struct ShifuApp: App {
     @StateObject private var store = LedgerStore()
-    @StateObject private var settings = SettingsStore()
+    /// Owned by the app rather than the window so the menu bar item and the
+    /// ⌘, command can point the dashboard at a place before opening it.
+    @StateObject private var router = Router()
 
     var body: some Scene {
         Window("Shifu", id: "dashboard") {
-            MainWindow()
+            MainWindow(router: router)
                 .environmentObject(store)
                 .task {
                     // Menu opens refresh implicitly; the window polls gently.
@@ -27,10 +29,19 @@ struct ShifuApp: App {
         // the centre names what you are looking at, and the state indicator
         // sits at the right where it can always be seen.
         .windowStyle(.hiddenTitleBar)
+        // Settings is a place in the window, not a scene of its own — but ⌘,
+        // still has to do what macOS users expect.
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                SettingsCommand()
+                    .environmentObject(router)
+            }
+        }
 
         MenuBarExtra {
             MenuBarPanel()
                 .environmentObject(store)
+                .environmentObject(router)
         } label: {
             if let mark = MenuBarMark.image(paused: store.isPaused) {
                 Image(nsImage: mark)
@@ -50,11 +61,22 @@ struct ShifuApp: App {
         }
         .defaultSize(width: 520, height: 500)
         .windowStyle(.hiddenTitleBar)
+    }
+}
 
-        Settings {
-            SettingsView()
-                .environmentObject(settings)
+/// The app menu's "Settings…": points the dashboard at the Settings place —
+/// there is no separate settings window to open.
+private struct SettingsCommand: View {
+    @EnvironmentObject private var router: Router
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Settings…") {
+            router.go(to: .settings)
+            openWindow(id: "dashboard")
+            NSApp.activate(ignoringOtherApps: true)
         }
+        .keyboardShortcut(",", modifiers: .command)
     }
 }
 
@@ -62,6 +84,7 @@ struct ShifuApp: App {
 /// might want from a menu bar — the switch, the pause, the queue, the window.
 private struct MenuBarPanel: View {
     @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -81,9 +104,7 @@ private struct MenuBarPanel: View {
             .padding(.bottom, 7)
 
             separator
-            MenuLine(title: "Work Mode", trailing: store.workModeOn ? "on" : "off") {
-                store.toggleWorkMode()
-            }
+            WorkModeMenuLine()
 
             separator
             if store.isPaused {
@@ -111,16 +132,11 @@ private struct MenuBarPanel: View {
                 openWindow(id: "dashboard")
                 NSApp.activate(ignoringOtherApps: true)
             }
-            SettingsLink {
-                Text("Settings…")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
+            MenuLine(title: "Settings…") {
+                router.go(to: .settings)
+                openWindow(id: "dashboard")
+                NSApp.activate(ignoringOtherApps: true)
             }
-            .buttonStyle(.plain)
 
             separator
             MenuLine(title: "Quit Shifu") { NSApplication.shared.terminate(nil) }
@@ -135,6 +151,35 @@ private struct MenuBarPanel: View {
 
     private var separator: some View {
         Rule(weight: .edge).padding(.vertical, 4)
+    }
+}
+
+/// The Work Mode line wears the switch itself — the same control as the rail's
+/// foot and the Settings page, so the state looks the same everywhere it can
+/// be flipped. The whole row stays the target, like every other line here.
+private struct WorkModeMenuLine: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            store.toggleWorkMode()
+        } label: {
+            HStack(spacing: 8) {
+                Text("Work Mode")
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                ToggleSwitch(isOn: store.workModeOn) { store.toggleWorkMode() }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .background(hovering ? Instrument.selection : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("Work Mode")
     }
 }
 

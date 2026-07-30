@@ -8,21 +8,31 @@ import SwiftUI
 /// one per page.
 struct SolidButton: View {
     let title: String
+    /// A mark set before the title, for the buttons that mint something: "+".
+    /// A character rather than an SF Symbol, because the instrument draws its
+    /// marks with type — the same reason `FilterMenu`'s chevron is a "⌄".
+    var glyph: String?
     var action: () -> Void
 
-    init(title: String, action: @escaping () -> Void) {
+    init(title: String, glyph: String? = nil, action: @escaping () -> Void) {
         self.title = title
+        self.glyph = glyph
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(Instrument.sans(12, .medium))
-                .foregroundStyle(Instrument.solidInk)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 4)
-                .background(Instrument.solidFill, in: RoundedRectangle(cornerRadius: 6))
+            HStack(spacing: 5) {
+                if let glyph {
+                    Text(glyph)
+                }
+                Text(title)
+            }
+            .font(Instrument.sans(12, .medium))
+            .foregroundStyle(Instrument.solidInk)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 4)
+            .background(Instrument.solidFill, in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
     }
@@ -153,17 +163,34 @@ struct FilterMenu<Option: Hashable>: View {
     }
 }
 
-/// A menu of actions wearing the same outlined pill as `FilterMenu` — "New
-/// deck" over the tasks one could be made from. Nothing is checked: none of
-/// these is a current state.
-struct ActionMenu: View {
-    let title: String
-    let options: [(label: String, action: () -> Void)]
+/// The instrument's on/off switch — Work Mode at the rail's foot, in the menu
+/// bar, and on the Settings page. Drawn to the register rather than borrowing
+/// the green system toggle: the track takes the accent when on, because a
+/// switch that is on is a state the instrument is in, not a choice it is
+/// offering. Stateless by design — the rows that carry it own the action, so
+/// the same control can sit inside a whole-row button without fighting it.
+struct ToggleSwitch: View {
+    var isOn: Bool
+    var action: () -> Void
 
     var body: some View {
-        DropdownButton(
-            label: title,
-            entries: options.map { DropdownEntry($0.label, action: $0.action) })
+        Button(action: action) {
+            Capsule()
+                .fill(isOn ? Instrument.accent : Instrument.well)
+                .overlay {
+                    Capsule().strokeBorder(Instrument.edge, lineWidth: 1)
+                }
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(isOn ? Instrument.solidInk : Instrument.faint)
+                        .padding(2)
+                }
+                .frame(width: 28, height: 16)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.15), value: isOn)
+        .accessibilityValue(isOn ? "on" : "off")
     }
 }
 

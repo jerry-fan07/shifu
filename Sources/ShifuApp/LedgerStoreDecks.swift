@@ -25,13 +25,22 @@ extension LedgerStore {
     /// The manual route: a deck for a task the suggester never offered one for
     /// — and the escape hatch from a dismissed or declined proposal, which are
     /// otherwise permanent. Pressing it twice is a no-op; one deck per task.
-    func createDeck(taskKey: String, title: String) {
+    /// Returns the minted deck so the New deck page can land on it.
+    @discardableResult
+    func createDeck(
+        taskKey: String, title: String, instructions: String? = nil,
+        cardRange: DeckStore.CardRange? = nil,
+        newPerDay: Int? = DeckStore.defaultNewPerDay, paused: Bool = false
+    ) -> DeckStore.Deck? {
         guard let database = try? db(),
-              let key = try? DeckStore.create(title: title, taskKey: taskKey,
-                                              database: database)
-        else { return }
+              let key = try? DeckStore.create(
+                  title: title, taskKey: taskKey, instructions: instructions,
+                  cardRange: cardRange, newPerDay: newPerDay, paused: paused,
+                  database: database)
+        else { return nil }
         buildDeck(key: key)
         refreshSoon()
+        return (try? DeckStore.deck(taskKey: taskKey, database: database)) ?? nil
     }
 
     /// Asks the analyzer to fill a deck in. Only that binary may reach the

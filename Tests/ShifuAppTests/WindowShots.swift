@@ -72,6 +72,9 @@ import Testing
                 .decks, route: .deck(deck.id), as: "deck-page", dark: false,
                 store: store, into: directory)
         }
+        shoot(
+            .decks, route: .newDeck, as: "new-deck-page", dark: false,
+            store: store, into: directory)
         let liveDecks = Set(store.decks.map(\.key))
         if store.allCards.contains(where: { card in
             card.deck.map { !liveDecks.contains($0) } ?? true

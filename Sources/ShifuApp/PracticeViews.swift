@@ -137,34 +137,20 @@ struct DecksView: View {
 
     // MARK: New deck
 
-    /// Mints a deck from any recent task that doesn't already have one — the
-    /// same one-deck-per-task route as the task page's button, and like it an
-    /// escape hatch from a dismissed or declined offer, which are otherwise
-    /// permanent. Gated on a configured key like every deck mint: without one
-    /// nothing could build the deck, and it would sit "building" forever.
+    /// The way to the form (`NewDeckPage`): pick a source task, brief the
+    /// builder, set the title and review settings — the same one-deck-per-task
+    /// route as the task page's button, and like it an escape hatch from a
+    /// dismissed or declined offer, which are otherwise permanent. Gated on a
+    /// configured key like every deck mint: without one nothing could build
+    /// the deck, and it would sit "building" forever.
     @ViewBuilder private var newDeckControl: some View {
-        if !store.hasLLMBackend {
+        if store.hasLLMBackend {
+            SolidButton(title: "New deck", glyph: "+") { router.open(.newDeck) }
+        } else {
             Text("A deck needs DeepSeek (Settings)")
                 .font(Instrument.sans(11.5))
                 .foregroundStyle(Instrument.ghost)
-        } else if !candidateTasks.isEmpty {
-            ActionMenu(
-                title: "New deck",
-                options: candidateTasks.map { overview in
-                    (overview.task.name, {
-                        store.createDeck(
-                            taskKey: overview.task.key, title: overview.task.name)
-                    })
-                })
         }
-    }
-
-    /// Recent tasks with no deck and no open offer. A task whose offer was
-    /// dismissed stays listed — that is the escape hatch working.
-    private var candidateTasks: [TaskStore.Overview] {
-        let spoken = Set(store.decks.map(\.taskKey))
-            .union(store.deckSuggestions.map(\.taskKey))
-        return store.recentTasks.filter { !spoken.contains($0.task.key) }
     }
 
     // MARK: Suggested (the former Inbox)
