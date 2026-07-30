@@ -100,11 +100,12 @@ struct TrailRail: View {
         .position(x: stop.x + Self.nodeWidth / 2 - Self.discSize / 2, y: stop.y)
     }
 
-    /// What deserves a number: cards waiting to be reviewed, automations
-    /// waiting to be judged. Everything else earns attention by being visited.
+    /// What deserves a number: cards waiting to be reviewed, decks and
+    /// automations waiting to be judged. Everything else earns attention by
+    /// being visited.
     private func badge(_ place: Destination) -> Int? {
         switch place {
-        case .practice: return store.dueNotes.count + store.inboxNotes.count
+        case .practice: return store.dueNotes.count + store.deckSuggestions.count
         case .radar: return store.suggestions.count
         default: return nil
         }

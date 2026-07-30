@@ -25,7 +25,7 @@ extension TaskStore {
     /// keep their `theme_key`, so filed theme time survives the task.
     private static func candidates(
         database: ShifuDatabase, now: Date
-    ) throws -> [Int64] {
+    ) throws -> [PruneCandidate] {
         let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
             - Int64(pruneInactiveDays) * 86_400_000
         return try database.queue.read { db in
@@ -51,8 +51,7 @@ extension TaskStore {
             var seenIDs: Set<Int64> = []
             return (debris + system)
                 .filter { TaskGrouper.isDefaultName($0.name, forKey: $0.key) }
-                .map(\.id)
-                .filter { seenIDs.insert($0).inserted }
+                .filter { seenIDs.insert($0.id).inserted }
         }
     }
 
@@ -73,8 +72,10 @@ extension TaskStore {
         database: ShifuDatabase, vault: VaultStore? = nil,
         now: Date = Date(), calendar: Calendar = .current
     ) throws -> Int {
-        let doomed = try candidates(database: database, now: now)
-        guard !doomed.isEmpty else { return 0 }
+        let dying = try candidates(database: database, now: now)
+        guard !dying.isEmpty else { return 0 }
+        let doomed = dying.map(\.id)
+        let doomedKeys = dying.map(\.key)
 
         let placeholders = databaseQuestionMarks(count: doomed.count)
         let spans: [(start: Int64, end: Int64)] = try database.queue.read { db in
@@ -102,6 +103,16 @@ extension TaskStore {
                 DELETE FROM theme_suggestions
                 WHERE status = 'new' AND task_id IN (\(placeholders))
                 """, arguments: StatementArguments(doomed))
+            // Same policy for open deck proposals — and here it is not just
+            // tidiness: `deck_suggestions` rows are keyed permanently, and an
+            // orphaned `new` row would consume one of the suggester's three
+            // open slots forever, with no UI able to show or clear it.
+            // Resolved rows stay: a dismissal is meant to be permanent, and a
+            // re-minted key is the same intent.
+            try db.execute(sql: """
+                DELETE FROM deck_suggestions
+                WHERE status = 'new' AND task_key IN (\(placeholders))
+                """, arguments: StatementArguments(doomedKeys))
             for day in days {
                 try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
             }

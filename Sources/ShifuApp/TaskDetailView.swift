@@ -14,6 +14,9 @@ struct TaskDetailView: View {
     @State private var selectedHit: VaultSearch.Hit?
     @State private var askNewTheme = false
     @State private var newThemeName = ""
+    /// Open by default: the overview is the answer to "what is this task",
+    /// which is why the page was opened.
+    @State private var overviewExpanded = true
 
     var body: some View {
         Group {
@@ -51,6 +54,7 @@ struct TaskDetailView: View {
             Section {
                 header(detail)
             }
+            overviewSection(detail)
             if !detail.days.isEmpty {
                 Section("History") {
                     ForEach(detail.days) { day in
@@ -82,6 +86,30 @@ struct TaskDetailView: View {
         }
         .listStyle(.inset)
         .navigationTitle(detail.task.name)
+    }
+
+    /// The task's living overview document (vault-features.md §2.1) — what the
+    /// task *is*, above the day-by-day history that is its diary. Absent until
+    /// the compiler has had a task-day to work from.
+    @ViewBuilder private func overviewSection(_ detail: TaskStore.Detail) -> some View {
+        if let overview = store.taskOverview(taskKey: detail.task.key),
+           !overview.body.isEmpty {
+            Section {
+                DisclosureGroup(isExpanded: $overviewExpanded) {
+                    CardTextView(text: overview.body)
+                        .padding(.vertical, 4)
+                } label: {
+                    HStack {
+                        Text("Overview")
+                            .font(.headline)
+                        Spacer()
+                        Text(overview.updated, format: .relative(presentation: .named))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     private func sourceRow(_ share: TaskStore.SourceShare) -> some View {
@@ -146,6 +174,7 @@ struct TaskDetailView: View {
                     Image(systemName: "sparkles")
                 }
                 Spacer()
+                deckControl(detail)
                 Button {
                     if let hit = store.latestWorkNote(taskID: taskID, title: detail.task.name) {
                         selectedHit = hit
@@ -159,6 +188,33 @@ struct TaskDetailView: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+
+    /// The manual route to a deck (§5.2) — and the escape hatch from a
+    /// dismissed or declined suggestion, which are otherwise permanent.
+    /// Once a deck exists this becomes its live state: the card count is
+    /// derived on every read, never stored, because review-time pruning would
+    /// make a stored one wrong within a session.
+    @ViewBuilder private func deckControl(_ detail: TaskStore.Detail) -> some View {
+        if let deck = store.deck(taskKey: detail.task.key) {
+            switch deck.status {
+            case .ready:
+                Label("Deck · \(deck.cardCount) cards", systemImage: "rectangle.stack")
+            case .pending, .building:
+                Label("Deck building…", systemImage: "rectangle.stack")
+            }
+        } else if store.hasLLMBackend {
+            Button {
+                store.createDeck(taskKey: detail.task.key, title: detail.task.name)
+            } label: {
+                Label("Create flashcard deck", systemImage: "rectangle.stack.badge.plus")
+            }
+            .buttonStyle(.borderless)
+        } else {
+            // Nothing could build the deck, and a pending one with no builder
+            // would read as "Building…" forever.
+            Label("Deck needs DeepSeek (Settings)", systemImage: "rectangle.stack")
+        }
     }
 
     private func themeMenu(_ detail: TaskStore.Detail) -> some View {
@@ -249,6 +305,13 @@ private struct DayHistoryRow: View {
                         Text("No narrative for this day.")
                             .font(.callout)
                             .foregroundStyle(.tertiary)
+                    }
+                    // The detailed tier's `## Notes` document (§2.1). Rendered
+                    // through CardTextView so its `###` sub-headings are
+                    // headings rather than literal hashes.
+                    if let detail = note.detailProse, !detail.isEmpty {
+                        Divider()
+                        CardTextView(text: detail)
                     }
                 }
                 .padding(.leading, 4)

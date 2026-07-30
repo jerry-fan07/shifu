@@ -77,7 +77,7 @@ struct TodayView: View {
             spacing: 10
         ) {
             StatTile(value: store.dueNotes.count, label: "cards due", accented: true)
-            StatTile(value: store.inboxNotes.count, label: "in inbox")
+            StatTile(value: store.decks.count, label: "decks")
             StatTile(value: store.reviewsToday, label: "reviewed")
             StatTile(value: store.suggestions.count, label: "on radar")
         }

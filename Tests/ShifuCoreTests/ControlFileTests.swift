@@ -173,41 +173,42 @@ import Testing
 }
 
 /// `SHIFU_HOME` is the one override every process, test and perf harness uses
-/// to stay off real data — serialized, because it is process-global.
+/// to stay off real data. Every case here goes through `ShifuHomeOverride`:
+/// `.serialized` orders this suite's own cases, but swift-testing still runs
+/// other suites alongside it, and `DigestGeneratorTests` moves the same
+/// variable.
 @Suite(.serialized) struct ShifuPathsTests {
     @Test func shifuHomeOverridesTheDefaultLocationAndEverythingHangsOffIt() {
         let scratch = "/tmp/shifu-paths-test-\(UUID().uuidString)"
-        setenv("SHIFU_HOME", scratch, 1)
-        defer { unsetenv("SHIFU_HOME") }
-
-        #expect(ShifuPaths.home.path == scratch)
-        #expect(ShifuPaths.database.path == scratch + "/shifu.db")
-        for path in [ShifuPaths.database, ShifuPaths.vault, ShifuPaths.digests,
-                     ShifuPaths.logs, ShifuPaths.pauseFile, ShifuPaths.workModeFile] {
-            #expect(path.deletingLastPathComponent().path == scratch)
+        ShifuHomeOverride.with(scratch) {
+            #expect(ShifuPaths.home.path == scratch)
+            #expect(ShifuPaths.database.path == scratch + "/shifu.db")
+            for path in [ShifuPaths.database, ShifuPaths.vault, ShifuPaths.digests,
+                         ShifuPaths.logs, ShifuPaths.pauseFile, ShifuPaths.workModeFile] {
+                #expect(path.deletingLastPathComponent().path == scratch)
+            }
         }
     }
 
     @Test func withoutTheOverrideHomeIsUnderTheUsersHomeDirectory() {
-        unsetenv("SHIFU_HOME")
-        #expect(ShifuPaths.home.lastPathComponent == "Shifu")
-        #expect(ShifuPaths.home.path.hasPrefix(
-            FileManager.default.homeDirectoryForCurrentUser.path))
+        ShifuHomeOverride.with(nil) {
+            #expect(ShifuPaths.home.lastPathComponent == "Shifu")
+            #expect(ShifuPaths.home.path.hasPrefix(
+                FileManager.default.homeDirectoryForCurrentUser.path))
+        }
     }
 
     /// `~/Shifu` holds a screen-capture trace; it is created owner-only (§8).
     @Test func theHomeDirectoryIsCreatedOwnerOnlyAndReCreationIsIdempotent() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("shifu-perm-test-\(UUID().uuidString)")
-        setenv("SHIFU_HOME", scratch.path, 1)
-        defer {
-            unsetenv("SHIFU_HOME")
-            try? FileManager.default.removeItem(at: scratch)
-        }
+        defer { try? FileManager.default.removeItem(at: scratch) }
 
-        try ShifuPaths.ensureHomeExists()
-        try ShifuPaths.ensureHomeExists()
-        let attributes = try FileManager.default.attributesOfItem(atPath: scratch.path)
-        #expect(attributes[.posixPermissions] as? Int == 0o700)
+        try ShifuHomeOverride.with(scratch.path) {
+            try ShifuPaths.ensureHomeExists()
+            try ShifuPaths.ensureHomeExists()
+            let attributes = try FileManager.default.attributesOfItem(atPath: scratch.path)
+            #expect(attributes[.posixPermissions] as? Int == 0o700)
+        }
     }
 }

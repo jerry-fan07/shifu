@@ -57,10 +57,6 @@ public struct VaultStore: Sendable {
         return notes.sorted { $0.captured > $1.captured }
     }
 
-    public func inbox() throws -> [Note] {
-        try allNotes().filter { $0.state == .inbox }
-    }
-
     /// Kept notes with a Q/A pair whose SRS due date has arrived (§5.2).
     public func due(asOf date: Date = Date()) throws -> [Note] {
         try allNotes().filter { note in
@@ -71,6 +67,15 @@ public struct VaultStore: Sendable {
 
     // MARK: - Work notes (vault-features.md §2.1)
 
+    /// File-name slug of a task *key* (stable across renames), so file
+    /// identity survives display renames. Shared by work notes and the
+    /// per-task overview document so both name the same task the same way.
+    public static func taskSlug(_ taskKey: String) -> String {
+        let suffix = taskKey.split(separator: ":", maxSplits: 1)
+            .last.map(String.init) ?? taskKey
+        return String(TaskGrouper.slug(suffix).prefix(40))
+    }
+
     /// `work/YYYY/MM/DD-<task-slug>.md`. The slug comes from the task *key*
     /// (stable across renames), so file identity survives display renames.
     public func workNoteURL(day: String, taskKey: String) -> URL {
@@ -78,14 +83,12 @@ public struct VaultStore: Sendable {
         let year = parts.isEmpty ? "0000" : parts[0]
         let month = parts.count > 1 ? parts[1] : "00"
         let dayNum = parts.count > 2 ? parts[2] : "00"
-        let suffix = taskKey.split(separator: ":", maxSplits: 1)
-            .last.map(String.init) ?? taskKey
-        let slug = TaskGrouper.slug(suffix)
+        let slug = Self.taskSlug(taskKey)
         return root
             .appendingPathComponent("work", isDirectory: true)
             .appendingPathComponent(year, isDirectory: true)
             .appendingPathComponent(month, isDirectory: true)
-            .appendingPathComponent("\(dayNum)-\(slug.prefix(40)).md")
+            .appendingPathComponent("\(dayNum)-\(slug).md")
     }
 
     public func workNote(day: String, taskKey: String) -> WorkNote? {
@@ -132,6 +135,34 @@ public struct VaultStore: Sendable {
         }
     }
 
+    // MARK: - Task overviews (vault-features.md §2.1)
+
+    /// `tasks/<task-slug>.md` — one living document per task, flat rather than
+    /// date-foldered: there is only ever one, and it is replaced in place.
+    public func taskOverviewURL(taskKey: String) -> URL {
+        root
+            .appendingPathComponent("tasks", isDirectory: true)
+            .appendingPathComponent("\(Self.taskSlug(taskKey)).md")
+    }
+
+    public func taskOverview(taskKey: String) -> TaskOverview? {
+        let file = taskOverviewURL(taskKey: taskKey)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return TaskOverview.parse(text)
+    }
+
+    @discardableResult
+    public func saveOverview(_ overview: TaskOverview) throws -> URL {
+        let target = taskOverviewURL(taskKey: overview.taskKey)
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try overview.serialize().write(to: target, atomically: true, encoding: .utf8)
+        if let database {
+            try VaultIndexer.indexFile(at: target, root: root, database: database)
+        }
+        return target
+    }
+
     func existingURL(id: String) -> URL? {
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: nil) else { return nil }
@@ -142,18 +173,11 @@ public struct VaultStore: Sendable {
         return nil
     }
 
-    // MARK: - Triage (§5.1: nothing enters the review queue unconfirmed)
+    // MARK: - Deletion
 
-    public func keep(_ note: Note) throws {
-        var kept = note
-        kept.state = .kept
-        // Entering the queue: due immediately, scheduled by the first review.
-        if kept.questionAnswer != nil && kept.srs == nil {
-            kept.srs = FSRS.State(due: Date())
-        }
-        try save(kept)
-    }
-
+    /// Removes a card and its index rows. The only way a note leaves the
+    /// vault now that there is no triage step — pruning happens during review,
+    /// with the card in front of you.
     public func discard(_ note: Note) throws {
         if let file = existingURL(id: note.id) {
             try FileManager.default.removeItem(at: file)
@@ -202,11 +226,44 @@ public struct VaultStore: Sendable {
     /// content, bump `seen_count` (re-encounter is itself an SRS signal) and
     /// return true instead of creating a new note.
     public func mergeIfDuplicate(of candidate: Note) throws -> Bool {
+        try merge(candidate, into: try allNotes())
+    }
+
+    /// The same rule scoped to one deck (§5.2). Deck writes must never use the
+    /// vault-wide variant: a match against an unrelated inbox reference note
+    /// or an old kept card would bump *that* note's `seen_count` and silently
+    /// drop a card the user explicitly asked for — leaving the deck quietly
+    /// incomplete, with no `deck:` stamp anywhere to show what happened. So a
+    /// deck dedupes only within itself, and is O(deck) rather than O(vault):
+    /// `vault_index.deck_key` resolves the deck's paths directly.
+    public func mergeIfDuplicate(of candidate: Note, inDeck deckKey: String) throws -> Bool {
+        try merge(candidate, into: try deckNotes(deckKey: deckKey))
+    }
+
+    /// The cards filed under one deck. Falls back to a full scan without a
+    /// database — the index is disposable by design, so it can never be the
+    /// only route to a note.
+    public func deckNotes(deckKey: String) throws -> [Note] {
+        guard let database else {
+            return try allNotes().filter { $0.deck == deckKey }
+        }
+        let paths = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT path FROM vault_index WHERE deck_key = ?",
+                                arguments: [deckKey])
+        }
+        return paths.compactMap { path in
+            guard let text = try? String(
+                contentsOf: root.appendingPathComponent(path), encoding: .utf8) else { return nil }
+            return Note.parse(text)
+        }
+    }
+
+    private func merge(_ candidate: Note, into existing: [Note]) throws -> Bool {
         let candidateHash = SimHash.hash(candidate.body)
-        for existing in try allNotes()
-        where existing.topic.lowercased() == candidate.topic.lowercased() {
-            if SimHash.isNearDuplicate(SimHash.hash(existing.body), candidateHash) {
-                var bumped = existing
+        for note in existing
+        where note.topic.lowercased() == candidate.topic.lowercased() {
+            if SimHash.isNearDuplicate(SimHash.hash(note.body), candidateHash) {
+                var bumped = note
                 bumped.seenCount += 1
                 try save(bumped)
                 return true

@@ -49,9 +49,8 @@ and restart the daemon:
 launchctl kickstart -k "gui/$(id -u)/com.shifu.shifud"
 ```
 
-Install the desktop app (sidebar dashboard, review sessions, onboarding,
-menu bar item) as a
-standalone `Shifu.app`:
+Install the desktop app (the mountain window, review sessions, onboarding,
+menu bar item) as a standalone `Shifu.app`:
 
 ```sh
 ./scripts/install-app.sh          # bundles + signs → /Applications/Shifu.app

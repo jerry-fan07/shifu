@@ -92,21 +92,32 @@ import Testing
         return VaultStore(root: dir, database: try ShifuDatabase.inMemory())
     }
 
-    @Test func saveKeepDiscardLifecycle() throws {
+    @Test func saveAndDiscardLifecycle() throws {
         let vault = try scratchVault()
-        let note = Note(topic: "SQLite WAL", body: "WAL survives kill -9.\n\nQ: q\nA: a")
+        let note = Note(topic: "SQLite WAL", srs: FSRS.State(due: Date()),
+                        body: "WAL survives kill -9.\n\nQ: q\nA: a")
         try vault.save(note)
-
-        #expect(try vault.inbox().count == 1)
-        #expect(try vault.due().isEmpty)   // inbox notes are never in the queue
-
-        try vault.keep(note)
-        #expect(try vault.inbox().isEmpty)
         #expect(try vault.due().count == 1)
 
         let kept = try vault.due()[0]
         try vault.discard(kept)
         #expect(try vault.allNotes().isEmpty)
+    }
+
+    /// A legacy `state: inbox` note — from a backup, or a machine still on the
+    /// old version — must stay out of the review queue even though there is no
+    /// longer any triage step to resolve it. Deleting the enum case would make
+    /// it parse as `kept` and turn declined suggestions into cards.
+    @Test func legacyInboxNotesNeverReachTheQueue() throws {
+        let vault = try scratchVault()
+        let legacy = Note(topic: "old candidate", state: .inbox,
+                          srs: FSRS.State(due: Date()),
+                          body: "a proposal from the old world\n\nQ: q\nA: a")
+        try vault.save(legacy)
+
+        #expect(try vault.allNotes().count == 1)
+        #expect(try vault.due().isEmpty)
+        #expect(Note.parse(legacy.serialize())?.state == .inbox)
     }
 
     @Test func reviewSchedulesAndKeepsFileCount() throws {
@@ -142,9 +153,11 @@ import Testing
     }
 }
 
-@Suite struct KnowledgeExtractorTests {
+/// The shared card-JSON shape and its LaTeX repairs — exercised here rather
+/// than through any one of the three prompts that answer in it.
+@Suite struct CardCandidatesTests {
     @Test func parsesCandidates() {
-        let candidates = KnowledgeExtractor.parseCandidates("""
+        let candidates = CardCandidates.parse("""
         [{"topic": "GRDB WAL", "note": "GRDB queues serialize writes.",
           "question": "How does GRDB serialize?", "answer": "DatabaseQueue.", "confidence": 0.9}]
         """)
@@ -154,18 +167,38 @@ import Testing
     }
 
     @Test func emptyArrayMeansNothingWorthKeeping() {
-        #expect(KnowledgeExtractor.parseCandidates("[]").isEmpty)
-        #expect(KnowledgeExtractor.parseCandidates("no json at all").isEmpty)
+        #expect(CardCandidates.parse("[]").isEmpty)
+        #expect(CardCandidates.parse("no json at all").isEmpty)
     }
 
-    @Test func candidateBecomesInboxNoteWithQA() {
-        let activity = Activity(startedAt: 1_000, endedAt: 400_000,
-                                appBundle: "com.apple.Safari", category: .learning)
-        let note = KnowledgeExtractor.note(
-            from: .init(topic: "t", note: "fact", question: "q?", answer: "a", confidence: 0.8),
-            activity: activity, sourceURL: "https://x.test/doc", taskKey: nil)
-        #expect(note.state == .inbox)
-        #expect(note.questionAnswer?.question == "q?")
-        #expect(note.sourceURL == "https://x.test/doc")
+    /// `\(` is not a JSON escape, so an un-doubled backslash used to fail the
+    /// whole array and lose every candidate in the batch.
+    @Test func rawLaTeXInJSONStillParses() {
+        let candidates = CardCandidates.parse(
+            #"[{"topic": "cone", "note": "\(a^T x \ge c\|x\|\)", "confidence": 0.9}]"#)
+        #expect(candidates.count == 1)
+        #expect(candidates[0].note == #"\(a^T x \ge c\|x\|\)"#)
+    }
+
+    /// `\frac` is worse than a parse failure: JSON reads `\f` as a formfeed and
+    /// silently eats the "f", so the card renders as "rac{a}{b}".
+    @Test func commandsThatLookLikeEscapesSurviveIntact() {
+        let candidates = CardCandidates.parse(
+            #"[{"topic": "t", "note": "\frac{a}{b} with \theta", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == #"\frac{a}{b} with \theta"#)
+    }
+
+    /// The repair only knows LaTeX commands, so a real `\n` between sentences
+    /// stays a newline — `\next` is not a command CardMarkup renders.
+    @Test func genuineJSONEscapesAreLeftAlone() {
+        let candidates = CardCandidates.parse(
+            #"[{"topic": "t", "note": "One.\nTwo, \"quoted\", 50% done.", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == "One.\nTwo, \"quoted\", 50% done.")
+    }
+
+    @Test func correctlyEscapedLaTeXIsNotDoubleEscaped() {
+        let candidates = CardCandidates.parse(
+            #"[{"topic": "t", "note": "Good \\(x\\) here", "confidence": 0.9}]"#)
+        #expect(candidates.first?.note == #"Good \(x\) here"#)
     }
 }

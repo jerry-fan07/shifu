@@ -12,6 +12,7 @@ struct CardTextView: View {
     /// One vertical slab: inline flow (text, inline math/code), or a block.
     private enum Block {
         case flow(AttributedString)
+        case heading(String, level: Int)
         case displayMath(AttributedString)
         case code(String, language: String?)
     }
@@ -26,6 +27,13 @@ struct CardTextView: View {
                         .font(.system(size: baseSize))
                         .multilineTextAlignment(alignment)
                         .textSelection(.enabled)
+                case .heading(let title, let level):
+                    Text(Self.markdownText(title))
+                        .font(.system(size: baseSize + Self.headingBump(level),
+                                      weight: .semibold))
+                        .multilineTextAlignment(alignment)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 case .displayMath(let attributed):
                     Text(attributed)
                         .multilineTextAlignment(.center)
@@ -60,7 +68,23 @@ struct CardTextView: View {
         for segment in CardMarkup.segments(text) {
             switch segment {
             case .text(let plain):
-                flow += Self.markdownText(plain)
+                // `#`-prefixed lines are their own slab. The detailed day
+                // notes emit `### Learned / decided` sections, and the inline
+                // Markdown parser leaves those hashes on screen verbatim.
+                var run = ""
+                for line in plain.components(separatedBy: "\n") {
+                    guard let title = Self.headingTitle(line) else {
+                        run += run.isEmpty ? line : "\n" + line
+                        continue
+                    }
+                    if !run.isEmpty {
+                        flow += Self.markdownText(run)
+                        run = ""
+                    }
+                    flushFlow()
+                    blocks.append(.heading(title.text, level: title.level))
+                }
+                if !run.isEmpty { flow += Self.markdownText(run) }
             case .inlineCode(let code):
                 flow += Self.inlineCode(code, size: baseSize)
             case .inlineMath(let runs):
@@ -79,6 +103,28 @@ struct CardTextView: View {
 
     // MARK: - AttributedString builders
 
+    /// `## Title` → ("Title", 2), for `#` through `###`. A `#` without a
+    /// following space is not a heading — `#1` and `#swift` are ordinary text.
+    static func headingTitle(_ line: String) -> (text: String, level: Int)? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let level = trimmed.prefix(while: { $0 == "#" }).count
+        guard (1...3).contains(level) else { return nil }
+        let rest = trimmed.dropFirst(level)
+        guard rest.first == " " else { return nil }
+        let title = rest.trimmingCharacters(in: .whitespaces)
+        return title.isEmpty ? nil : (title, level)
+    }
+
+    /// Headings stay close to body size — these sit inside note bodies, not
+    /// at the top of a page.
+    static func headingBump(_ level: Int) -> CGFloat {
+        switch level {
+        case 1: return 4
+        case 2: return 2
+        default: return 1
+        }
+    }
+
     /// Plain text through the inline Markdown parser so **bold** / *italic*
     /// in extracted notes render; falls back to the literal string.
     static func markdownText(_ text: String) -> AttributedString {
@@ -95,21 +141,21 @@ struct CardTextView: View {
         return attributed
     }
 
-    /// Styled math runs: serif italic, with raised/lowered smaller runs for
-    /// scripts and fraction halves (CardMarkup.MathRun).
+    /// Styled math runs: serif throughout, italic only for variables so
+    /// digits, operators and function names stay upright the way a typeset
+    /// formula has them, with raised/lowered smaller runs for scripts and
+    /// fraction halves (CardMarkup.MathRun).
     static func math(_ runs: [CardMarkup.MathRun], size: CGFloat) -> AttributedString {
         var attributed = AttributedString()
         for run in runs {
             var piece = AttributedString(run.text)
+            let pointSize = run.script == .normal ? size + 1 : size * 0.72
+            let font = Font.system(size: pointSize, design: .serif)
+            piece.font = run.style == .variable ? font.italic() : font
             switch run.script {
-            case .normal:
-                piece.font = .system(size: size + 1, design: .serif).italic()
-            case .raised:
-                piece.font = .system(size: size * 0.72, design: .serif).italic()
-                piece.baselineOffset = size * 0.38
-            case .lowered:
-                piece.font = .system(size: size * 0.72, design: .serif).italic()
-                piece.baselineOffset = -size * 0.18
+            case .normal: break
+            case .raised: piece.baselineOffset = size * 0.38
+            case .lowered: piece.baselineOffset = -size * 0.18
             }
             attributed += piece
         }

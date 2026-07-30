@@ -90,13 +90,20 @@ import Testing
         #expect(doc?.body == "")
     }
 
-    /// Pre-V1 notes never wrote `kind:`, so its absence has to keep meaning
-    /// "knowledge" — `Note.parse` rejects other kinds, which is what keeps
-    /// work notes out of the inbox and the review queue.
-    @Test func anAbsentOrUnknownKindReadsAsKnowledge() {
+    /// Pre-V1 notes never wrote `kind:`, so its *absence* has to keep meaning
+    /// "knowledge". An unrecognized string is deliberately **not** knowledge:
+    /// a `kind == .knowledge` guard has to reject a newer binary's note rather
+    /// than leak it into the review queue until every binary catches up.
+    @Test func anAbsentKindIsKnowledgeButAnUnknownOneIsNothing() {
         #expect(FrontMatter.parse("---\ntopic: t\n---\nbody")?.kind == .knowledge)
-        #expect(FrontMatter.parse("---\nkind: project\n---\nbody")?.kind == .knowledge)
         #expect(FrontMatter.parse("---\nkind: work\n---\nbody")?.kind == .work)
+        #expect(FrontMatter.parse("---\nkind: task_overview\n---\nbody")?.kind == .taskOverview)
+
+        let unknown = FrontMatter.parse("---\nkind: project\n---\nbody")
+        #expect(unknown?.kind == nil)
+        // …but the string itself round-trips, so an older binary reconciling
+        // the index can't relabel a kind it doesn't understand.
+        #expect(unknown?.rawKind == "project")
     }
 
     @Test func aRepeatedKeyTakesTheLastValue() {

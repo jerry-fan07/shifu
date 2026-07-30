@@ -3,12 +3,21 @@ import Foundation
 /// One knowledge note: plain Markdown with YAML frontmatter (design.md §5.1).
 /// The vault stays readable and portable without Shifu — Obsidian-compatible.
 public struct Note: Equatable, Sendable, Identifiable {
-    /// Triage state. Nothing enters the review queue unconfirmed (design.md
-    /// §5.1) — the LLM proposes, the user disposes. A discarded note is
-    /// deleted rather than given a third state.
+    /// Nothing enters the review queue unrequested (design.md §5.1). Every
+    /// note Shifu writes now comes from a deck the user asked for, so `kept`
+    /// is the only state anything produces.
+    ///
+    /// `inbox` survives as a **guard, not a workflow.** Automatic extraction
+    /// used to write notes in that state and there is no triage screen left to
+    /// resolve them, but a vault is user-owned Markdown: an old file, a
+    /// restored backup, or a sync from a machine still running the previous
+    /// version can all reintroduce `state: inbox`. Keeping the case means such
+    /// a note parses as itself and stays out of the review queue. Delete the
+    /// case and it would fall through to `.kept` — silently turning months of
+    /// declined suggestions into cards.
     public enum State: String, Sendable {
-        case inbox      // candidate awaiting keep/discard triage
-        case kept       // confirmed; in the review queue if it has a Q/A
+        case inbox      // legacy; never written, never reviewed
+        case kept       // in the review queue if it has a Q/A
     }
 
     public var id: String
@@ -17,6 +26,9 @@ public struct Note: Equatable, Sendable, Identifiable {
     public var sourceURL: String?
     public var topic: String
     public var taskKey: String?    // grouping key of the source activity's task (§5.3)
+    /// The deck this card was built for (`deck:<slug>`, §5.2). Nil for the
+    /// automatic reference notes — only a deck the user asked for stamps one.
+    public var deck: String?
     public var confidence: Double?
     public var state: State
     public var seenCount: Int
@@ -26,8 +38,8 @@ public struct Note: Equatable, Sendable, Identifiable {
     public init(
         id: String = Note.ulid(), captured: Date = Date(), sourceApp: String? = nil,
         sourceURL: String? = nil, topic: String, taskKey: String? = nil,
-        confidence: Double? = nil, state: State = .inbox, seenCount: Int = 1,
-        srs: FSRS.State? = nil, body: String
+        deck: String? = nil, confidence: Double? = nil, state: State = .kept,
+        seenCount: Int = 1, srs: FSRS.State? = nil, body: String
     ) {
         self.id = id
         self.captured = captured
@@ -35,6 +47,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         self.sourceURL = sourceURL
         self.topic = topic
         self.taskKey = taskKey
+        self.deck = deck
         self.confidence = confidence
         self.state = state
         self.seenCount = seenCount
@@ -101,6 +114,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         if let sourceURL { front.append("source_url: \(sourceURL)") }
         front.append("topic: \(topic)")
         if let taskKey { front.append("task_key: \(taskKey)") }
+        if let deck { front.append("deck: \(deck)") }
         if let confidence { front.append("confidence: \(String(format: "%.2f", confidence))") }
         front.append("state: \(state.rawValue)")
         if seenCount > 1 { front.append("seen_count: \(seenCount)") }
@@ -131,6 +145,7 @@ public struct Note: Equatable, Sendable, Identifiable {
             sourceURL: fields["source_url"],
             topic: topic,
             taskKey: fields["task_key"],
+            deck: fields["deck"],
             confidence: fields["confidence"].flatMap(Double.init),
             state: fields["state"].flatMap(State.init(rawValue:)) ?? .kept,
             seenCount: fields["seen_count"].flatMap(Int.init) ?? 1,

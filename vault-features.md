@@ -14,10 +14,10 @@ Raw observations are ephemeral (14-day retention, design.md §3.5). The vault is
 what survives: a permanent, portable, plain-Markdown record of *what the user
 did, learned, and worked toward*. Three properties define it:
 
-1. **Complete** — every non-private working session leaves a distilled trace,
-   not just sessions that produced a flashcard.
+1. **Complete** — every non-private working session leaves a distilled trace
+   (a work note, and for substantial tasks an overview document).
 2. **Queryable** — full-text (later semantic) search across everything, from the
-   CLI and the Vault tab. "What did I read about SQLite WAL?" has an answer.
+   CLI and the *Scrolls* page. "What did I read about SQLite WAL?" has an answer.
 3. **Organized by meaning** — sessions cluster into tasks by what they're
    *about*, not just which app was frontmost; tasks roll up into themes.
 
@@ -26,13 +26,13 @@ new capture, no new daemon code paths (invariant 1).
 
 ### What already exists (baseline)
 
-- Knowledge notes with FSRS review, inbox triage, decks (§5.1–5.2, shipped M3).
+- Knowledge notes with FSRS review and decks (§5.1–5.2, shipped M3).
 - `TaskGrouper`: lexical task keys (`topic:` → `domain:` → `app:`), renameable
   tasks, idempotent per-day `task_logs` with deterministic "where — what"
   summaries (§5.3).
 - Task filing with time totals and per-theme review decks (originally
   user-created projects; §5.3 replaced them with themes).
-- Vault tab: today's compiled log, recent tasks, themes.
+- Task log page: today's compiled log, recent tasks; themes on their own page.
 
 This spec builds on that baseline; nothing shipped is thrown away.
 
@@ -45,12 +45,18 @@ frontmatter, all readable in Obsidian, all indexed for search (§4).
 
 ```
 ~/Shifu/vault/
-  YYYY/MM/*.md              # knowledge notes (existing layout, unchanged)
+  YYYY/MM/*.md              # knowledge notes: deck cards
   work/YYYY/MM/DD-<task-slug>.md   # work notes: one per task per local day
+  tasks/<task-slug>.md      # overview documents: one living doc per task
 ```
 
-Frontmatter gains a `kind: knowledge | work` field (absent = 
-`knowledge`, so existing notes need no migration).
+Frontmatter carries a `kind: knowledge | work | task_overview` field. An
+**absent** field means `knowledge` — pre-V1 notes never wrote one — but an
+unrecognized *string* is deliberately not knowledge: `FrontMatter.Document.kind`
+is `Kind?`, and nil fails the `== .knowledge` / `== .work` guards for free. That
+is what keeps a note written by a newer binary out of an older one's inbox and
+review queues while the two share a vault. The index stores the raw string
+(`rawKind`), so an unparseable kind round-trips rather than being relabelled.
 
 ### 2.1 Work notes
 
@@ -78,6 +84,18 @@ Xcode, github.com — debugging capture daemon; reading SCK docs
   observers in `pause()` rather than gating writes. Read GRDB WAL docs.
 - **14:03–15:20** — Perf harness run; RSS at 62 MB after fix.
 
+## Notes
+### What was worked on
+Tracked down why the AX observers survived a pause and kept writing.
+
+### Learned / decided
+- Pause has to tear observers down, not gate writes — a gated write still
+  means the observer ran, which is the thing the user asked to stop.
+
+### Problems → fixes
+- RSS climbing past budget after the fix → the observer array was retaining
+  its callbacks; clearing it on teardown brought it back to 62 MB.
+
 ## Captured
 - [[17-scrncapturekit-single-frame]]
 ```
@@ -89,14 +107,82 @@ Xcode, github.com — debugging capture daemon; reading SCK docs
   task: what happened, what was accomplished. Skipped for tasks below a
   substance threshold (default: < 10 min or no text content) — a 45-second
   glance at a dashboard does not earn a paragraph.
-- **`## Captured`** wiki-links any knowledge notes extracted from the same
-  activities, tying the two note kinds together in Obsidian's graph.
+- **`## Notes` is the detailed tier**, and the tier rule is the day's
+  *dominant* category: work or learning earns the document, everything else
+  keeps the short form. Dominance rather than presence, so an afternoon of
+  admin with twenty minutes of reading in it stays light. Detailed days get
+  more evidence per activity (2 000 chars vs 800) and a bigger response budget
+  (1 200 tokens vs 400). The model is told to emit the literal `## Notes` line;
+  the response is split on it, and a model that ignores the instruction has
+  written session bullets and nothing else — which is exactly the light shape,
+  so it degrades rather than fails.
+- **`## Captured`** wiki-links the day's knowledge notes for that task, tying
+  the two note kinds together in Obsidian's graph. Deck cards are excluded
+  (`deck_key IS NULL`): they carry the task key and are captured on the day
+  their deck was *built*, so without that filter one deck build would file
+  twenty cards under a single day's work as if that day had produced them.
 - Rebuild semantics mirror `TaskGrouper.rebuildLogs`: recompiled from scratch
   for every (task, day) an analyzer window touches, written via `VaultStore`
   (stable path from ULID prefix, same as knowledge notes). Narrative sections
   are regenerated only when the day's underlying activities changed (hash of
   activity ids + text sample), so re-analysis doesn't burn tokens rewriting
-  identical prose.
+  identical prose. **Both prose sections carry across an unchanged day** —
+  carrying only the bullets would silently delete `## Notes`, and the hash gate
+  would then never regenerate it, the day being unchanged by definition.
+
+### 2.1b Task overview documents
+
+One living document per task, `vault/tasks/<task-slug>.md`, `kind:
+task_overview`. The day notes are the diary; this is the documentation — a
+three-week task has twenty day notes and nowhere that says what it *is*.
+
+```yaml
+# ~/Shifu/vault/tasks/shifu-capture-daemon.md
+---
+id: 01J3B…
+kind: task_overview
+task_key: topic:shifu-capture-daemon
+task: Shifu capture daemon
+updated: 2026-07-29T04:30:50Z
+input_hash: -8731917865741463329
+---
+## Status
+…2-4 sentences on where the task stands right now.
+
+## Timeline
+- **Phase 1 (2026-07-18 → 07-21)** — …
+
+## Key knowledge
+- …what was learned that outlives the task, with the why.
+
+## Open threads
+- …what is unfinished, unanswered, or waiting.
+```
+
+- **Complete replacement, not an append.** "Where does this stand" changes as
+  the task goes on, so the document is rewritten in full each time.
+- Eligibility mirrors the day-note tier: dominant category work or learning,
+  ≥30 min logged. The tasks with documented days are exactly the ones with
+  documentation worth compiling.
+- **`input_hash` covers *completed* days only.** Today's note is still growing;
+  including it would regenerate the document on every hourly run. Gating on
+  finished days caps it at one generation per task per day — the same
+  discipline as `ThemeClusterer.refreshNarratives`.
+- The kind is load-bearing: `Note.parse` and `WorkNote.parse` both reject it,
+  so a compiled document can never reach the inbox or the review queue.
+
+### 2.1c Deck cards
+
+A card is an ordinary knowledge note carrying `deck: deck:<slug>` (design.md
+§5.2). That stamp is all a deck is on disk; `vault_index.deck_key` mirrors it
+so membership and counts are one indexed query, and the count is *always*
+derived — the user prunes during review, so a stored count would drift.
+
+Deck writes dedupe **only within their own deck**. The vault-wide
+`mergeIfDuplicate` could match a requested card against an unrelated inbox
+note, bump *that* note's `seen_count`, and leave the deck quietly short a card
+with no `deck:` stamp to show where it went. Same-deck dedupe is also O(deck)
+rather than O(vault).
 
 ### 2.2 Project notes — **superseded (v14)**
 
@@ -109,9 +195,12 @@ disk; the DB already holds the prose.
 
 ### 2.3 Knowledge notes
 
-Unchanged (§5.1). One addition to frontmatter: `task_key`, stamped at
-extraction time from the source activity, replacing the current slug-matching
-heuristic for deck membership with an explicit link.
+Every knowledge note is a **card**: a Q/A pair, born `kept` with FSRS seeded,
+written by a deck the user asked for (§2.1c). Automatic extraction and the
+triage inbox it fed are gone (design.md §5.1).
+
+Cards carry `task_key`, stamped from the deck's task, which is what lets a
+task- or theme-scoped review deck find them without slug matching.
 
 ---
 
@@ -119,9 +208,16 @@ heuristic for deck membership with an explicit link.
 
 ```
 activities (per analyzer window)
-  ├─► TaskGrouper ──► task assignment + task_logs        (existing)
-  ├─► KnowledgeExtractor ──► knowledge notes → inbox     (existing)
-  └─► WorkNoteCompiler ──► work notes (§2.1)             (new)
+  ├─► TaskGrouper ──────────► task assignment + task_logs
+  ├─► WorkNoteCompiler ─────► work notes, two tiers (§2.1)
+  ├─► TaskOverviewCompiler ─► task overview docs (§2.1b)
+  └─► DeckBuilder.drainPending ──► deck cards (§2.1c)
+
+weekly:
+  └─► DeckSuggester ────────► deck_suggestions → Practice page
+
+on request (app launches `shifu-analyzer --build-deck <key>`):
+  └─► DeckBuilder ──────────► deck cards, kept + FSRS-seeded
 ```
 
 `WorkNoteCompiler` runs after `TaskGrouper` in the same analyzer pass, reading
@@ -144,14 +240,17 @@ the freshly assigned `activities.task_id` rows. Constraints:
 The Markdown tree stays the source of truth; SQLite gets a **disposable index**
 so the vault is queryable without ever locking users into the DB.
 
-- `vault_index` table: path, note id, kind, task_id, captured,
+- `vault_index` table: path, note id, kind, task_id, `deck_key`, captured,
   content hash. Plus an FTS5 table over (title, body) with bm25 ranking.
+  `deck_key` mirrors the note's `deck:` frontmatter and is rebuildable from it
+  like every other column here — it is what makes deck membership, deck card
+  counts, and deck-scoped dedupe one indexed query each.
 - Incrementally maintained by `VaultStore.save` and a reconcile pass in each
   analyzer run (mtime + hash catches external edits from Obsidian et al.).
   `shifu vault reindex` rebuilds from zero; deleting the index loses nothing.
 - **CLI:** `shifu vault search <query> [--task] [--kind] [--since]`
   → ranked snippets with file paths.
-- **UI:** a search field on the Vault tab; results open the note in-place, with
+- **UI:** the *Scrolls* page is the search field; results open the note in-place, with
   "Reveal in Finder" for editing elsewhere.
 
 **Semantic search is a later phase** (§7): store an on-device sentence
@@ -266,22 +365,23 @@ caught up.
 
 ---
 
-## 6. UI (Vault tab)
+## 6. UI (the Scrolls and Task log pages)
 
-Stays one screen (design principle 2). Top to bottom:
+Written when both were one Vault tab; the redesign (design.md §7) split them into
+stations on the trail, but the contents and their order are unchanged.
 
-1. **Search field** (§4) — the tab's headline feature once this ships.
+1. **Search field** (§4) — now a page of its own, *Scrolls*.
 2. **Today** — compiled log, as today, but each row now opens its work note.
 3. **Tasks** — recent tasks with latest log line; the strongest few merge
    suggestions appear inline here (accept / dismiss), capped at
    `LedgerStore.suggestionLimit`. Everything past the cap is a
    "Review N more suggestions" row into **Merge review** (`MergeReviewView`) —
-   the one screen this tab is allowed to grow, because a queue that outnumbers
+   the one screen this page is allowed to grow, because a queue that outnumbers
    the task list can't be triaged inline and needs a bulk *Dismiss all*.
 4. **Projects** — time totals; each opens its project note; pending
    task-assignment suggestions inline (also capped, same review screen).
 
-Spaced repetition stays on the *Cards* tab (§5.2) — decks now select by
+Spaced repetition stays on the *Practice* page (§5.2) — decks now select by
 explicit `task_key`/project instead of slug matching.
 
 ---
@@ -328,7 +428,7 @@ exit criteria don't need).
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **V1 — Index & search** | `vault_index` + FTS5, reconcile pass, `shifu vault search`, Vault tab search field | A week-old fact is findable in one query from CLI and UI |
+| **V1 — Index & search** | `vault_index` + FTS5, reconcile pass, `shifu vault search`, the Scrolls page's search field | A week-old fact is findable in one query from CLI and UI |
 | **V2 — Work notes** | `WorkNoteCompiler`: deterministic line + LLM sessions, `## Captured` links, `task_key` frontmatter on knowledge notes, date-range delete covers notes | 1 week dogfooding: yesterday's work note answers "what did I do?" without opening the DB |
 | **V3 — Clustering** | Embedding assignment + centroids, merge suggestions, threshold setting | Two-slug-one-effort fragmentation visibly drops on dogfood data; zero unwanted merges (they're all manual) |
 | **V4 — Projects & semantic** | Project notes, project/task suggestions, `vault_vectors` + hybrid search | Project note is the honest one-page status of a real effort; a paraphrased query finds a note bm25 misses |

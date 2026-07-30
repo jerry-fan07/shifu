@@ -184,14 +184,14 @@ public enum VaultIndexer {
 
         try db.execute(sql: """
             INSERT INTO vault_index
-                (note_id, path, kind, task_id, captured, content_hash, mtime)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (note_id, path, kind, task_id, deck_key, captured, content_hash, mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
                 path = excluded.path, kind = excluded.kind, task_id = excluded.task_id,
-                captured = excluded.captured,
+                deck_key = excluded.deck_key, captured = excluded.captured,
                 content_hash = excluded.content_hash, mtime = excluded.mtime
             """, arguments: [
-                noteID, relativePath, doc.kind.rawValue, taskID,
+                noteID, relativePath, doc.rawKind, taskID, doc.fields["deck"],
                 captured, contentHash(text), mtime
             ])
         let rowID = try Int64.fetchOne(

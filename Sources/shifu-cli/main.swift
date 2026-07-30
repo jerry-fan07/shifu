@@ -208,10 +208,12 @@ func commandReview() throws {
     for note in due {
         guard let qa = note.questionAnswer else { continue }
         print("— \(note.topic)")
-        print("Q: \(qa.question)")
+        // A terminal can't style runs, so math is flattened to its glyphs
+        // (design.md §5.2) instead of showing the reviewer raw LaTeX.
+        print("Q: \(CardMarkup.plainText(qa.question))")
         print("  [enter to reveal] ", terminator: "")
         guard readLine() != nil else { break }
-        print("A: \(qa.answer)")
+        print("A: \(CardMarkup.plainText(qa.answer))")
         var graded = false
         while !graded {
             print("  grade [1-4, q]: ", terminator: "")

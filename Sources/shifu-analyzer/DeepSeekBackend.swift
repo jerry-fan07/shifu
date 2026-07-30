@@ -90,12 +90,7 @@ struct DeepSeekBackend: LLMBackend {
     static func ifConfigured(
         database: ShifuDatabase, role: Role = .fast
     ) throws -> DeepSeekBackend? {
-        let backend = try Settings.get(Settings.analysisBackendKey, database: database)
-        guard backend != "off" else { return nil }
-        let env = ProcessInfo.processInfo.environment
-        let key = try env["DEEPSEEK_API_KEY"]
-            ?? Settings.get(Settings.deepseekAPIKeyKey, database: database)
-        guard let key, !key.isEmpty else { return nil }
+        guard let key = try Settings.llmAPIKey(database: database) else { return nil }
         let base = (try? Settings.get(Settings.deepseekBaseURLKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? defaultBaseURL
         let model = (try? Settings.get(role.settingsKey, database: database))

@@ -1,0 +1,71 @@
+import Foundation
+import ShifuCore
+
+/// The deck half of the read-side model (design.md §5.2). Split out of
+/// LedgerStore.swift for length only — the state it reads is declared there.
+@MainActor
+extension LedgerStore {
+    /// Accepting is a request, not a confirmation step: the sample cards land
+    /// kept immediately and the rest of the deck builds in the background.
+    func acceptDeckSuggestion(_ suggestion: DeckStore.PendingSuggestion) {
+        guard let database = try? db(),
+              let key = try? DeckStore.accept(suggestion, database: database, vault: vault)
+        else { return }
+        buildDeck(key: key)
+        refreshSoon()
+    }
+
+    func dismissDeckSuggestion(_ suggestion: DeckStore.PendingSuggestion) {
+        if let database = try? db() {
+            try? DeckStore.dismiss(suggestionID: suggestion.id, database: database)
+        }
+        refreshSoon()
+    }
+
+    /// The manual route: a deck for a task the suggester never offered one for
+    /// — and the escape hatch from a dismissed or declined proposal, which are
+    /// otherwise permanent. Pressing it twice is a no-op; one deck per task.
+    func createDeck(taskKey: String, title: String) {
+        guard let database = try? db(),
+              let key = try? DeckStore.create(title: title, taskKey: taskKey,
+                                              database: database)
+        else { return }
+        buildDeck(key: key)
+        refreshSoon()
+    }
+
+    /// Asks the analyzer to fill a deck in. Only that binary may reach the
+    /// network (§8), so a build is a launch of it.
+    ///
+    /// Unlike `runAnalysis` this carries no throttle. The deck row's own
+    /// compare-and-set is the guard, and it is the better one: it makes a
+    /// second builder a no-op even across processes, where a timestamp in this
+    /// object only knows about the launches it made itself.
+    func buildDeck(key: String) {
+        if let existing = deckBuildProcess, existing.isRunning { return }
+        let analyzerURL = ShifuPaths.home
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent("shifu-analyzer")
+        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else { return }
+        let process = Process()
+        process.executableURL = analyzerURL
+        process.arguments = ["--force", "--build-deck", key]
+        process.qualityOfService = .utility
+        process.terminationHandler = { _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+        do {
+            try process.run()
+            deckBuildProcess = process
+        } catch {
+            report(error)
+        }
+    }
+
+    /// The task's deck, if it has one — the task page swaps its Create button
+    /// for this deck's live state.
+    func deck(taskKey: String) -> DeckStore.Deck? {
+        guard let database = try? db() else { return nil }
+        return (try? DeckStore.deck(taskKey: taskKey, database: database)) ?? nil
+    }
+}

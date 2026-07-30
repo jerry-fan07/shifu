@@ -55,6 +55,48 @@ import Testing
         #expect(FrontMatter.parse(note.serialize())?.kind == .knowledge)
     }
 
+    @Test func noteRoundTripsDeck() throws {
+        let note = Note(topic: "FSRS stability", taskKey: "sem:fsrs-tuning",
+                        deck: "deck:fsrs-tuning", state: .kept,
+                        body: "Stability grows with each success.\n\nQ: q\nA: a")
+        let parsed = try #require(Note.parse(note.serialize()))
+        #expect(parsed.deck == "deck:fsrs-tuning")
+        #expect(parsed.taskKey == "sem:fsrs-tuning")
+        #expect(parsed.state == .kept)
+    }
+
+    @Test func taskOverviewRoundTripsAndIsNotAKnowledgeNote() throws {
+        let overview = TaskOverview(
+            id: "01TESTOVERVIEW000000000000", taskKey: "sem:shifu-vault",
+            taskName: "Shifu vault work",
+            updated: Date(timeIntervalSince1970: 1_760_000_000), inputHash: -99,
+            body: "## Status\nMid-flight.\n\n## Timeline\n- Started Tuesday.")
+        let text = overview.serialize()
+        #expect(TaskOverview.parse(text) == overview)
+        // The whole point of the new kind: it can never reach inbox or review.
+        #expect(Note.parse(text) == nil)
+        #expect(WorkNote.parse(text) == nil)
+    }
+
+    /// An unrecognized `kind:` string is non-knowledge, so a note written by a
+    /// newer binary can't leak into this one's inbox and review queues while
+    /// the vault is shared. Only an *absent* field means knowledge.
+    @Test func unknownKindIsNeverKnowledge() throws {
+        let future = """
+        ---
+        id: 01TESTFUTURE00000000000000
+        kind: future_thing
+        topic: something new
+        ---
+        body text
+        """
+        #expect(FrontMatter.parse(future)?.kind == nil)
+        #expect(Note.parse(future) == nil)
+        #expect(WorkNote.parse(future) == nil)
+        // …and the index stores what the file said, not a relabel.
+        #expect(FrontMatter.parse(future)?.rawKind == "future_thing")
+    }
+
     // MARK: - Write-through
 
     @Test func saveIndexesAndDiscardRemoves() throws {

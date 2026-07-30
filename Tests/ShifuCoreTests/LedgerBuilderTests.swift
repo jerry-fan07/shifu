@@ -79,8 +79,8 @@ import Testing
 }
 
 /// Derived state must survive the delete-and-reinsert rebuild: LLM verdicts
-/// and the `extracted` flag carry across span-identical rows, so hourly
-/// analyzer runs over unchanged observations make zero new LLM calls.
+/// and retry counters carry across span-identical rows, so hourly analyzer
+/// runs over unchanged observations make zero new LLM calls.
 @Suite struct LedgerRebuildCarryTests {
     private final class CountingBackend: LLMBackend, @unchecked Sendable {
         let name = "counting-stub"
@@ -138,19 +138,7 @@ import Testing
         #expect(relabeled == 1)
 
         try TaskGrouper.run(database: db, from: 0, to: 1_000_000)
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("shifu-ledger-carry-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let vault = VaultStore(root: root, database: db)
-        let extractor = CountingBackend(response: #"""
-            [{"topic": "swift actors", "note": "Actors serialize access to state.",
-              "confidence": 0.9}]
-            """#)
-        let written = try await KnowledgeExtractor.run(
-            database: db, vault: vault, backend: extractor, from: 0, to: 1_000_000)
-        #expect(written == 1)
         #expect(classifier.calls == 1)
-        #expect(extractor.calls == 1)
 
         // Second analyzer pass over unchanged observations.
         try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
@@ -161,20 +149,12 @@ import Testing
         #expect(video.source == "llm")
         #expect(video.confidence == 0.9)
         #expect(!video.ambiguous)
-        let extracted = try await db.queue.read { sqlite in
-            try Bool.fetchOne(sqlite, sql: "SELECT extracted FROM activities WHERE domain = 'youtube.com'")
-        }
-        #expect(extracted == true)
 
-        // Nothing is pending for either LLM tier: zero new calls.
+        // Nothing is pending for the LLM tier: zero new calls.
         let relabeledAgain = try await AmbiguousClassifier.run(
             database: db, backend: classifier, from: 0, to: 1_000_000)
-        let writtenAgain = try await KnowledgeExtractor.run(
-            database: db, vault: vault, backend: extractor, from: 0, to: 1_000_000)
         #expect(relabeledAgain == 0)
-        #expect(writtenAgain == 0)
         #expect(classifier.calls == 1)
-        #expect(extractor.calls == 1)
     }
 
     @Test func rebuildCarriesSemanticAssignmentBySpan() async throws {
