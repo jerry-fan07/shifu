@@ -109,14 +109,8 @@ final class LedgerStore: ObservableObject {
     }
 
     func refresh() {
-        if let raw = try? String(contentsOf: ShifuPaths.pauseFile, encoding: .utf8),
-           let expiry = TimeInterval(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-           Date(timeIntervalSince1970: expiry) > Date() {
-            pausedUntil = Date(timeIntervalSince1970: expiry)
-        } else {
-            pausedUntil = nil
-        }
-        workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
+        pausedUntil = PauseFile.expiry()
+        workModeOn = WorkModeFile.isOn()
         refreshVaultNotes()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
@@ -191,14 +185,12 @@ final class LedgerStore: ObservableObject {
     // MARK: - Pause (same control file as the CLI)
 
     func pause(until: Date) {
-        try? ShifuPaths.ensureHomeExists()
-        try? String(Int(until.timeIntervalSince1970))
-            .write(to: ShifuPaths.pauseFile, atomically: true, encoding: .utf8)
+        try? PauseFile.pause(until: until)
         refresh()
     }
 
     func resume() {
-        try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
+        PauseFile.resume()
         refresh()
     }
 
@@ -381,11 +373,10 @@ final class LedgerStore: ObservableObject {
     }
 
     func toggleWorkMode() {
-        try? ShifuPaths.ensureHomeExists()
         if workModeOn {
-            try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+            WorkModeFile.turnOff()
         } else {
-            try? Data().write(to: ShifuPaths.workModeFile)
+            try? WorkModeFile.turnOn()
         }
         refresh()
     }

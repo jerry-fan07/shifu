@@ -194,6 +194,19 @@ public enum LedgerBuilder {
         public var themeName: String?
 
         public var durationMs: Int64 { endedAt - startedAt }
+
+        public init(
+            id: Int64, startedAt: Int64, endedAt: Int64, category: String, source: String,
+            taskName: String? = nil, themeName: String? = nil
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.category = category
+            self.source = source
+            self.taskName = taskName
+            self.themeName = themeName
+        }
     }
 
     /// Labeled activities overlapping [from, to), oldest first.

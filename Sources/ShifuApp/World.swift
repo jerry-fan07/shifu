@@ -64,7 +64,15 @@ enum WorldMap {
 
     /// Every run between two world x, in order. The single source of truth for
     /// the silhouette, the lit treads, and `groundY`.
+    ///
+    /// SwiftUI lays a `Canvas` out at zero size at least once while a window is
+    /// coming up, and a zero-height frame makes the projection's scale zero —
+    /// so the world x it reports are ±infinity. `Int(_: Double)` traps on those,
+    /// which would take the window down before it ever drew. Clamping here
+    /// rather than at the call sites keeps the guard next to the arithmetic
+    /// that needs it.
     static func runs(from minX: CGFloat, to maxX: CGFloat) -> [Run] {
+        guard minX.isFinite, maxX.isFinite, minX <= maxX else { return [] }
         let first = Int(((minX - firstStationX) / stationSpacing).rounded(.down)) - 1
         let last = Int(((maxX - firstStationX) / stationSpacing).rounded(.up)) + 1
         var runs: [Run] = []
@@ -87,6 +95,7 @@ enum WorldMap {
 
     /// The height of the stone under a world x — where a foot lands.
     static func groundY(at worldX: CGFloat) -> CGFloat {
+        guard worldX.isFinite else { return footY }
         let nearest = Int(((worldX - firstStationX) / stationSpacing).rounded())
         if abs(worldX - stationX(nearest)) <= terraceHalfWidth { return terraceY(nearest) }
         let lower = worldX > stationX(nearest) ? nearest : nearest - 1
@@ -124,7 +133,10 @@ struct Projection {
     let size: CGSize
     let anchor: UnitPoint
 
-    var scale: CGFloat { size.height / camera.span }
+    /// Zero only if the frame has no height *and* no span to show; guarding the
+    /// divisor keeps `worldX(atScreen:)` finite, which is what every consumer
+    /// that converts a world x to an `Int` depends on.
+    var scale: CGFloat { camera.span > 0 ? size.height / camera.span : 0 }
 
     var anchorPoint: CGPoint {
         CGPoint(x: anchor.x * size.width, y: anchor.y * size.height)
@@ -138,9 +150,12 @@ struct Projection {
     }
 
     /// The world x showing at a screen x, for sampling a procedural skyline
-    /// straight across the window.
+    /// straight across the window. A degenerate frame collapses to the camera's
+    /// own x rather than infinity — the scene has no width to sample, and the
+    /// callers turn this into an `Int`, which traps on a non-finite value.
     func worldX(atScreen screenX: CGFloat, parallax: CGFloat) -> CGFloat {
-        (screenX - anchorPoint.x) / scale + camera.target.x * parallax
+        guard scale > 0 else { return camera.target.x * parallax }
+        return (screenX - anchorPoint.x) / scale + camera.target.x * parallax
     }
 
     func baselineY(_ range: Ridgeline.Range) -> CGFloat {

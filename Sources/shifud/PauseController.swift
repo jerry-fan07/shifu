@@ -12,13 +12,7 @@ final class PauseController {
     private var resumeTimer: Timer?
     private var wasPaused = false
 
-    var pausedUntil: Date? {
-        guard let raw = try? String(contentsOf: ShifuPaths.pauseFile, encoding: .utf8),
-              let expiry = TimeInterval(raw.trimmingCharacters(in: .whitespacesAndNewlines))
-        else { return nil }
-        let date = Date(timeIntervalSince1970: expiry)
-        return date > Date() ? date : nil
-    }
+    var pausedUntil: Date? { PauseFile.expiry() }
 
     var isPaused: Bool { pausedUntil != nil }
 

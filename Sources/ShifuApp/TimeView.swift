@@ -113,62 +113,15 @@ struct TimeView: View {
             from: previousFrom, to: previousTo)
     }
 
-    private struct Bucket: Identifiable {
-        let id = UUID()
-        let label: String
-        let group: String
-        let hours: Double
-        let order: Int
-    }
-
     /// The same buckets the bars are stacked from, folded into the groups the
     /// breakdown already ranked (so both modes agree on what "Other" holds).
     private func buckets(
         _ activities: [LedgerBuilder.LabeledActivity], groups: Set<String>
-    ) -> [Bucket] {
+    ) -> [TimeBuckets.Bucket] {
         let (from, to) = range
-        let cal = Calendar.current
-        let dayZero = cal.startOfDay(for: from)
-        // bucket label → (chronological order, group → ms)
-        var sums: [String: (order: Int, byGroup: [String: Int64])] = [:]
-        for activity in activities {
-            let raw = lens.label(activity)
-            let group = groups.contains(raw) ? raw : TimeBreakdown.otherLabel
-            let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
-            var cursor = max(start, from)
-            let end = min(Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000), to)
-            while cursor < end {
-                let bucketEnd: Date
-                let label: String
-                let order: Int
-                switch span {
-                case .day:
-                    let hour = cal.component(.hour, from: cursor)
-                    label = String(format: "%02d", hour)
-                    order = hour
-                    bucketEnd = cal.date(
-                        bySettingHour: hour, minute: 59, second: 59, of: cursor)!
-                        .addingTimeInterval(1)
-                case .week:
-                    label = cursor.formatted(.dateTime.weekday(.abbreviated))
-                    order = cal.dateComponents(
-                        [.day], from: dayZero, to: cal.startOfDay(for: cursor)).day ?? 0
-                    bucketEnd = cal.startOfDay(for: cursor).addingTimeInterval(86_400)
-                }
-                let slice = min(end, bucketEnd).timeIntervalSince(cursor)
-                var entry = sums[label] ?? (order: order, byGroup: [:])
-                entry.byGroup[group, default: 0] += Int64(slice * 1_000)
-                sums[label] = entry
-                cursor = bucketEnd
-            }
-        }
-        return sums.flatMap { label, entry in
-            entry.byGroup.map { group, ms in
-                Bucket(label: label, group: group, hours: Double(ms) / 3_600_000,
-                       order: entry.order)
-            }
-        }
-        .sorted { $0.order < $1.order }
+        return TimeBuckets.buckets(
+            activities, lens: lens, span: span, groups: groups,
+            window: TimeBuckets.Window(from: from, to: to))
     }
 
     @ViewBuilder
@@ -191,7 +144,7 @@ struct TimeView: View {
         }
     }
 
-    private func barChart(_ data: [Bucket]) -> some View {
+    private func barChart(_ data: [TimeBuckets.Bucket]) -> some View {
         let domain = bucketDomain
         return GeometryReader { proxy in
             Chart(data) { bucket in

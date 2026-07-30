@@ -167,15 +167,11 @@ extension DayTrail {
         for activity in activities {
             let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
             let end = Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000)
-            var cursor = max(start, dayStart)
-            while cursor < end {
-                let hour = calendar.component(.hour, from: cursor)
-                let hourEnd = calendar.date(
-                    bySettingHour: hour, minute: 59, second: 59, of: cursor)!
-                    .addingTimeInterval(1)
-                let slice = min(end, hourEnd).timeIntervalSince(cursor)
-                totals[hour, default: [:]][activity.category, default: 0] += Int64(slice * 1_000)
-                cursor = hourEnd
+            CalendarSlices.walk(
+                from: max(start, dayStart), to: end, unit: .hour, calendar: calendar
+            ) { sliceStart, ms in
+                let hour = calendar.component(.hour, from: sliceStart)
+                totals[hour, default: [:]][activity.category, default: 0] += ms
             }
         }
 

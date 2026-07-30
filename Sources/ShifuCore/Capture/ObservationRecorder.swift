@@ -213,12 +213,21 @@ public final class ObservationRecorder {
         lastSweepAt = now
     }
 
+    /// Caps text at `maxTextBytes` **UTF-8 bytes**, cutting on a character
+    /// boundary so a multi-byte scalar is never split in half.
+    ///
+    /// One seek rather than a character-at-a-time walk: a dense OCR page can
+    /// be an order of magnitude over the cap, and this runs on the capture
+    /// write path (design.md §3.4).
     static func truncate(_ text: String) -> String {
         guard text.utf8.count > maxTextBytes else { return text }
-        var result = text
-        while result.utf8.count > maxTextBytes {
-            result.removeLast()
+        var cut = text.utf8.index(text.utf8.startIndex, offsetBy: maxTextBytes)
+        // At most a few steps back: a Character is bounded in length, and the
+        // startIndex is always a valid boundary.
+        while cut > text.utf8.startIndex, cut.samePosition(in: text) == nil {
+            cut = text.utf8.index(before: cut)
         }
-        return result
+        guard let boundary = cut.samePosition(in: text) else { return "" }
+        return String(text[..<boundary])
     }
 }

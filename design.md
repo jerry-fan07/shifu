@@ -613,12 +613,13 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
     `args` global in favor of passing arguments explicitly. `VaultBench.swift`
     was already carved out for exactly this reason — the 500-line SwiftLint
     file limit — which is the signal the file wants a real split.
-  - The `pause_until` expiry parse exists three times, in `shifu-cli/main.swift`,
-    `shifud/PauseController.swift`, and `ShifuApp/LedgerStore.swift`; the
-    `work_mode` existence check likewise. A change to either control-file
-    format silently breaks two of the three. One small injectable type in
-    ShifuCore (following `VaultStore(root:)`) would make the format testable
-    and single-sourced.
+  - ~~The `pause_until` expiry parse exists three times…~~ **Done.** Both
+    control files are single-sourced in `ShifuCore/ControlFiles.swift`
+    (`PauseFile`, `WorkModeFile`), each entry point taking an optional `home`
+    so the format is testable without moving `SHIFU_HOME`. Closing it turned up
+    a live bug: a file holding `inf` or an overflowing literal parsed to a
+    non-finite expiry and pinned capture off forever, which is exactly what the
+    past-expiry rule exists to prevent.
   - `Retention` is declared at the bottom of `Analysis/LedgerBuilder.swift`,
     where nobody grepping for the concept will find it. Move to its own file
     under `Storage/` next to `DeletionTools`, which shares its concern.

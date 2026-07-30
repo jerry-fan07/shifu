@@ -30,9 +30,13 @@ under launchd, and why the menu bar app can show today's totals without asking
 anyone. Every process opens the same database and reads.
 
 Anything testable is pushed down into `ShifuCore`, which is why `ShifuCore` is
-~60% of the Swift in the repo and holds essentially all of the test coverage.
-`shifud` and `ShifuApp` are deliberately thin: event wiring and views over
-`ShifuCore` logic. They have no test targets.
+~60% of the Swift in the repo and holds most of the test coverage. `shifud` and
+`ShifuApp` are deliberately thin: event wiring and views over `ShifuCore`
+logic. Each still has a test target (`ShifudTests`, `ShifuAppTests`,
+`ShifuCLITests`) — SwiftPM can test an executable target on macOS — because the
+thin layer is where the capture ladder's *ordering* and the app's calendar
+arithmetic live, and both are load-bearing. New pure logic still belongs in
+`ShifuCore`; the executable test targets are for the wiring that cannot move.
 
 ```
 Sources/ShifuCore/
@@ -369,17 +373,18 @@ This is where each is actually enforced, and what would catch a regression.
 |---|---|---|---|
 | 1 | No network code in `shifud` | `DeepSeekBackend` lives in the `shifu-analyzer` target — the SwiftPM target graph makes it unlinkable from `shifud` | ✅ `scripts/check-no-network.sh` — `nm -u` symbol scan, run by `make check` |
 | 2 | Redaction is a single choke point before every DB write | `ObservationRecorder.record` calls `Redactor.redact` before insert; nothing else writes `observations` | ✅ `ObservationRecorderTests.textIsRedactedBeforeDisk`, `RedactorTests` |
-| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ⚠️ Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText`. **The ordering inside `CaptureEngine` itself is structural — no test** |
-| 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
-| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
+| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ✅ `CaptureLadderTests` drives the ladder over a fake `CaptureEngine.Probe` that records every read, so "an excluded window reaches no reader" is asserted, not reviewed. Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText` |
+| 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ✅ `PixelsNeverPersistedTests` — reflects over `OCRCapture.Result` and the recorder's `Candidate` for image-shaped fields, and asserts `observations` has no BLOB column |
+| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ✅ `DaemonTeardownTests` over `Daemon.observerState` — including that the analyzer timer *survives* pause |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
 | 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches` and `Radar.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; every prompt-budget computation reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
-**Invariants 4 and 5 have no automated guard** because both live in `shifud`,
-which has no test target (it is AppKit/AX event wiring). Changes to
-`OCRCapture` or `Daemon.stopCapture` deserve a manual read against design.md
-§3.2 / §8 — that review *is* the guard today.
+All eight now have a guard. Invariants 3–5 got theirs by giving `shifud` a
+test target and two small seams: `CaptureEngine.Probe` (the ladder's outside
+world, injectable) and `Daemon.observerState` (what is currently wired up).
+Both exist so the invariant can be *stated* — an ordering guarantee is a claim
+about which calls never happen, and only a recording fake can assert that.
 
 ---
 
@@ -540,9 +545,11 @@ Runs `shifud` against a synthetic feed and asserts design.md §3.4 budgets, plus
 the vault index/search budgets. **A perf regression blocks like a test
 failure.**
 
-Nearly all coverage lives in `Tests/ShifuCoreTests/`; `shifud`, `ShifuApp`, and
-`shifu-cli` have no test targets, so logic that needs testing belongs in
-`ShifuCore`. SwiftLint caps files at 500 lines (warning) and lines at 120/160
+Most coverage lives in `Tests/ShifuCoreTests/`; `ShifudTests`, `ShifuAppTests`
+and `ShifuCLITests` cover the wiring that cannot move down (the capture
+ladder's ordering, pause teardown, the Time page's calendar arithmetic, the
+CLI's argument parsing). New pure logic still belongs in `ShifuCore`.
+SwiftLint caps files at 500 lines (warning) and lines at 120/160
 (warning/error) — the most common way an otherwise-fine change fails
 `make check`.
 
@@ -576,3 +583,13 @@ current — an entry here is a debt, not a decision.
 
 Six lines asserting `Shifu.version` is non-empty — the `swift package init`
 stub. Harmless, but it is not a real test.
+
+### The Time page's hour bucketing is DST-correct only through `CalendarSlices`
+
+`DayTrail.stones` and `TimeBuckets.buckets` both walk a span one calendar unit
+at a time. The obvious implementation — `date(bySettingHour:minute:second:of:)`
+— force-unwraps an optional that is nil on a spring-forward, and on a fall-back
+resolves the repeated hour to the occurrence *behind* the cursor, so the loop
+never terminates. Both were written that way and both hung. Any new
+span-walking code must go through
+[`Analysis/CalendarSlices.swift`](Sources/ShifuCore/Analysis/CalendarSlices.swift).

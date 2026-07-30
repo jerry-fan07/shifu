@@ -58,7 +58,31 @@ final class Daemon: NSObject {
 
     // MARK: - Capture lifecycle (pause = real teardown, §8)
 
-    private func startCapture() {
+    /// What is currently wired up. Invariant 5 — "pause tears down observers,
+    /// it doesn't just gate writes" (design.md §8) — is a statement about this
+    /// struct, so exposing it turns a hand review into an assertion.
+    struct ObserverState: Equatable {
+        var capturing = false
+        var workspaceObserver = false
+        var heartbeat = false
+        var axObserver = false
+        var debounce = false
+        /// Deliberately *not* torn down by pause: the analyzer only touches
+        /// already-captured data, so it keeps running while capture is off.
+        var analyzerTimer = false
+    }
+
+    var observerState: ObserverState {
+        ObserverState(
+            capturing: capturing,
+            workspaceObserver: workspaceObserverInstalled,
+            heartbeat: heartbeat != nil,
+            axObserver: axObserver != nil,
+            debounce: debounceWork != nil,
+            analyzerTimer: analyzerTimer != nil)
+    }
+
+    func startCapture() {
         guard !capturing else { return }
         capturing = true
 
@@ -76,7 +100,7 @@ final class Daemon: NSObject {
         }
     }
 
-    private func stopCapture() {
+    func stopCapture() {
         guard capturing else { return }
         capturing = false
         if workspaceObserverInstalled {

@@ -50,5 +50,17 @@ let package = Package(
             name: "ShifuCoreTests",
             dependencies: ["ShifuCore"]
         ),
+        .testTarget(
+            name: "ShifuAppTests",
+            dependencies: ["ShifuApp"]
+        ),
+        .testTarget(
+            name: "ShifudTests",
+            dependencies: ["shifud"]
+        ),
+        .testTarget(
+            name: "ShifuCLITests",
+            dependencies: ["shifu-cli"]
+        ),
     ]
 )

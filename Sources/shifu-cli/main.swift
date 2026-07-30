@@ -144,17 +144,15 @@ func fencedBlock(_ text: String) -> String {
 }
 
 func commandStatus() throws {
-    if let raw = try? String(contentsOf: ShifuPaths.pauseFile, encoding: .utf8),
-       let expiry = TimeInterval(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-       Date(timeIntervalSince1970: expiry) > Date() {
+    if let expiry = PauseFile.expiry() {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
-        print("capture: PAUSED until \(formatter.string(from: Date(timeIntervalSince1970: expiry)))")
+        print("capture: PAUSED until \(formatter.string(from: expiry))")
     } else {
         print("capture: active (if shifud is running)")
     }
 
-    if FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path) {
+    if WorkModeFile.isOn() {
         print("work mode: ON")
     }
 
@@ -181,28 +179,19 @@ func commandStatus() throws {
 }
 
 func commandPause(_ spec: String) throws {
-    let seconds: TimeInterval
-    switch spec {
-    case "30m": seconds = 1_800
-    case "1h": seconds = 3_600
-    case "2h": seconds = 7_200
-    case "tomorrow":
-        let tomorrow = Calendar.current.startOfDay(for: Date().addingTimeInterval(86_400))
-        seconds = tomorrow.timeIntervalSinceNow
-    default:
+    guard let seconds = PauseFile.duration(spec) else {
         print("unknown duration '\(spec)' — use 30m, 1h, 2h, or tomorrow")
         exit(1)
     }
-    try ShifuPaths.ensureHomeExists()
-    let expiry = Date().addingTimeInterval(seconds).timeIntervalSince1970
-    try String(Int(expiry)).write(to: ShifuPaths.pauseFile, atomically: true, encoding: .utf8)
+    let until = Date().addingTimeInterval(seconds)
+    try PauseFile.pause(until: until)
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm"
-    print("paused until \(formatter.string(from: Date(timeIntervalSince1970: expiry)))")
+    print("paused until \(formatter.string(from: until))")
 }
 
 func commandResume() throws {
-    try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
+    PauseFile.resume()
     // Touch the directory so the daemon's watcher re-evaluates immediately.
     print("resumed")
 }
@@ -244,8 +233,14 @@ func commandReview() throws {
     print("done — \(done) reviewed 🎉")
 }
 
+/// `2h`, `30m`, `7d` → seconds. Nil for anything else, including a negative
+/// or zero amount: both callers subtract this from *now*, so `-3d` would build
+/// a window running from three days in the future back to now — an inverted
+/// range that deletes nothing and reports success, which is the worst way for
+/// a destructive command to be misread.
 func parseForgetRangeSpec(_ spec: String) -> TimeInterval? {
-    guard spec.count >= 2, let amount = Double(spec.dropLast()) else { return nil }
+    guard spec.count >= 2, let amount = Double(spec.dropLast()), amount > 0,
+          amount.isFinite else { return nil }
     let unit: TimeInterval
     switch spec.last {
     case "m": unit = 60
@@ -414,15 +409,13 @@ let args = CommandLine.arguments.dropFirst()
 func commandWork(_ toggle: String?) throws {
     switch toggle {
     case "on":
-        try ShifuPaths.ensureHomeExists()
-        try Data().write(to: ShifuPaths.workModeFile)
+        try WorkModeFile.turnOn()
         print("work mode on")
     case "off":
-        try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+        WorkModeFile.turnOff()
         print("work mode off")
     default:
-        let on = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
-        print("work mode: \(on ? "ON" : "off")")
+        print("work mode: \(WorkModeFile.isOn() ? "ON" : "off")")
     }
 }
 
