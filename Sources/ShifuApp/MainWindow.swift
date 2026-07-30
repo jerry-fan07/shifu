@@ -59,6 +59,8 @@ struct MainWindow: View {
             ThemePage(themeID: themeID)
         case .deck(let deckID):
             DeckPage(deckID: deckID)
+        case .newDeck:
+            NewDeckPage()
         case .looseCards:
             LooseCardsPage()
         case .merges:
@@ -75,6 +77,7 @@ struct MainWindow: View {
         case .theme(let themeID): return store.themeDetail(themeID)?.overview.name ?? "Theme"
         case .deck(let deckID):
             return store.decks.first { $0.id == deckID }?.title ?? "Deck"
+        case .newDeck: return "New deck"
         case .looseCards: return "Loose cards"
         case .merges: return "Suggestions"
         }
@@ -88,6 +91,10 @@ enum Route: Hashable {
     case task(Int64)
     case theme(Int64)
     case deck(Int64)
+    /// The form a deck is made on — pushed from Decks like a deck's own page,
+    /// because picking a task, briefing the builder, and setting how it
+    /// reviews outgrew a menu.
+    case newDeck
     /// The cards outside any live deck — a shelf row like the decks, so it
     /// pages the same way, but with nothing to rename or configure.
     case looseCards
@@ -202,6 +209,7 @@ private struct SourceList: View {
             case .task(let taskID): TaskContents(taskID: taskID)
             case .theme(let themeID): ThemeContents(themeID: themeID)
             case .deck(let deckID): DeckContents(deckID: deckID)
+            case .newDeck: NewDeckContents()
             case .looseCards: LooseContents()
             case .merges: MergeContents()
             }
