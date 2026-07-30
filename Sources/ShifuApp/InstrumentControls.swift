@@ -192,6 +192,37 @@ struct FilterMenu<Option: Hashable>: View {
     }
 }
 
+/// The instrument's on/off switch — Work Mode at the rail's foot, in the menu
+/// bar, and on the Settings page. Drawn to the register rather than borrowing
+/// the green system toggle: the track takes the accent when on, because a
+/// switch that is on is a state the instrument is in, not a choice it is
+/// offering. Stateless by design — the rows that carry it own the action, so
+/// the same control can sit inside a whole-row button without fighting it.
+struct ToggleSwitch: View {
+    var isOn: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Capsule()
+                .fill(isOn ? Instrument.accent : Instrument.well)
+                .overlay {
+                    Capsule().strokeBorder(Instrument.edge, lineWidth: 1)
+                }
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(isOn ? Instrument.solidInk : Instrument.faint)
+                        .padding(2)
+                }
+                .frame(width: 28, height: 16)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.15), value: isOn)
+        .accessibilityValue(isOn ? "on" : "off")
+    }
+}
+
 /// A small outlined tag — a theme on a task row, a filter that is on.
 struct Tag: View {
     let text: String
