@@ -1,261 +1,459 @@
 import ShifuCore
 import SwiftUI
 
-/// The main window (design.md §7): the mountain, edge to edge, with the trail
-/// hanging in the sky on the left and the current place's scroll unfurled on
-/// the right. Changing places does not swap a screen — it flies the camera up
-/// or down the mountain to another terrace, and the panel rolls up while it
-/// travels so you can see where you are going. Shows onboarding instead until
-/// the first-run flow completes.
+/// The main window (design.md §7): a permanent source list on the left, one
+/// page on the right, and a title bar that names what you are looking at.
+/// Changing place swaps the page — there is no animation between them, because
+/// an instrument that flourishes when you change the range is an instrument
+/// you stop trusting.
+///
+/// Opening a task or a theme doesn't push a screen over the top: the source
+/// list becomes that thing's own contents, so the window still says where you
+/// are. Shows onboarding instead until the first-run flow completes.
 struct MainWindow: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var destination: Destination = .today
-    @State private var camera = WorldMap.camera(for: .today)
-    /// The leg being walked, so the world can tell travelling from arrived.
-    @State private var leg = Leg(from: .zero, to: .zero)
-    @State private var travelling = false
-    @State private var hop: CGFloat = 0
-    @State private var arrival: Task<Void, Never>?
     @EnvironmentObject private var store: LedgerStore
+    @StateObject private var router: Router
 
-    private struct Leg {
-        var from: CGPoint
-        var to: CGPoint
+    /// The router is a parameter so a harness can open the window already
+    /// pointed at a place; the app itself always takes the default.
+    init(router: Router = Router()) {
+        _router = StateObject(wrappedValue: router)
     }
-
-    /// How long the camera takes to cross from one terrace to the next. Long
-    /// enough to read as a climb, short enough that it never feels like a wait.
-    private static let flightDuration = 0.82
 
     var body: some View {
-        if onboarded {
-            world.tint(Dojo.accent)
-        } else {
-            OnboardingView().tint(Dojo.accent)
+        Group {
+            if onboarded { shell } else { OnboardingView() }
         }
+        .tint(Instrument.accent)
     }
 
-    private var sky: SkyTime { SkyTime.current() }
-
-    private var world: some View {
-        GeometryReader { proxy in
-            let layout = Layout(size: proxy.size, destination: destination)
-            ZStack(alignment: .topLeading) {
-                WorldStage(
-                    camera: camera, anchor: layout.anchor, sky: sky,
-                    mood: store.isPaused ? .resting : .watching,
-                    origin: leg.from, arrival: leg.to, hop: hop)
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture { jump() }
-                if destination == .today { SkyGreeting(palette: sky.palette) }
-                TrailRail(selection: $destination, palette: sky.palette)
-                panel(layout)
+    private var shell: some View {
+        VStack(spacing: 0) {
+            TitleBar(title: title, paused: store.isPaused)
+            Rule(weight: .edge)
+            HStack(spacing: 0) {
+                SourceList()
+                Rectangle()
+                    .fill(Instrument.edge)
+                    .frame(width: 1)
+                page
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(Instrument.ground)
             }
         }
-        .frame(minWidth: 1_020, minHeight: 660)
-        .onChange(of: destination) { _, place in fly(to: place) }
+        .background(Instrument.ground)
+        .environmentObject(router)
+        .frame(minWidth: 960, minHeight: 620)
     }
 
-    // MARK: - Travelling
-
-    private func fly(to place: Destination) {
-        let next = WorldMap.camera(for: place)
-        leg = Leg(from: camera.target, to: next.target)
-        arrival?.cancel()
-        withAnimation(.easeIn(duration: 0.14)) { travelling = true }
-        withAnimation(.timingCurve(0.5, 0, 0.12, 1, duration: Self.flightDuration)) {
-            camera = next
-        }
-        arrival = Task {
-            try? await Task.sleep(for: .seconds(Self.flightDuration * 0.82))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.3)) { travelling = false }
-        }
-    }
-
-    /// A click on the mountain and he hops. Nothing depends on it — it is
-    /// there because a place you can poke is a place you believe in.
-    private func jump() {
-        // Up, then down — two transactions, because both assignments in one
-        // pass would land on the value he started at and animate nothing.
-        guard hop == 0 else { return }
-        withAnimation(.easeOut(duration: 0.16)) { hop = 1 }
-        Task {
-            try? await Task.sleep(for: .milliseconds(160))
-            withAnimation(.easeIn(duration: 0.2)) { hop = 0 }
+    /// The page for wherever the router currently points. A pushed task or
+    /// theme replaces the place's page rather than covering it.
+    @ViewBuilder private var page: some View {
+        switch router.route {
+        case .none:
+            router.place.page
+        case .task(let taskID):
+            TaskPage(taskID: taskID)
+        case .theme(let themeID):
+            ThemePage(themeID: themeID)
+        case .deck(let deckID):
+            DeckPage(deckID: deckID)
+        case .looseCards:
+            LooseCardsPage()
+        case .merges:
+            MergeReviewView()
         }
     }
 
-    // MARK: - Layers over the world
-
-    private func panel(_ layout: Layout) -> some View {
-        destination.page
-            .frame(width: layout.panelWidth, height: layout.size.height - Layout.inset * 2)
-            .dojoPanel()
-            .offset(x: layout.panelX, y: Layout.inset)
-            .opacity(travelling ? 0 : 1)
-            .scaleEffect(travelling ? 0.97 : 1, anchor: .trailing)
-            .allowsHitTesting(!travelling)
-    }
-
-    /// Where the panel sits, and therefore where the terrace has to land: the
-    /// camera aims at the middle of the gap the panel leaves, so the temple you
-    /// travelled to is never the thing the scroll is covering.
-    private struct Layout {
-        static let inset: CGFloat = 16
-        let size: CGSize
-        let destination: Destination
-
-        /// Today is mostly picture, so its scroll is narrower.
-        var panelWidth: CGFloat {
-            let isToday = destination == .today
-            return min(
-                isToday ? 520 : 780,
-                max(isToday ? 380 : 520, size.width * (isToday ? 0.40 : 0.58)))
-        }
-
-        var panelX: CGFloat { size.width - Self.inset - panelWidth }
-
-        var anchor: UnitPoint {
-            let gap = (TrailRail.width + panelX) / 2
-            return UnitPoint(x: max(0.16, gap / max(1, size.width)), y: 0.6)
+    /// What the window is showing, centred in the title bar the way macOS
+    /// names a document.
+    private var title: String {
+        switch router.route {
+        case .none: return router.place.title
+        case .task(let taskID): return store.taskDetail(taskID)?.task.name ?? "Task"
+        case .theme(let themeID): return store.themeDetail(themeID)?.overview.name ?? "Theme"
+        case .deck(let deckID):
+            return store.decks.first { $0.id == deckID }?.title ?? "Deck"
+        case .looseCards: return "Loose cards"
+        case .merges: return "Suggestions"
         }
     }
 }
 
-/// Words laid straight on the painting need a halo the opposite way round from
-/// the sky they sit on, or dusk eats them.
-func haloColor(_ palette: SkyPalette) -> Color {
-    palette.onDark ? Color.black : Color.white
+// MARK: - Routing
+
+/// A page opened *from* a row rather than from the source list.
+enum Route: Hashable {
+    case task(Int64)
+    case theme(Int64)
+    case deck(Int64)
+    /// The cards outside any live deck — a shelf row like the decks, so it
+    /// pages the same way, but with nothing to rename or configure.
+    case looseCards
+    case merges
 }
 
-/// The salutation and the day's line, laid on the open sky above the camp.
-/// Only Today gets words on the painting; every other place says its piece
-/// inside its own scroll.
-private struct SkyGreeting: View {
-    let palette: SkyPalette
+/// Where the window is pointed, and what the source list is therefore showing.
+/// Held in one object so a row buried in a table can open a task without
+/// knowing the shell exists, and so the source list can render that task's own
+/// contents while it is open.
+@MainActor
+final class Router: ObservableObject {
+    @Published private(set) var place: Place = .breakdown
+    @Published private(set) var route: Route?
+    /// The section the source list last asked the open page to scroll to.
+    /// Cleared by the page once it has moved.
+    @Published var section: String?
+
+    func go(to place: Place) {
+        self.place = place
+        route = nil
+        section = nil
+    }
+
+    func open(_ route: Route) {
+        self.route = route
+        section = nil
+    }
+
+    /// Back to the place the pushed page was opened from.
+    func close() {
+        route = nil
+        section = nil
+    }
+
+    func scroll(to section: String) {
+        self.section = section
+    }
+}
+
+/// Scrolls the page to a section when the source list asks for it, and reports
+/// which sections exist by tagging them with `.sectionAnchor(_:)`.
+struct SectionScroll<Content: View>: View {
+    @EnvironmentObject private var router: Router
+    @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-                .uppercased())
-                .font(Dojo.label())
-                .tracking(1.6)
-                .foregroundStyle(palette.secondaryTextColor)
-            Text(greeting)
-                .font(Dojo.display(34))
-                .foregroundStyle(palette.textColor)
-            Text("“\(Wisdom.daily())”")
-                .font(Dojo.voice(size: 14.5))
-                .foregroundStyle(palette.secondaryTextColor)
-                .frame(maxWidth: 320, alignment: .leading)
-        }
-        .shadow(color: haloColor(palette).opacity(0.45), radius: 6)
-        .padding(.leading, TrailRail.width + 16)
-        .padding(.top, 44)
-        .allowsHitTesting(false)
-    }
-
-    private var greeting: String {
-        switch Calendar.current.component(.hour, from: Date()) {
-        case 5..<12: return "Good morning."
-        case 12..<17: return "Good afternoon."
-        case 17..<22: return "Good evening."
-        default: return "The late hours."
+        ScrollViewReader { proxy in
+            content
+                .onChange(of: router.section) { _, target in
+                    guard let target else { return }
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        proxy.scrollTo(target, anchor: .top)
+                    }
+                    router.section = nil
+                }
         }
     }
 }
 
-/// The places the trail can take you, in the order you climb them. Grouped the
-/// way the mentor thinks about them: the path (where time goes), the mind (what
-/// it taught you), the watch (what could be handed to a machine).
-enum Destination: String, CaseIterable, Identifiable {
-    case today, time, themes, tasks, practice, scrolls, radar
+extension View {
+    /// Names a section so the source list can scroll to it.
+    func sectionAnchor(_ name: String) -> some View { id(name) }
+}
+
+// MARK: - Title bar
+
+/// The window's own bar. `.hiddenTitleBar` leaves the traffic lights floating
+/// over the content, so the bar is ours to draw — which is the only way the
+/// state indicator can live at the top right where it belongs.
+private struct TitleBar: View {
+    let title: String
+    let paused: Bool
+
+    var body: some View {
+        ZStack {
+            Text(title)
+                .font(Instrument.sans(12.5, .medium))
+                .foregroundStyle(Instrument.secondary)
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                Spacer()
+                StatusDot(color: paused ? Instrument.alert : Instrument.live)
+                Text(paused ? "Resting" : "Watching")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.muted)
+            }
+        }
+        // The traffic lights own the leading corner; nothing of ours goes
+        // under them.
+        .padding(.leading, 78)
+        .padding(.trailing, 14)
+        .frame(height: Instrument.titleBarHeight)
+        .frame(maxWidth: .infinity)
+        .background(Instrument.rail)
+    }
+}
+
+// MARK: - The source list
+
+/// The permanent left column. What it lists depends on where you are: the
+/// places while you are in one, and the open thing's own contents while you
+/// are inside a task or a theme — so the window never stops saying where you
+/// are, and the way back is where the way in was.
+private struct SourceList: View {
+    @EnvironmentObject private var router: Router
+
+    var body: some View {
+        Group {
+            switch router.route {
+            case .none: Places()
+            case .task(let taskID): TaskContents(taskID: taskID)
+            case .theme(let themeID): ThemeContents(themeID: themeID)
+            case .deck(let deckID): DeckContents(deckID: deckID)
+            case .looseCards: LooseContents()
+            case .merges: MergeContents()
+            }
+        }
+        .frame(width: Instrument.railWidth)
+        .background(Instrument.rail)
+    }
+}
+
+/// The default contents: the nine places, with the count that says whether
+/// going there is worth it.
+private struct Places: View {
+    @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
+
+    var body: some View {
+        RailColumn {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Shifu")
+                        .font(Instrument.sans(14, .semibold))
+                        .tracking(-0.14)
+                        .foregroundStyle(Instrument.ink)
+                    Figure(
+                        store.todayMs > 0
+                            ? store.todayTotalLabel + " today"
+                            : "nothing yet today",
+                        size: 10.5, color: Instrument.faint)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 2)
+
+                ForEach(Region.allCases) { region in
+                    VStack(alignment: .leading, spacing: 0) {
+                        RailHeading(region.rawValue)
+                        ForEach(region.places) { place in
+                            RailRow(
+                                title: place.title,
+                                badge: place.badge(store),
+                                urgent: place == .due,
+                                selected: router.place == place
+                            ) {
+                                router.go(to: place)
+                            }
+                        }
+                    }
+                }
+            }
+        } footer: {
+            // Capture state and how far the ledger reaches — the two things
+            // that explain a screen emptier than the day felt.
+            Text(store.captureLine)
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.railInk)
+            if let through = store.ledgerThrough {
+                Figure(
+                    "ledger to " + through.formatted(.dateTime.hour().minute()),
+                    size: 10.5, color: Instrument.ghost)
+            }
+        }
+    }
+}
+
+/// The suggestion queue's contents: nothing but the way back.
+private struct MergeContents: View {
+    @EnvironmentObject private var router: Router
+
+    var body: some View {
+        RailColumn {
+            RailBack(title: "Tasks") { router.go(to: .tasks) }
+        } footer: {
+            Text("Dismissed pairs are never re-suggested.")
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// The shape every source list takes: contents at the top, a footer pinned to
+/// the bottom over a rule.
+struct RailColumn<Content: View, Footer: View>: View {
+    @ViewBuilder var content: Content
+    @ViewBuilder var footer: Footer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+            Spacer(minLength: 12)
+            VStack(alignment: .leading, spacing: 3) {
+                Rule(weight: .section)
+                    .padding(.bottom, 7)
+                footer
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+        .padding(.top, 14)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// One row of the source list: a name, and the number that says how much is
+/// behind it. The count is the whole point of a permanent list — it means you
+/// can decide whether to go there without going there.
+struct RailRow: View {
+    let title: String
+    var badge: String?
+    var urgent = false
+    var selected = false
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(Instrument.sans(13, selected ? .medium : .regular))
+                    .foregroundStyle(selected ? Instrument.ink : Instrument.railInk)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let badge, !badge.isEmpty {
+                    Figure(badge, size: 11, weight: urgent ? .medium : .regular, color: badgeColor)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 5)
+            .background(
+                selected ? Instrument.selection : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var badgeColor: Color {
+        if urgent { return Instrument.alert }
+        return selected ? Instrument.accentText : Instrument.faint
+    }
+}
+
+/// The way back out of a task or a theme.
+struct RailBack: View {
+    let title: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("← \(title)")
+                .font(Instrument.sans(12.5))
+                .foregroundStyle(Instrument.accentText)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A heading inside the source list.
+struct RailHeading: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Eyebrow(text, tracking: 1.2)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 5)
+    }
+}
+
+// MARK: - Places
+
+/// The bands the source list is grouped into: where the time went, what it
+/// left behind, what to bring back, and what a machine could take over.
+enum Region: String, CaseIterable, Identifiable {
+    case ledger = "Ledger"
+    case vault = "Vault"
+    case practice = "Practice"
+    case signals = "Signals"
+
+    var id: String { rawValue }
+
+    var places: [Place] {
+        Place.allCases.filter { $0.region == self }
+    }
+}
+
+/// Everywhere the source list can take you.
+enum Place: String, CaseIterable, Identifiable {
+    case breakdown, timeline
+    case themes, tasks, notes
+    case due, decks
+    case radar
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .today: return "Today"
-        case .time: return "Time"
+        case .breakdown: return "Breakdown"
+        case .timeline: return "Timeline"
         case .themes: return "Themes"
-        case .tasks: return "Task log"
-        case .practice: return "Practice"
-        case .scrolls: return "Scrolls"
+        case .tasks: return "Tasks"
+        case .notes: return "Notes"
+        case .due: return "Due"
+        case .decks: return "Decks"
         case .radar: return "Radar"
         }
     }
 
-    var symbol: String {
+    var region: Region {
         switch self {
-        case .today: return "mountain.2.fill"
-        case .time: return "hourglass"
-        case .themes: return "square.stack.3d.up.fill"
-        case .tasks: return "checklist"
-        case .practice: return "rectangle.stack.fill"
-        case .scrolls: return "scroll.fill"
-        case .radar: return "dot.radiowaves.left.and.right"
+        case .breakdown, .timeline: return .ledger
+        case .themes, .tasks, .notes: return .vault
+        case .due, .decks: return .practice
+        case .radar: return .signals
         }
     }
 
-    /// The band this place belongs to — the eyebrow every page wears, and the
-    /// name of the stretch of mountain it stands on.
-    var region: String {
+    /// The figure on this row. Durations for the ledger, counts everywhere
+    /// else — a place is worth visiting in proportion to what is in it.
+    @MainActor func badge(_ store: LedgerStore) -> String? {
         switch self {
-        case .today: return "Basecamp"
-        case .time, .themes, .tasks: return "The path"
-        case .practice, .scrolls: return "The mind"
-        case .radar: return "The watch"
+        // An untracked day leaves the row blank rather than saying "0s":
+        // a instrument with nothing on it should look like one.
+        case .breakdown: return store.todayMs > 0 ? store.todayTotalLabel : nil
+        case .timeline: return store.todayBlockCount > 0 ? "\(store.todayBlockCount)" : nil
+        case .themes: return count(store.themes.count)
+        case .tasks: return count(store.matchingTaskCount)
+        case .notes: return count(store.noteCount)
+        case .due: return count(store.dueNotes.count)
+        // Kept decks plus open offers: the number of deck-shaped things the
+        // page will show, not the cards inside them — Due already counts
+        // cards.
+        case .decks: return count(store.decks.count + store.deckSuggestions.count)
+        case .radar: return count(store.suggestions.count)
         }
     }
 
-    /// One line on what the place is for, under its title.
-    var blurb: String {
-        switch self {
-        case .today: return "How the day is going."
-        case .time: return "Where the hours went, and when."
-        case .themes: return "The few long arcs your work belongs to."
-        case .tasks: return "Every task the ledger has named."
-        case .practice: return "What you learned, brought back before it fades."
-        case .scrolls: return "The vault, searched."
-        case .radar: return "Work a machine could be doing instead."
-        }
-    }
+    private func count(_ value: Int) -> String? { value > 0 ? "\(value)" : nil }
 
-    /// The page, inside its own stack so task/theme pages push in place.
     @MainActor @ViewBuilder var page: some View {
         switch self {
-        case .today: DetailStack { TodayView() }
-        case .time: DetailStack { TimeView() }
-        case .themes: DetailStack { ThemeListView() }
-        case .tasks: DetailStack { TaskLogView() }
-        case .practice: DetailStack { PracticeView() }
-        case .scrolls: DetailStack { ScrollsView() }
-        case .radar: DetailStack { RadarView() }
+        case .breakdown: LedgerView(mode: .breakdown)
+        case .timeline: LedgerView(mode: .timeline)
+        case .themes: ThemesView()
+        case .tasks: TasksView()
+        case .notes: NotesView()
+        case .due: DueView()
+        case .decks: DecksView()
+        case .radar: RadarView()
         }
-    }
-}
-
-/// One NavigationStack with the routes every page may push — task pages, theme
-/// pages, the suggestion queue. No ground of its own: the scroll it sits in
-/// supplies that, and the mountain shows through it.
-struct DetailStack<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        NavigationStack {
-            content
-                .navigationDestination(for: Int64.self) { taskID in
-                    TaskDetailView(taskID: taskID)
-                }
-                .navigationDestination(for: ThemeRoute.self) { route in
-                    ThemeDetailView(themeID: route.id)
-                }
-                .navigationDestination(for: SuggestionsRoute.self) { _ in
-                    MergeReviewView()
-                }
-        }
-        .scrollContentBackground(.hidden)
     }
 }

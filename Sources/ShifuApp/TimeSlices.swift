@@ -1,9 +1,9 @@
 import ShifuCore
 import SwiftUI
 
-/// What the Time tab breaks time down by (design.md §7, §5.3). Both Time-tab
-/// modes — the timeline bars and the Screen Time–style summary — read the same
-/// lens, so switching modes never changes what a group means.
+/// What the Ledger breaks time down by (design.md §7, §5.3). Breakdown,
+/// Timeline, and Week all read the same lens, so changing place never changes
+/// what a group means — only how much of it you are looking at.
 enum TimeLens: String, CaseIterable {
     case category = "Category"
     case theme = "Theme"
@@ -31,8 +31,8 @@ enum TimeLens: String, CaseIterable {
     }
 }
 
-/// One group's share of a window: the row of the summary's ranked list and one
-/// wedge of its donut. Built by `TimeBreakdown.slices`.
+/// One group's share of a window: a row of the Breakdown table, a colour in
+/// the ribbon. Built by `TimeBreakdown.slices`.
 struct TimeSlice: Identifiable {
     /// An app or domain the group's time actually went through.
     struct Source: Identifiable {
@@ -49,7 +49,10 @@ struct TimeSlice: Identifiable {
     let blocks: Int
     /// Hour of day (0–23) the group spent most of its time in, if any.
     let peakHour: Int?
+    /// The biggest few, for the row's inline reveal.
     let sources: [Source]
+    /// How many there were in total — what "+4 more" counts.
+    let sourceCount: Int
 
     var id: String { name }
 }
@@ -133,7 +136,8 @@ enum TimeBreakdown {
                 peakHour: entry.hours.max { $0.value < $1.value }?.key,
                 sources: entry.sources.sorted { $0.value > $1.value }
                     .prefix(maxSources)
-                    .map { TimeSlice.Source(name: $0.key, ms: $0.value) })
+                    .map { TimeSlice.Source(name: $0.key, ms: $0.value) },
+                sourceCount: entry.sources.count)
         }
     }
 
@@ -148,8 +152,15 @@ enum TimeBreakdown {
 
     /// "4h 12m" — reads faster than "4.2 h" when rows are meant to be compared
     /// down a column. `LedgerStore.hours` still owns the menu bar's one-liner.
+    ///
+    /// Sub-minute blocks print in seconds. Rounding them to "0m" is what a
+    /// block list of a real day looks like — the sessionizer emits plenty of
+    /// forty-second visits, and a column of zeroes says nothing about any of
+    /// them.
     static func duration(_ ms: Int64) -> String {
-        let minutes = max(0, ms / 60_000)
+        let seconds = max(0, ms / 1_000)
+        guard seconds >= 60 else { return "\(seconds)s" }
+        let minutes = seconds / 60
         return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h \(minutes % 60)m"
     }
 
@@ -161,103 +172,32 @@ enum TimeBreakdown {
     }
 }
 
-/// The timeline mode's stacked bars: the same window as `TimeBreakdown.slices`,
-/// cut into calendar buckets instead of ranked into groups. Groups come *from*
-/// the breakdown so both modes agree on what "Other" holds.
-enum TimeBuckets {
-    struct Bucket: Identifiable, Equatable {
-        let label: String
-        let group: String
-        let hours: Double
-        /// Chronological position, so the bars sort by time rather than by label.
-        let order: Int
-
-        var id: String { "\(order)-\(label)-\(group)" }
-    }
-
-    /// The span the bars cover, and the calendar that decides where its
-    /// boundaries fall — one value because they are only ever meaningful
-    /// together, and a DST-correct cut depends on both.
-    struct Window {
-        let from: Date
-        let to: Date
-        var calendar: Calendar = .current
-    }
-
-    /// Blocks are clipped to the window and split at every bucket boundary
-    /// through `CalendarSlices`, which is DST-correct — a 23- or 25-hour day
-    /// keeps its real hours instead of dropping or double-counting one.
-    static func buckets(
-        _ activities: [LedgerBuilder.LabeledActivity], lens: TimeLens, span: TimeView.Span,
-        groups: Set<String>, window: Window
-    ) -> [Bucket] {
-        let (from, to, calendar) = (window.from, window.to, window.calendar)
-        let dayZero = calendar.startOfDay(for: from)
-        // bucket label → (chronological order, group → ms)
-        var sums: [String: (order: Int, byGroup: [String: Int64])] = [:]
-        for activity in activities {
-            let raw = lens.label(activity)
-            let group = groups.contains(raw) ? raw : TimeBreakdown.otherLabel
-            let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
-            let end = min(Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000), to)
-            CalendarSlices.walk(
-                from: max(start, from), to: end,
-                unit: span == .day ? .hour : .day, calendar: calendar
-            ) { sliceStart, ms in
-                let (label, order) = bucket(sliceStart, span: span,
-                                            dayZero: dayZero, calendar: calendar)
-                var entry = sums[label] ?? (order: order, byGroup: [:])
-                entry.byGroup[group, default: 0] += ms
-                sums[label] = entry
-            }
-        }
-        return sums.flatMap { label, entry in
-            entry.byGroup.map { group, ms in
-                Bucket(label: label, group: group, hours: Double(ms) / 3_600_000,
-                       order: entry.order)
-            }
-        }
-        .sorted { $0.order < $1.order }
-    }
-
-    /// One slice's bucket: "00"…"23" for a day, the weekday's short name for a
-    /// week. `order` is days from the window's first day, so the week's bars
-    /// stay in calendar order rather than alphabetical.
-    private static func bucket(
-        _ date: Date, span: TimeView.Span, dayZero: Date, calendar: Calendar
-    ) -> (label: String, order: Int) {
-        switch span {
-        case .day:
-            let hour = calendar.component(.hour, from: date)
-            return (String(format: "%02d", hour), hour)
-        case .week:
-            let days = calendar.dateComponents(
-                [.day], from: dayZero, to: calendar.startOfDay(for: date)).day ?? 0
-            return (date.formatted(.dateTime.weekday(.abbreviated)), days)
-        }
-    }
-}
-
-/// Chart colors for both Time-page modes, so a group wears the same color in
-/// the timeline bars, the summary donut, and every legend. All hues come from
-/// `Dojo.chartSlots`, validated for CVD separation and 3:1 contrast on both
-/// surfaces (design.md §7). Work wears the robe's terracotta; the low-signal
-/// categories (admin, private, unclassified) stay recessive grays.
+/// Chart colors for every Ledger view, so a group wears the same color in the
+/// ribbon, the table's meter, and the week's rows. All hues come from
+/// `Instrument.slots` — the accent stepped, one neutral, one warm — because
+/// this is a one-accent instrument (design.md §7).
+///
+/// Hue is never the only cue here: every series is named in the row beside its
+/// swatch, and the ribbon carries its group in the tooltip. That is what buys
+/// the right to a scale this narrow.
 enum TimePalette {
-    /// Fixed category hues.
+    /// Fixed category hues, ranked the way the ledger ranks the categories:
+    /// work takes the strongest step, the low-signal ones (admin, private,
+    /// unclassified) stay recessive.
     private static let categoryColors: [String: Color] = [
-        "work": Dojo.terracotta, "learning": Dojo.jade, "entertainment": Dojo.gold,
-        "social": Dojo.magenta, "communication": Dojo.blue, "admin": .gray,
-        "private": .secondary, "unclassified": Color.gray.opacity(0.4)
+        "work": Instrument.strong, "communication": Instrument.mid,
+        "learning": Instrument.soft, "social": Instrument.deep,
+        "entertainment": Instrument.warm, "admin": Instrument.neutral,
+        "private": Instrument.quiet, "unclassified": Instrument.quiet
     ]
 
-    /// Hue order for theme and task groups — the validated slot order, which is
-    /// what makes adjacent assignments CVD-distinct. Deliberately a *fixed*
-    /// list: a 9th group never gets a generated hue, it folds into "Other".
-    static let groupHues: [Color] = Dojo.chartSlots
+    /// Hue order for theme and task groups. Deliberately a *short* fixed list:
+    /// a sixth group takes slot one again rather than minting a hue, and
+    /// anything past the lens's limit folds into "Other".
+    static let groupHues: [Color] = Instrument.slots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.
-    static let otherColor = Color.gray.opacity(0.5)
+    static let otherColor = Instrument.other
 
     /// Colors for one lens's groups, in ranked order.
     ///

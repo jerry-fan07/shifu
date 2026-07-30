@@ -11,6 +11,12 @@ import ShifuCore
 @MainActor
 final class LedgerStore: ObservableObject {
     @Published private(set) var todayTotals: [ShifuCore.Category: Int64] = [:]
+    /// Today's blocks, labelled — read once per refresh and shared by the
+    /// source list's counts, the Breakdown table, and the Timeline. The Time
+    /// pages used to open this query on every body pass.
+    @Published private(set) var todayActivities: [LedgerBuilder.LabeledActivity] = []
+    /// Everything in the vault, cards or not — the Notes row's count.
+    @Published private(set) var noteCount = 0
     @Published private(set) var pausedUntil: Date?
     @Published private(set) var workModeOn = false
     @Published private(set) var dueNotes: [Note] = []
@@ -146,12 +152,14 @@ final class LedgerStore: ObservableObject {
             hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
         }
         do {
-            let start = Calendar.current.startOfDay(for: Date())
+            let now = Date()
+            let start = Calendar.current.startOfDay(for: now)
             todayTotals = try LedgerBuilder.totals(
                 database: db(),
                 from: Int64(start.timeIntervalSince1970 * 1_000),
-                to: Int64(Date().timeIntervalSince1970 * 1_000)
+                to: Int64(now.timeIntervalSince1970 * 1_000)
             )
+            todayActivities = labeledActivities(from: start, to: now)
             lastError = nil
         } catch {
             lastError = "\(error)"
@@ -407,5 +415,6 @@ final class LedgerStore: ObservableObject {
         allCards = snapshot.cards
         dueNotes = snapshot.due
         reviewsByDay = snapshot.reviewsByDay
+        noteCount = snapshot.total
     }
 }

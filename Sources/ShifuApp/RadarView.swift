@@ -2,74 +2,84 @@ import AppKit
 import ShifuCore
 import SwiftUI
 
-/// The *Radar* page (design.md §6.2): ranked automation suggestions with
-/// Copy / Snooze / Dismiss actions. Only described, gated rows ever reach here
-/// (`Radar.active`) — a mined row on its own is evidence, not advice.
+/// The *Radar* place (design.md §6.2): work a machine could be doing instead.
+/// Only described, gated rows ever reach here (`Radar.active`) — a mined
+/// pattern on its own is evidence, not advice.
+///
+/// Each row is an argument, in order: the claim, the evidence it rests on, what
+/// to actually do, and why this kind of thing is worth automating at all. The
+/// saving sits beside the claim because it is the only reason to read on.
 struct RadarView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var copiedID: Int64?
+    @State private var copied: Int64?
 
     var body: some View {
-        PageScaffold(destination: .radar) {
-            if !store.suggestions.isEmpty {
-                Eyebrow("\(store.suggestions.count) open")
-            }
-        } content: {
-            if store.suggestions.isEmpty {
-                SenseiEmptyState(
-                    "Nothing worth automating yet",
-                    message: "I review your recurring chores weekly, and point "
-                        + "only when automating one would plainly pay for itself.")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(store.suggestions, id: \.patternKey) { suggestion in
-                            row(suggestion).dojoCard(padding: 14)
-                        }
+        VStack(spacing: 0) {
+            PageHead(
+                "Worth automating",
+                subtitle: "Shifu only raises a pattern when the time it would give back "
+                    + "plainly exceeds the cost of building it.")
+            PageBody {
+                if store.suggestions.isEmpty {
+                    BlankSlate(
+                        "Nothing has cleared the bar. Shifu reviews your recurring chores "
+                            + "weekly and points only when automating one would pay for "
+                            + "itself.")
+                } else {
+                    ForEach(store.suggestions, id: \.patternKey) { suggestion in
+                        row(suggestion)
+                        Rule(weight: .section)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
                 }
             }
         }
         .onAppear { store.refresh() }
     }
 
-    @ViewBuilder
     private func row(_ suggestion: Suggestion) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(suggestion.title ?? suggestion.evidence)
-                .font(Dojo.display(15))
-            // The dossier line the suggestion was judged from: hours, days,
-            // when it happens, where the time went.
-            Text(suggestion.evidence)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                Text(suggestion.title ?? suggestion.evidence)
+                    .font(Instrument.sans(14.5, .semibold))
+                    .foregroundStyle(Instrument.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Figure(suggestion.sizingLabel, size: 11, color: Instrument.muted)
+                    .fixedSize()
+            }
+            // The dossier the suggestion was judged from: hours, days, when it
+            // happens, where the time went.
+            Figure(suggestion.evidence, size: 11, color: Instrument.faint)
+                .padding(.top, 5)
             if let body = suggestion.suggestion {
                 Text(body)
-                    .font(.callout)
+                    .font(Instrument.sans(13))
+                    .lineSpacing(3)
+                    .foregroundStyle(Instrument.body)
+                    .frame(maxWidth: 680, alignment: .leading)
+                    .padding(.top, 8)
             }
             if let teach = suggestion.teach {
-                Label(teach, systemImage: "lightbulb")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Eyebrow("Why")
+                    Text(teach)
+                        .font(Instrument.sans(12.5))
+                        .foregroundStyle(Instrument.secondary)
+                }
+                .padding(.top, 7)
             }
-            HStack(spacing: 12) {
-                Button(copiedID == suggestion.id ? "Copied ✓" : "Copy brief") {
+            HStack(spacing: 14) {
+                SolidButton(title: copied == suggestion.id ? "Copied ✓" : "Copy brief") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(
                         suggestion.automationPrompt, forType: .string)
-                    copiedID = suggestion.id
+                    copied = suggestion.id
                 }
-                Button("Snooze 30d") { store.snooze(suggestion) }
-                Button("Dismiss") { store.dismiss(suggestion) }
-                Spacer()
-                Text(suggestion.sizingLabel)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                OutlineButton(title: "Snooze 30d") { store.snooze(suggestion) }
+                OutlineButton(title: "Dismiss") { store.dismiss(suggestion) }
             }
-            .buttonStyle(.link)
+            .padding(.top, 11)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 15)
+        .padding(.bottom, 14)
     }
 }

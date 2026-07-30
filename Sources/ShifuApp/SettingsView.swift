@@ -1,7 +1,9 @@
 import ShifuCore
 import SwiftUI
 
-/// Settings window (design.md §9).
+/// Settings (design.md §9), in the Instrument register: a label, its value in
+/// mono on the right, and one line underneath saying what it does. No boxes —
+/// a section is a rule and a heading.
 ///
 /// Rendered *from* `SettingsCatalog` rather than from hand-written rows: adding
 /// a numeric setting to the catalog makes it appear here, correctly bounded and
@@ -10,37 +12,80 @@ struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
 
     var body: some View {
-        Form {
-            ForEach(SettingsSection.allCases, id: \.self) { section in
-                let ints = SettingsCatalog.ints.filter { $0.section == section }
-                let lists = SettingsCatalog.domainLists.filter { $0.section == section }
-                let choices = SettingsCatalog.choices.filter { $0.section == section }
-                let texts = SettingsCatalog.texts.filter {
-                    $0.section == section && store.isVisible($0)
-                }
-                if !ints.isEmpty || !lists.isEmpty || !choices.isEmpty || !texts.isEmpty {
-                    Section(section.rawValue) {
-                        ForEach(ints) { IntSettingRow(setting: $0) }
-                        ForEach(choices) { ChoiceSettingRow(setting: $0) }
-                        ForEach(texts) { TextSettingRow(setting: $0) }
-                        ForEach(lists) { DomainListRow(setting: $0) }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(SettingsSection.allCases, id: \.self) { section in
+                        SettingsGroup(section: section)
+                    }
+                    if let error = store.lastError {
+                        Text(error)
+                            .font(Instrument.sans(11.5))
+                            .foregroundStyle(Instrument.overdue)
+                            .padding(.top, 10)
                     }
                 }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Section {
-                Text("Capture and analysis changes apply to the running daemon "
-                     + "without a restart.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let error = store.lastError {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
-            }
+            Rule(weight: .section)
+            Text("Capture and analysis changes apply to the running daemon without "
+                + "a restart.")
+                .font(Instrument.sans(11))
+                .foregroundStyle(Instrument.faint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 480, minHeight: 520)
+        .background(Instrument.ground)
+        .frame(width: 480, height: 610)
         .onAppear { store.load() }
+    }
+}
+
+/// One catalog section, or nothing at all when everything in it is hidden.
+private struct SettingsGroup: View {
+    @EnvironmentObject private var store: SettingsStore
+    let section: SettingsSection
+
+    var body: some View {
+        let ints = SettingsCatalog.ints.filter { $0.section == section }
+        let choices = SettingsCatalog.choices.filter { $0.section == section }
+        let texts = SettingsCatalog.texts.filter {
+            $0.section == section && store.isVisible($0)
+        }
+        let lists = SettingsCatalog.domainLists.filter { $0.section == section }
+        if !ints.isEmpty || !choices.isEmpty || !texts.isEmpty || !lists.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Rule(weight: .section)
+                Eyebrow(section.rawValue, tracking: 1.2)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+                ForEach(ints) { IntSettingRow(setting: $0) }
+                ForEach(choices) { ChoiceSettingRow(setting: $0) }
+                ForEach(texts) { TextSettingRow(setting: $0) }
+                ForEach(lists) { DomainListRow(setting: $0) }
+            }
+            .padding(.top, 6)
+        }
+    }
+}
+
+/// The help line every setting carries. Kept as its own view so no row can
+/// forget it — a number with no explanation is how a settings screen rots.
+private struct SettingHelp: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(Instrument.sans(11.5))
+            .foregroundStyle(Instrument.muted)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 12)
     }
 }
 
@@ -51,43 +96,66 @@ private struct IntSettingRow: View {
     let setting: IntSetting
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Stepper(value: store.binding(for: setting), in: setting.range, step: setting.step) {
-                HStack {
-                    Text(setting.title)
-                    Spacer()
-                    Text(setting.display(store.value(for: setting)))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Text(setting.title)
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                Figure(setting.display(store.value(for: setting)), color: Instrument.secondary)
+                HStack(spacing: 0) {
+                    nudge("−", by: -setting.step)
+                    Rectangle().fill(Instrument.edge).frame(width: 1)
+                    nudge("+", by: setting.step)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Instrument.edge, lineWidth: 1)
                 }
             }
-            Text(setting.help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            SettingHelp(setting.help)
         }
-        .padding(.vertical, 2)
+    }
+
+    private func nudge(_ glyph: String, by step: Int) -> some View {
+        let value = store.value(for: setting)
+        let next = value + step
+        return Button {
+            store.binding(for: setting).wrappedValue = next
+        } label: {
+            Text(glyph)
+                .font(Instrument.sans(12))
+                .foregroundStyle(Instrument.railInk)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 1)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!setting.range.contains(next))
+        .opacity(setting.range.contains(next) ? 1 : 0.35)
     }
 }
 
-/// Picker over the descriptor's own options; unknown stored values render as
-/// the default because reads normalize.
+/// The descriptor's own options as a segmented strip; unknown stored values
+/// render as the default because reads normalize.
 private struct ChoiceSettingRow: View {
     @EnvironmentObject private var store: SettingsStore
     let setting: ChoiceSetting
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Picker(setting.title, selection: store.binding(for: setting)) {
-                ForEach(setting.options) { option in
-                    Text(option.label).tag(option.value)
-                }
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Text(setting.title)
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                SegmentedBar(
+                    options: setting.options.map { ($0.label, $0.value) },
+                    selection: store.binding(for: setting))
             }
-            .pickerStyle(.menu)
-            Text(setting.help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            SettingHelp(setting.help)
         }
-        .padding(.vertical, 2)
     }
 }
 
@@ -97,68 +165,87 @@ private struct TextSettingRow: View {
     let setting: TextSetting
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
                 Text(setting.title)
-                if setting.secure {
-                    SecureField(setting.placeholder, text: store.binding(for: setting))
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    TextField(setting.placeholder, text: store.binding(for: setting))
-                        .textFieldStyle(.roundedBorder)
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                    .frame(width: 108, alignment: .leading)
+                Group {
+                    if setting.secure {
+                        SecureField(setting.placeholder, text: store.binding(for: setting))
+                    } else {
+                        TextField(setting.placeholder, text: store.binding(for: setting))
+                    }
+                }
+                .textFieldStyle(.plain)
+                .font(Instrument.mono(12))
+                .foregroundStyle(Instrument.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Instrument.edge, lineWidth: 1)
                 }
             }
-            Text(setting.help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            SettingHelp(setting.help)
         }
-        .padding(.vertical, 2)
     }
 }
 
-/// Add-row + deletable list: type a value, Add appends it, swipe/⌫ removes it.
+/// Add-row plus a deletable list: type a value, Add appends it, remove drops it.
 private struct DomainListRow: View {
     @EnvironmentObject private var store: SettingsStore
     let setting: DomainListSetting
     @State private var draft = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(setting.title)
+                .font(Instrument.sans(13))
+                .foregroundStyle(Instrument.ink)
             Text(setting.help)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack {
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 8)
+            HStack(spacing: 8) {
                 TextField(setting.placeholder, text: $draft)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .font(Instrument.mono(12))
+                    .foregroundStyle(Instrument.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Instrument.edge, lineWidth: 1)
+                    }
                     .onSubmit(add)
-                Button("Add", action: add)
-                    .disabled(setting.normalize(draft) == nil)
+                OutlineButton(title: "Add", action: add)
+                    .opacity(setting.normalize(draft) == nil ? 0.35 : 1)
+                    .allowsHitTesting(setting.normalize(draft) != nil)
             }
+            .padding(.bottom, 8)
 
             let domains = store.domains(for: setting)
             if domains.isEmpty {
                 Text("No sites yet.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.ghost)
+                    .padding(.bottom, 12)
             } else {
                 ForEach(domains, id: \.self) { domain in
+                    Rule()
                     HStack {
-                        Text(domain).font(.callout)
+                        Figure(domain, size: 12, color: Instrument.secondary)
                         Spacer()
-                        Button {
-                            store.remove(domain, from: setting)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove \(domain)")
+                        InlineLink("remove") { store.remove(domain, from: setting) }
                     }
+                    .padding(.vertical, 4)
                 }
+                Spacer().frame(height: 12)
             }
         }
-        .padding(.vertical, 2)
     }
 
     private func add() {

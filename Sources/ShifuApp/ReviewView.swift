@@ -1,21 +1,22 @@
 import ShifuCore
 import SwiftUI
 
-/// Card review session (design.md §5.2). Draws from the deck picked on the
-/// Cards home screen. The session snapshots its queue up front: "Again"
-/// cards rotate to the back instead of blocking the front, and background
-/// refreshes can't shuffle the card underneath the user.
+/// The review session (design.md §5.2), in its own window: one card at a time,
+/// centred, with nothing on screen but the card and the four grades. The
+/// session snapshots its queue up front — "Again" cards rotate to the back
+/// instead of blocking the front, and a background refresh can't shuffle the
+/// card out from under the user.
 struct ReviewSessionView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var queue: [String] = []
-    @State private var reviewedCount = 0
+    @State private var reviewed = 0
     @State private var revealed = false
-    @State private var editingCard: Note?
+    @State private var editing: Note?
     @State private var confirmingDelete = false
 
     /// First queued card that is still due — edits, deletions, and external
     /// changes drop out naturally instead of showing a stale card.
-    private var currentNote: Note? {
+    private var current: Note? {
         let due = store.deckDueNotes
         for noteID in queue {
             if let note = due.first(where: { $0.id == noteID }) { return note }
@@ -23,47 +24,32 @@ struct ReviewSessionView: View {
         return nil
     }
 
-    private var remainingCount: Int {
+    private var remaining: Int {
         let dueIDs = Set(store.deckDueNotes.map(\.id))
         return queue.filter(dueIDs.contains).count
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            if let note = currentNote, let qa = note.questionAnswer {
-                // Centred in whatever room is left, but still scrollable: a card
-                // can carry a code block taller than the window (§5.2).
-                GeometryReader { proxy in
-                    ScrollView {
-                        VStack {
-                            Spacer(minLength: 0)
-                            cardContent(note: note, question: qa.question, answer: qa.answer)
-                                .dojoCard(padding: 0)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(16)
-                        .frame(minHeight: proxy.size.height)
-                    }
-                }
-                Divider()
+            progress
+            Rule(weight: .section)
+            if let note = current, let pair = note.questionAnswer {
+                card(note: note, question: pair.question, answer: pair.answer)
+                Rule(weight: .section)
                 controls(note: note)
             } else {
-                doneView
+                done
             }
         }
-        .background(Dojo.paper)
-        .frame(minWidth: 460, minHeight: 400)
+        .background(Instrument.ground)
+        .frame(minWidth: 480, minHeight: 440)
         .onAppear {
             store.refresh()
-            startSession()
+            start()
         }
         // A new card on screen must never start revealed.
-        .onChange(of: currentNote?.id) { _, _ in revealed = false }
-        .sheet(item: $editingCard) { note in
-            CardEditSheet(note: note)
-        }
+        .onChange(of: current?.id) { _, _ in revealed = false }
+        .sheet(item: $editing) { note in CardEditSheet(note: note) }
         .confirmationDialog(
             "Delete this card permanently?", isPresented: $confirmingDelete
         ) {
@@ -71,60 +57,68 @@ struct ReviewSessionView: View {
         }
     }
 
-    /// Deck, counts, and the session's own progress bar — how far along the
-    /// climb you are, which a bare "n left" never quite says.
-    private var header: some View {
-        VStack(spacing: 7) {
-            HStack {
-                Eyebrow(store.reviewDeck.label)
-                Spacer()
-                Text("\(reviewedCount) done · \(remainingCount) left")
-                    .font(Dojo.label(10))
-                    .foregroundStyle(.tertiary)
-            }
-            GeometryReader { proxy in
-                let total = max(1, reviewedCount + remainingCount)
+    /// The deck, and how far along you are — which a bare "n left" never says.
+    private var progress: some View {
+        HStack(spacing: 10) {
+            Text(store.reviewDeck.label)
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.muted)
+                .lineLimit(1)
+            Spacer(minLength: 12)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Instrument.well)
                 Capsule()
-                    .fill(Dojo.well)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(Dojo.accent)
-                            .frame(
-                                width: proxy.size.width
-                                    * CGFloat(reviewedCount) / CGFloat(total))
-                    }
+                    .fill(Instrument.accent)
+                    .frame(width: 120 * fraction)
             }
-            .frame(height: 4)
+            .frame(width: 120, height: 4)
+            Figure("\(reviewed) done · \(remaining) left", size: 11, color: Instrument.faint)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 9)
+        .background(Instrument.rail)
     }
 
-    private func cardContent(note: Note, question: String, answer: String) -> some View {
-        VStack(spacing: 14) {
-            Text(note.topic)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            CardTextView(text: question, baseSize: 15, alignment: .center)
-            if revealed {
-                Divider().frame(width: 160)
-                CardTextView(text: answer, alignment: .center)
-                if let source = note.sourceURL, let url = URL(string: source) {
-                    Link(destination: url) {
-                        Label(url.host() ?? source, systemImage: "link")
-                            .font(.caption)
+    private var fraction: CGFloat {
+        let total = max(1, reviewed + remaining)
+        return CGFloat(reviewed) / CGFloat(total)
+    }
+
+    /// Centred in whatever room is left, but still scrollable: a card can
+    /// carry a code block taller than the window (§5.2).
+    private func card(note: Note, question: String, answer: String) -> some View {
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    Spacer(minLength: 0)
+                    Eyebrow(note.topic)
+                    CardTextView(text: question, baseSize: 19, alignment: .center)
+                    if revealed {
+                        Rectangle()
+                            .fill(Instrument.edge)
+                            .frame(width: 120, height: 1)
+                        CardTextView(text: answer, baseSize: 14.5, alignment: .center)
+                        if let source = note.sourceURL, let url = URL(string: source) {
+                            Link(destination: url) {
+                                Figure(url.host() ?? source, size: 11,
+                                       color: Instrument.accentText)
+                            }
+                        }
                     }
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 34)
+                .padding(.vertical, 30)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: proxy.size.height)
             }
         }
-        .padding(24)
-        .frame(maxWidth: .infinity)
     }
 
     private func controls(note: Note) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if revealed {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     ForEach(FSRS.Grade.allCases, id: \.rawValue) { grade in
                         gradeButton(grade, note: note)
                     }
@@ -132,71 +126,107 @@ struct ReviewSessionView: View {
             } else {
                 Button("Reveal answer") { revealed = true }
                     .keyboardShortcut(.space, modifiers: [])
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.plain)
+                    .font(Instrument.sans(12.5, .medium))
+                    .foregroundStyle(Instrument.solidInk)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .background(Instrument.solidFill, in: RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: .infinity)
             }
             HStack(spacing: 14) {
-                Button("Edit", systemImage: "pencil") { editingCard = note }
-                    .keyboardShortcut("e", modifiers: [])
-                    .help("Edit this card (E)")
-                Button("Skip", systemImage: "arrow.uturn.forward") { skip(note) }
-                    .keyboardShortcut("s", modifiers: [])
-                    .help("Move to the back of the session (S)")
-                Button("Delete", systemImage: "trash") { confirmingDelete = true }
-                    .help("Delete this card")
+                sessionAction("Edit", key: "e") { editing = note }
+                sessionAction("Skip", key: "s") { skip(note) }
+                sessionAction("Delete", key: nil) { confirmingDelete = true }
                 Spacer()
-                Text(revealed ? "1–4 grades" : "Space reveals")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                Figure(
+                    revealed ? "1–4 grades · E edits · S skips" : "space reveals",
+                    size: 10.5, color: Instrument.ghost)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
         }
-        .padding(12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
+    private func sessionAction(
+        _ title: String, key: Character?, action: @escaping () -> Void
+    ) -> some View {
+        let button = Button(action: action) {
+            Text(title)
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.muted)
+        }
+        .buttonStyle(.plain)
+        return Group {
+            if let key {
+                button.keyboardShortcut(KeyEquivalent(key), modifiers: [])
+            } else {
+                button
+            }
+        }
+    }
+
+    /// Each grade shows what FSRS would actually schedule, so grading is an
+    /// informed choice rather than a guess about the algorithm.
     private func gradeButton(_ grade: FSRS.Grade, note: Note) -> some View {
-        Button {
-            applyGrade(grade, to: note)
+        let isDefault = grade == .good
+        return Button {
+            apply(grade, to: note)
         } label: {
             VStack(spacing: 1) {
                 Text(Self.gradeLabel(grade))
-                Text(Self.intervalPreview(note: note, grade: grade))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(Instrument.sans(12.5, isDefault ? .semibold : .medium))
+                    .foregroundStyle(isDefault ? Instrument.accentDeep : Instrument.ink)
+                Figure(
+                    Self.intervalPreview(note: note, grade: grade),
+                    size: 10.5, color: isDefault ? Instrument.accentText : Instrument.faint)
             }
-            .frame(minWidth: 52)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(
+                isDefault ? Instrument.selection : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(isDefault ? Instrument.accent : Instrument.edge, lineWidth: 1)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .keyboardShortcut(KeyEquivalent(Character("\(grade.rawValue)")), modifiers: [])
     }
 
-    private var doneView: some View {
-        SenseiEmptyState(
-            reviewedCount > 0 ? "Done — \(reviewedCount) reviewed" : "Nothing due",
-            message: store.deckDueNotes.isEmpty
-                ? (reviewedCount > 0
-                    ? "Enough for today. Water the mind, then rest."
-                    : "The deck rests. Return when cards are due.")
-                : "More cards became due while you reviewed.",
-            mood: reviewedCount > 0 ? .proud : .serene
-        ) {
+    private var done: some View {
+        VStack(spacing: 12) {
+            Text(reviewed > 0 ? "\(reviewed) reviewed" : "Nothing due")
+                .font(Instrument.sans(18, .semibold))
+                .foregroundStyle(Instrument.ink)
+            Text(store.deckDueNotes.isEmpty
+                ? (reviewed > 0
+                    ? "Enough for today."
+                    : "The deck rests until the next card comes round.")
+                : "More cards became due while you reviewed.")
+                .font(Instrument.sans(13))
+                .foregroundStyle(Instrument.muted)
             if !store.deckDueNotes.isEmpty {
-                Button("Review \(store.deckDueNotes.count) more") { startSession() }
-                    .buttonStyle(.borderedProminent)
+                SolidButton(title: "Review \(store.deckDueNotes.count) more") { start() }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(28)
     }
 
     // MARK: - Session actions
 
-    private func startSession() {
+    private func start() {
         queue = store.deckDueNotes.map(\.id)
-        reviewedCount = 0
+        reviewed = 0
         revealed = false
     }
 
-    private func applyGrade(_ grade: FSRS.Grade, to note: Note) {
+    private func apply(_ grade: FSRS.Grade, to note: Note) {
         store.review(note, grade: grade)
-        reviewedCount += 1
+        reviewed += 1
         revealed = false
         if grade == .again {
             moveToBack(note.id)   // relearn later this session, not immediately
@@ -211,7 +241,7 @@ struct ReviewSessionView: View {
     }
 
     private func deleteCurrent() {
-        guard let note = currentNote else { return }
+        guard let note = current else { return }
         store.discard(note)
         queue.removeAll { $0 == note.id }
     }
@@ -230,8 +260,7 @@ struct ReviewSessionView: View {
         }
     }
 
-    /// What FSRS would schedule for each grade — shown under the buttons so
-    /// grading is an informed choice.
+    /// What FSRS would schedule for each grade.
     static func intervalPreview(note: Note, grade: FSRS.Grade, now: Date = Date()) -> String {
         let next = FSRS.review(note.srs ?? FSRS.State(due: now), grade: grade, now: now)
         let days = Int(next.intervalDays)

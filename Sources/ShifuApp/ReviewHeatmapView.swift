@@ -1,32 +1,58 @@
 import ShifuCore
 import SwiftUI
 
-/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One hue —
-/// the accent terracotta — light→dark with count (sequential ramp); zero-days
-/// sit on the recessive surface. Tooltips carry the exact numbers.
+/// Calendar heatmap of reviews per day, last 26 weeks. One hue — the accent —
+/// stepped light→dark with the count, over the same recessed track every other
+/// meter in the app uses. Its own header carries the total, because a grid of
+/// squares with no number on it is decoration.
 struct ReviewHeatmapView: View {
     let counts: [Date: Int]
     var now: Date = Date()
 
-    private static let cellSize: CGFloat = 12
+    private static let cell: CGFloat = 10
     private static let gap: CGFloat = 3
+    private static let gutter: CGFloat = 24
 
     var body: some View {
         let weeks = weekStarts()
-        VStack(alignment: .leading, spacing: 4) {
-            monthLabels(weeks: weeks)
-            HStack(alignment: .top, spacing: Self.gap) {
-                weekdayLabels
-                ForEach(weeks, id: \.self) { weekStart in
-                    weekColumn(weekStart)
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            VStack(alignment: .leading, spacing: 4) {
+                monthLabels(weeks: weeks)
+                HStack(alignment: .top, spacing: Self.gap) {
+                    weekdayLabels
+                    ForEach(weeks, id: \.self) { weekStart in
+                        weekColumn(weekStart)
+                    }
                 }
             }
-            legend
         }
     }
 
-    /// Start of each displayed week, oldest first, current week last. Columns
-    /// run Monday→Sunday like the rest of the app.
+    private var header: some View {
+        HStack {
+            Eyebrow(
+                "Reviews · \(LedgerStore.HeatmapSpan.weeks) weeks · "
+                    + "\(counts.values.reduce(0, +)) total")
+            Spacer()
+            HStack(spacing: 4) {
+                Text("less")
+                    .font(Instrument.mono(10))
+                    .foregroundStyle(Instrument.ghost)
+                ForEach([0, 1, 3, 6, 10], id: \.self) { step in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Self.ramp(step))
+                        .frame(width: Self.cell, height: Self.cell)
+                }
+                Text("more")
+                    .font(Instrument.mono(10))
+                    .foregroundStyle(Instrument.ghost)
+            }
+        }
+    }
+
+    /// Start of each displayed week, oldest first. Columns run Monday→Sunday
+    /// like the rest of the app.
     private func weekStarts() -> [Date] {
         let calendar = Calendar.current
         let thisWeek = calendar.startOfWeek(for: now)
@@ -45,35 +71,34 @@ struct ReviewHeatmapView: View {
                 if let day = calendar.date(byAdding: .day, value: dayOffset, to: weekStart),
                    day <= now {
                     let count = counts[calendar.startOfDay(for: day)] ?? 0
-                    RoundedRectangle(cornerRadius: 2.5)
-                        .fill(Self.rampColor(count))
-                        .frame(width: Self.cellSize, height: Self.cellSize)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Self.ramp(count))
+                        .frame(width: Self.cell, height: Self.cell)
                         .help("\(count) review\(count == 1 ? "" : "s") · "
                             + day.formatted(.dateTime.month(.abbreviated).day()))
                 } else {
-                    Color.clear
-                        .frame(width: Self.cellSize, height: Self.cellSize)
+                    Color.clear.frame(width: Self.cell, height: Self.cell)
                 }
             }
         }
     }
 
     /// Month abbreviation over each column that starts a new month; labels
-    /// overflow their column like GitHub's.
+    /// overflow their column rather than squeeze it.
     private func monthLabels(weeks: [Date]) -> some View {
         let calendar = Calendar.current
         return HStack(alignment: .top, spacing: Self.gap) {
-            Color.clear.frame(width: 26, height: 1)   // over the weekday gutter
+            Color.clear.frame(width: Self.gutter, height: 1)
             ForEach(Array(weeks.enumerated()), id: \.offset) { index, weekStart in
                 let month = calendar.component(.month, from: weekStart)
                 let previous = index > 0
                     ? calendar.component(.month, from: weeks[index - 1]) : 0
                 ZStack(alignment: .topLeading) {
-                    Color.clear.frame(width: Self.cellSize, height: 12)
+                    Color.clear.frame(width: Self.cell, height: 11)
                     if index > 0, month != previous {
                         Text(weekStart.formatted(.dateTime.month(.abbreviated)))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(Instrument.mono(10))
+                            .foregroundStyle(Instrument.ghost)
                             .fixedSize()
                     }
                 }
@@ -89,43 +114,23 @@ struct ReviewHeatmapView: View {
             ForEach(0..<7, id: \.self) { row in
                 Text(row.isMultiple(of: 2)
                      ? symbols[(calendar.firstWeekday - 1 + row) % 7] : "")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 23, height: Self.cellSize)
+                    .font(Instrument.mono(10))
+                    .foregroundStyle(Instrument.ghost)
+                    .frame(width: Self.gutter - Self.gap, height: Self.cell)
             }
         }
     }
 
-    private var legend: some View {
-        HStack(spacing: 3) {
-            Text("\(counts.values.reduce(0, +)) reviews in the last "
-                + "\(LedgerStore.HeatmapSpan.weeks) weeks")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Less")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            ForEach([0, 1, 3, 6, 10], id: \.self) { step in
-                RoundedRectangle(cornerRadius: 2.5)
-                    .fill(Self.rampColor(step))
-                    .frame(width: 10, height: 10)
-            }
-            Text("More")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Quantized sequential ramp: one hue, intensity tracks count, and it
-    /// adapts to light/dark because it's an opacity over the surface.
-    static func rampColor(_ count: Int) -> Color {
+    /// Quantized sequential ramp: one hue, intensity tracks the count, and it
+    /// adapts to light and dark because it is an opacity over the same well
+    /// every meter sits in.
+    static func ramp(_ count: Int) -> Color {
         switch count {
-        case 0: return Color.primary.opacity(0.06)
-        case 1...2: return Dojo.accent.opacity(0.30)
-        case 3...5: return Dojo.accent.opacity(0.55)
-        case 6...9: return Dojo.accent.opacity(0.80)
-        default: return Dojo.accent
+        case 0: return Instrument.well
+        case 1...2: return Instrument.accent.opacity(0.28)
+        case 3...5: return Instrument.accent.opacity(0.5)
+        case 6...9: return Instrument.accent.opacity(0.72)
+        default: return Instrument.accent
         }
     }
 }

@@ -13,6 +13,8 @@ extension LedgerStore {
         var cards: [Note] = []
         var due: [Note] = []
         var reviewsByDay: [Date: Int] = [:]
+        /// Everything the vault holds, cards or not — what the Notes row counts.
+        var total = 0
     }
 
     /// One vault walk feeding the review queue and the Cards screens.
@@ -21,11 +23,23 @@ extension LedgerStore {
     func vaultSnapshot() -> VaultSnapshot {
         var snapshot = VaultSnapshot()
         let notes = (try? vault.allNotes()) ?? []
+        snapshot.total = notes.count
         snapshot.cards = notes
             .filter { $0.state == .kept && $0.questionAnswer != nil }
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
         let now = Date()
         snapshot.due = snapshot.cards.filter { $0.srs.map { $0.due <= now } ?? true }
+        // Deck review settings (§5.2): paused decks sit out, capped decks
+        // introduce only today's allowance of new cards. The cards list keeps
+        // everything — settings shape the queue, not the shelf. Sorted
+        // earliest-due first above, so the allowance goes to the oldest cards.
+        if let database = try? db() {
+            snapshot.due = ReviewGate.schedulable(
+                snapshot.due,
+                decks: (try? DeckStore.decks(database: database)) ?? [],
+                introducedToday: (try? ReviewGate.introducedToday(
+                    database: database, now: now)) ?? [:])
+        }
         // A week of slack so the heatmap's week-aligned first column has
         // counts for its leading days too.
         let heatmapStart = Calendar.current.date(
@@ -51,8 +65,54 @@ extension LedgerStore {
         static let days = weeks * 7
     }
 
+    /// Cards outside every live deck: kept before decks existed, or stamped
+    /// for a deck whose task has since been pruned or merged away. They still
+    /// serve the All queue (§5.2) — shared by the Decks shelf row and the
+    /// page behind it.
+    var looseCards: [Note] {
+        let live = Set(decks.map(\.key))
+        return allCards.filter { card in
+            guard let deck = card.deck else { return true }
+            return !live.contains(deck)
+        }
+    }
+
     var reviewsToday: Int {
         reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
+    }
+
+    /// Consecutive days ending today with at least one review. Today counts
+    /// only once it has one, so an unstarted morning doesn't read as a break —
+    /// the run is measured back from yesterday until then.
+    var reviewStreak: Int? {
+        let calendar = Calendar.current
+        var day = calendar.startOfDay(for: Date())
+        if reviewsByDay[day] == nil {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: day)
+            else { return nil }
+            day = yesterday
+        }
+        var run = 0
+        while let count = reviewsByDay[day], count > 0 {
+            run += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day)
+            else { break }
+            day = previous
+        }
+        return run > 0 ? run : nil
+    }
+
+    /// The middle scheduled interval across cards that have been reviewed at
+    /// least once — the one number that says whether the deck is settling or
+    /// still churning. Nil until something has been graded.
+    var medianIntervalDays: Int? {
+        let intervals = allCards
+            .compactMap { $0.srs }
+            .filter { $0.reps > 0 }
+            .map(\.intervalDays)
+            .sorted()
+        guard !intervals.isEmpty else { return nil }
+        return Int(intervals[intervals.count / 2].rounded())
     }
 
     func discard(_ note: Note) {
