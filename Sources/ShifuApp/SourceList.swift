@@ -17,6 +17,7 @@ struct SourceList: View {
             case .task(let taskID): TaskContents(taskID: taskID)
             case .theme(let themeID): ThemeContents(themeID: themeID)
             case .deck(let deckID): DeckContents(deckID: deckID)
+            case .newDeck: NewDeckContents()
             case .looseCards: LooseContents()
             case .merges: MergeContents()
             }

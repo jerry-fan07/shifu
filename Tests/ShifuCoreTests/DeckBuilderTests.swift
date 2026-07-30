@@ -121,6 +121,110 @@ private final class DeckBackend: LLMBackend, @unchecked Sendable {
         #expect(extracted == 0)
     }
 
+    /// The user's brief reaches the model verbatim and outranks the card
+    /// budget — one operative count, never two. A deck requested without a
+    /// brief keeps the plain budget line and no empty instructions header.
+    @Test func instructionsReachThePromptAndOutrankTheBudget() async throws {
+        let (database, vault) = try scratch()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        try seedTask(database, key: "sem:fsrs", name: "FSRS internals", blocks: 1)
+        let deckKey = try #require(try DeckStore.create(
+            title: "FSRS internals", taskKey: "sem:fsrs",
+            instructions: "Make just 3-4 cards.",
+            database: database, now: now))
+        let backend = DeckBackend(response: cardsResponse(["stability"]))
+
+        _ = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: vault, backend: backend, now: now)
+        #expect(backend.prompts[0].contains("Make just 3-4 cards."))
+        #expect(backend.prompts[0].contains("They outrank every other rule"))
+        // The budget line itself yields, right where the count is decided.
+        #expect(backend.prompts[0].contains("their count wins"))
+        // Nothing written yet, so no bookkeeping parenthetical.
+        #expect(!backend.prompts[0].contains("earlier passes"))
+
+        let plain = DeckBuilder.prompt(
+            title: "FSRS internals", taskName: "FSRS internals", instructions: nil,
+            blocks: [DeckBuilder.BlockText(id: 1, text: "screen text")])
+        #expect(!plain.contains("outrank"))
+        #expect(plain.contains("Write at most \(DeckBuilder.maxCardsPerBatch) cards."))
+        #expect(!plain.contains("their count wins"))
+    }
+
+    /// A picked range replaces the per-response budget in the prompt, and its
+    /// top is a *hard* ceiling: overshoot is trimmed at save, and a full deck
+    /// skips its remaining batches without another model call.
+    @Test func cardRangeIsEnforcedNotJustRequested() async throws {
+        let (database, vault) = try scratch()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        try seedTask(database, key: "sem:fsrs", name: "FSRS internals", blocks: 6,
+                     textChars: 2_000)
+        let deckKey = try #require(try DeckStore.create(
+            title: "FSRS internals", taskKey: "sem:fsrs",
+            cardRange: DeckStore.CardRange(lower: 3, upper: 5),
+            database: database, now: now))
+        // Ten distinct cards on offer — a model ignoring the range outright.
+        let backend = DeckBackend(
+            response: cardsResponse((0..<10).map { "topic-\($0)" }),
+            window: DeckBuilder.responseTokens + 1_200)
+
+        let written = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: vault, backend: backend, now: now)
+        #expect(written == 5)
+        #expect(try vault.deckNotes(deckKey: deckKey).count == 5)
+        // The blocks split into more than one batch (see
+        // batchesSplitUnderATinyWindow), but a full deck stops the loop.
+        #expect(backend.calls == 1)
+        #expect(backend.prompts[0].contains("Write between 3 and 5 cards in total"))
+        #expect(!backend.prompts[0].contains("Write at most"))
+        #expect(try DeckStore.decks(database: database)[0].status == .ready)
+    }
+
+    /// Under-delivery keeps the build going: a later batch runs and is told
+    /// the running total, so the range stays a deck total across responses.
+    @Test func rangeShortfallCarriesTheRunningTotalForward() async throws {
+        let (database, vault) = try scratch()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        try seedTask(database, key: "sem:fsrs", name: "FSRS internals", blocks: 6,
+                     textChars: 2_000)
+        let deckKey = try #require(try DeckStore.create(
+            title: "FSRS internals", taskKey: "sem:fsrs",
+            cardRange: DeckStore.CardRange(lower: 3, upper: 5),
+            database: database, now: now))
+        // One card per response, deduped to itself — always under the range.
+        let backend = DeckBackend(response: cardsResponse(["stability"]),
+                                  window: DeckBuilder.responseTokens + 1_200)
+
+        _ = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: vault, backend: backend, now: now)
+        #expect(backend.calls > 1)
+        #expect(!backend.prompts[0].contains("already written"))
+        #expect(backend.prompts[1].contains("1 already written in earlier responses"))
+    }
+
+    /// A count in the brief is a deck total, so each batch after the first is
+    /// told what already exists — without that, "3-4 cards" would quietly
+    /// mean 3-4 *per batch*.
+    @Test func laterBatchesKnowWhatEarlierOnesWrote() async throws {
+        let (database, vault) = try scratch()
+        defer { try? FileManager.default.removeItem(at: vault.root) }
+        try seedTask(database, key: "sem:fsrs", name: "FSRS internals", blocks: 6,
+                     textChars: 2_000)
+        let deckKey = try #require(try DeckStore.create(
+            title: "FSRS internals", taskKey: "sem:fsrs",
+            instructions: "Make just 3-4 cards.",
+            database: database, now: now))
+        let backend = DeckBackend(response: cardsResponse(["stability"]),
+                                  window: DeckBuilder.responseTokens + 1_200)
+
+        _ = try await DeckBuilder.build(
+            deckKey: deckKey, database: database, vault: vault, backend: backend, now: now)
+        #expect(backend.calls > 1)
+        #expect(!backend.prompts[0].contains("earlier passes"))
+        // Every batch returns the same card, so exactly one is ever written.
+        #expect(backend.prompts[1].contains("(1 card from earlier passes"))
+    }
+
     @Test func lowConfidenceAndQAlessCandidatesAreDropped() async throws {
         let (database, vault) = try scratch()
         defer { try? FileManager.default.removeItem(at: vault.root) }

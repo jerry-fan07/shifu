@@ -359,8 +359,12 @@ for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
 **`decks`** (v18, unique `key` *and* `task_key` — one deck per task; status
 `pending → building → ready`, advanced only through `DeckStore`'s
 compare-and-set, which is what keeps two analyzer processes from building the
-same deck. No `card_count` column on purpose: review-time pruning would make a
-stored count wrong within the session, so it is always derived from
+same deck. v20 adds the optional `instructions` brief from the New deck page,
+stored on the row so drain retries in other processes still build what the
+user described; v21 adds its `cards_min`/`cards_max` range — both NULL is
+automatic, and `cards_max` is enforced by `DeckBuilder`, not just prompted
+for. No `card_count` column on purpose: review-time pruning would
+make a stored count wrong within the session, so it is always derived from
 `vault_index.deck_key`) and **`deck_suggestions`** (v18, unique **`task_key`**
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated

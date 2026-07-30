@@ -60,6 +60,43 @@ import Testing
         #expect(decks[0].cardCount == 0)
     }
 
+    /// The New deck page's whole form lands on the row: instructions and the
+    /// review settings chosen before the deck exists, with blank instructions
+    /// stored as NULL rather than "".
+    @Test func createCarriesInstructionsAndSettings() throws {
+        let (database, _) = try scratch()
+        try seedTask(database, key: "sem:rust-book", name: "Rust book")
+        try seedTask(database, key: "sem:plain", name: "Plain")
+
+        let deckKey = try #require(try DeckStore.create(
+            title: "Ownership", taskKey: "sem:rust-book",
+            instructions: "  Only the ownership rules, skip the tooling.  ",
+            cardRange: DeckStore.CardRange(lower: 3, upper: 5),
+            newPerDay: nil, paused: true, database: database))
+        let deck = try #require(try DeckStore.deck(taskKey: "sem:rust-book",
+                                                   database: database))
+        #expect(deck.instructions == "Only the ownership rules, skip the tooling.")
+        #expect(deck.cardRange == DeckStore.CardRange(lower: 3, upper: 5))
+        #expect(deck.newPerDay == nil)
+        #expect(deck.paused == true)
+
+        // The brief and range ride the claim — a drain retry in another
+        // process must still build the deck the user described.
+        let claim = try #require(try DeckStore.claimForBuild(key: deckKey,
+                                                             database: database))
+        #expect(claim.instructions == "Only the ownership rules, skip the tooling.")
+        #expect(claim.cardRange == DeckStore.CardRange(lower: 3, upper: 5))
+
+        // The defaults are what the task page and suggestion accept get.
+        try DeckStore.create(title: "Plain", taskKey: "sem:plain", database: database)
+        let plain = try #require(try DeckStore.deck(taskKey: "sem:plain",
+                                                    database: database))
+        #expect(plain.instructions == nil)
+        #expect(plain.cardRange == nil)
+        #expect(plain.newPerDay == DeckStore.defaultNewPerDay)
+        #expect(plain.paused == false)
+    }
+
     /// The JOIN, not a delete, is what hides a deck whose task went away —
     /// the cards stay in the vault and keep serving the All queue.
     @Test func deckForAPrunedTaskDropsOutOfTheListButKeepsItsRow() throws {

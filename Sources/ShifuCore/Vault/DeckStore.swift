@@ -34,6 +34,27 @@ public enum DeckStore {
     /// all at once; the deck page can raise it, lower it, or lift it.
     public static let defaultNewPerDay = 20
 
+    /// How many cards the user asked the deck to hold. A range, not a number,
+    /// because a model can honour "5-10" where it cannot hit "7"; `upper` is
+    /// also enforced in code by the builder, so it is a real ceiling. Absent
+    /// entirely for automatic sizing — the builder judges, no hard limit.
+    public struct CardRange: Hashable, Sendable {
+        public var lower: Int
+        public var upper: Int
+
+        public init(lower: Int, upper: Int) {
+            self.lower = lower
+            self.upper = upper
+        }
+
+        /// Both columns or neither: a lone bound is a write-path bug read
+        /// back as automatic rather than as a crash.
+        init?(lower: Int?, upper: Int?) {
+            guard let lower, let upper else { return nil }
+            self.init(lower: lower, upper: upper)
+        }
+    }
+
     /// One deck as the UI sees it. `cardCount` is derived from `vault_index`
     /// on every read, never stored — the user prunes cards during review, so a
     /// stored count would start drifting the moment the feature is used as
@@ -52,6 +73,11 @@ public enum DeckStore {
         public var paused: Bool
         /// Nil is uncapped.
         public var newPerDay: Int?
+        /// What the user asked the deck to be about, verbatim; the builder
+        /// folds it into its prompt. Nil when none were given.
+        public var instructions: String?
+        /// How many cards were asked for. Nil is automatic — no hard limit.
+        public var cardRange: CardRange?
     }
 
     /// The deck row the builder works from. No task name: a claim must not
@@ -62,6 +88,12 @@ public enum DeckStore {
         public var key: String
         public var taskKey: String
         public var title: String
+        /// Rides the claim so a drain retry, in a process the page never
+        /// touched, still builds the deck the user described.
+        public var instructions: String?
+        /// Rides for the same reason; the builder holds `upper` as a hard
+        /// ceiling, not just a prompt line.
+        public var cardRange: CardRange?
     }
 
     /// One proposed card, shown on the suggestion before the user commits and
@@ -80,15 +112,6 @@ public enum DeckStore {
         }
     }
 
-    /// An open deck proposal awaiting Create/Dismiss on the Cards screen.
-    public struct PendingSuggestion: Identifiable, Sendable, Equatable {
-        public var id: Int64
-        public var taskKey: String
-        public var taskName: String
-        public var title: String
-        public var samples: [SampleCard]
-    }
-
     /// `deck:` + the task key's slug. Derived from the (already unique) task
     /// key and never from the title — see the v17 migration note.
     public static func key(forTaskKey taskKey: String) -> String {
@@ -104,7 +127,8 @@ public enum DeckStore {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
-                       d.paused, d.new_per_day, t.name AS task_name,
+                       d.paused, d.new_per_day, d.instructions, d.cards_min, d.cards_max,
+                       t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -119,7 +143,8 @@ public enum DeckStore {
         try database.queue.read { db in
             try Row.fetchOne(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
-                       d.paused, d.new_per_day, t.name AS task_name,
+                       d.paused, d.new_per_day, d.instructions, d.cards_min, d.cards_max,
+                       t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -136,132 +161,33 @@ public enum DeckStore {
         }
     }
 
-    /// Open proposals, oldest first. JOINs tasks for the same reason `decks`
-    /// does — a proposal for a task that no longer exists is noise.
-    public static func pendingSuggestions(database: ShifuDatabase) throws -> [PendingSuggestion] {
-        try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT s.id, s.task_key, s.title, s.sample_cards, t.name AS task_name
-                FROM deck_suggestions s JOIN tasks t ON t.key = s.task_key
-                WHERE s.status = 'new' ORDER BY s.created_at
-                """).compactMap { row in
-                guard let title = row["title"] as String?,
-                      let raw = row["sample_cards"] as String? else { return nil }
-                return PendingSuggestion(
-                    id: row["id"], taskKey: row["task_key"], taskName: row["task_name"],
-                    title: title, samples: decodeSamples(raw))
-            }
-        }
-    }
-
-    /// How many open proposals are actually shown to the user. Counts only
-    /// rows that still JOIN a live task, so an orphan can never consume the
-    /// suggester's cap — belt to `TaskPrune`/`TaskMerging`'s suspenders.
-    public static func openSuggestionCount(database: ShifuDatabase) throws -> Int {
-        try database.queue.read { db in
-            try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM deck_suggestions s JOIN tasks t ON t.key = s.task_key
-                WHERE s.status = 'new'
-                """) ?? 0
-        }
-    }
-
-    /// Task keys with a deck or a suggestion of any status — the suggester
-    /// skips all of them, so a dismissal or a `worth: false` verdict is never
-    /// re-billed.
-    public static func spokenForTaskKeys(database: ShifuDatabase) throws -> Set<String> {
-        try database.queue.read { db in
-            var keys = Set(try String.fetchAll(db, sql: "SELECT task_key FROM decks"))
-            keys.formUnion(try String.fetchAll(db, sql: "SELECT task_key FROM deck_suggestions"))
-            return keys
-        }
-    }
-
-    // MARK: - Suggestions
-
-    /// Files a proposal the suggester judged worth building.
-    public static func suggest(
-        taskKey: String, title: String, samples: [SampleCard],
-        database: ShifuDatabase, now: Date = Date()
-    ) throws {
-        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
-        let json = encodeSamples(samples)
-        try database.queue.write { db in
-            try db.execute(sql: """
-                INSERT INTO deck_suggestions (task_key, title, sample_cards, status, created_at)
-                VALUES (?, ?, ?, 'new', ?)
-                ON CONFLICT(task_key) DO NOTHING
-                """, arguments: [taskKey, title, json, nowMs])
-        }
-    }
-
-    /// Records that the model judged a task not worth a deck. The row is the
-    /// memory: a declined task is never evaluated again, which is what keeps
-    /// the weekly probe from re-billing the same verdict forever.
-    public static func decline(
-        taskKey: String, database: ShifuDatabase, now: Date = Date()
-    ) throws {
-        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
-        try database.queue.write { db in
-            try db.execute(sql: """
-                INSERT INTO deck_suggestions (task_key, status, created_at)
-                VALUES (?, 'declined', ?)
-                ON CONFLICT(task_key) DO NOTHING
-                """, arguments: [taskKey, nowMs])
-        }
-    }
-
-    /// The user said no. Like a declined row this is permanent — the task
-    /// page's Create button is the escape hatch.
-    public static func dismiss(suggestionID: Int64, database: ShifuDatabase) throws {
-        try database.queue.write { db in
-            try db.execute(sql: "UPDATE deck_suggestions SET status = 'dismissed' WHERE id = ?",
-                           arguments: [suggestionID])
-        }
-    }
-
-    /// The user said yes: mint the deck `pending`, write the sample cards as
-    /// real kept cards (they were reviewable on the suggestion, so they are
-    /// reviewable now — the deck's build only adds to them), and close the
-    /// proposal. Returns the deck key for the caller to hand to `--build-deck`.
-    @discardableResult
-    public static func accept(
-        _ suggestion: PendingSuggestion, database: ShifuDatabase, vault: VaultStore,
-        now: Date = Date()
-    ) throws -> String? {
-        guard let deckKey = try create(title: suggestion.title, taskKey: suggestion.taskKey,
-                                       database: database, now: now) else { return nil }
-        for sample in suggestion.samples {
-            try write(sample, deckKey: deckKey, taskKey: suggestion.taskKey,
-                      vault: vault, now: now)
-        }
-        try database.queue.write { db in
-            try db.execute(sql: "UPDATE deck_suggestions SET status = 'accepted' WHERE id = ?",
-                           arguments: [suggestion.id])
-        }
-        return deckKey
-    }
-
     // MARK: - Decks
 
     /// Mints a deck for a task, or returns the key of the one already there —
     /// one deck per task, so pressing Create twice is a no-op rather than a
-    /// second deck (refresh/regeneration is deferred, design.md §12).
+    /// second deck (refresh/regeneration is deferred, design.md §12). The New
+    /// deck page passes the settings its form collected; the other routes
+    /// (task page, suggestion accept) take the defaults.
     @discardableResult
     public static func create(
-        title: String, taskKey: String, database: ShifuDatabase, now: Date = Date()
+        title: String, taskKey: String, instructions: String? = nil,
+        cardRange: CardRange? = nil, newPerDay: Int? = defaultNewPerDay,
+        paused: Bool = false, database: ShifuDatabase, now: Date = Date()
     ) throws -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        let brief = instructions?.trimmingCharacters(in: .whitespacesAndNewlines)
         let deckKey = key(forTaskKey: taskKey)
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         try database.queue.write { db in
             try db.execute(sql: """
                 INSERT INTO decks (key, task_key, title, status, status_at, created_at,
-                                   new_per_day)
-                VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                                   new_per_day, paused, instructions, cards_min, cards_max)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO NOTHING
-                """, arguments: [deckKey, taskKey, trimmed, nowMs, nowMs, defaultNewPerDay])
+                """, arguments: [deckKey, taskKey, trimmed, nowMs, nowMs, newPerDay,
+                                 paused, brief?.isEmpty == false ? brief : nil,
+                                 cardRange?.lower, cardRange?.upper])
         }
         return deckKey
     }
@@ -360,9 +286,15 @@ public enum DeckStore {
                 """, arguments: [nowMs, deckKey, nowMs - staleClaimMs])
             guard db.changesCount == 1 else { return nil }
             return try Row.fetchOne(
-                db, sql: "SELECT key, task_key, title FROM decks WHERE key = ?",
+                db, sql: """
+                    SELECT key, task_key, title, instructions, cards_min, cards_max
+                    FROM decks WHERE key = ?
+                    """,
                 arguments: [deckKey]
-            ).map { Claim(key: $0["key"], taskKey: $0["task_key"], title: $0["title"]) }
+            ).map { Claim(key: $0["key"], taskKey: $0["task_key"], title: $0["title"],
+                          instructions: $0["instructions"],
+                          cardRange: CardRange(lower: $0["cards_min"],
+                                               upper: $0["cards_max"])) }
         }
     }
 
@@ -408,18 +340,8 @@ public enum DeckStore {
              status: Status(rawValue: row["status"]) ?? .pending,
              createdAt: row["created_at"], builtAt: row["built_at"],
              cardCount: row["card_count"], paused: row["paused"],
-             newPerDay: row["new_per_day"])
+             newPerDay: row["new_per_day"], instructions: row["instructions"],
+             cardRange: CardRange(lower: row["cards_min"], upper: row["cards_max"]))
     }
 
-    static func encodeSamples(_ samples: [SampleCard]) -> String {
-        guard let data = try? JSONEncoder().encode(samples) else { return "[]" }
-        return String(data: data, encoding: .utf8) ?? "[]"
-    }
-
-    static func decodeSamples(_ json: String) -> [SampleCard] {
-        guard let data = json.data(using: .utf8),
-              let samples = try? JSONDecoder().decode([SampleCard].self, from: data)
-        else { return [] }
-        return samples
-    }
 }
