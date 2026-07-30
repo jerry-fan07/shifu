@@ -108,8 +108,69 @@ Subscribed via cheap system notification APIs — all of these cost ~nothing whi
 | Content settled after interaction | user-input quiet period (2 s after last HID activity, via `CGEventSource.secondsSinceLastEventType` checked lazily) | — |
 | Heartbeat | timer, only if none of the above fired | every 60 s while non-idle |
 | Idle detection | no HID input for 5 min → suspend all capture | — |
+| Screen lock / user switch | screen locked, or another session on the console → tear capture down; back up when that clears. Re-decided on `com.apple.screenIsLocked`/`Unlocked`, `NSWorkspace.didWake`, session resign/become active | — |
 
 There is **no fixed screenshot interval**. A user reading one page for 10 minutes generates one capture, not 600.
+
+The locked screen is a separate rung from idle detection because **idle detection does not
+cover it**. `CGEventSource.secondsSinceLastEventType` reports the *user session's* HID idle
+time, and at the lock screen that session is not the one receiving events, so the counter
+never crosses the 5-minute threshold. The heartbeat then samples `loginwindow` every interval;
+each sample is a near-duplicate of the last (both content-free `meta`) and every dedupe hit
+slides the row's TTL forward again, so `ObservationRecorder` keeps bumping one row's
+`last_seen` for as long as the machine stays locked — the dogfood ledger grew a single
+observation spanning 60 hours, and the 60-hour activity block built from it. Tearing capture
+down breaks the loop: with no heartbeat there is nothing to bump, the row's dedupe TTL expires
+during the gap, and the next capture starts a fresh observation that the sessionizer reads as a
+new block.
+
+**Sleep is not on this list, deliberately.** It needs no handling of its own: while a machine
+is asleep nothing executes — no timer fires, no capture is taken, no `last_seen` is bumped —
+and on wake the wall clock has moved past the dedupe TTL, so the next capture inserts a new row
+and the sessionizer splits the block there. The gap ends the session by itself. Adding a
+sleep/wake state on top bought nothing and cost the correctness of the case below, so it was
+removed.
+
+What sleep *does* do is deliver a wake **while the screen is still locked** — the ordinary case
+on a machine that autolocks. So `didWake` is subscribed, but only as a trigger to re-decide,
+never as a resume: *waking is not unlocking.* `didWake` arrives while the password prompt is
+still up, seconds later if you are sitting there and hours later if the lid was bumped or a
+scheduled wake fired, and a daemon that treated it as a resume would hand the heartbeat straight
+back to `loginwindow` for the rest of the lock.
+
+That case is what shapes the state, or rather the absence of it: **every reason capture is down
+is queried, not remembered**, and capture returns only when all of them have cleared
+(`Daemon.syncCapture`, the sole caller of the start/stop pair). The screen lock and console
+ownership come from the window server (`CGSSessionScreenIsLocked`, `kCGSSessionOnConsoleKey`) and
+the pause from its control file (§8). So no reason can clear another's teardown, ordering between
+notifications stops mattering, and a daemon launched while the machine already sits locked needs
+no special case. Both window-server flags fall back to "don't suspend" when absent, which is the
+safe direction — an unreadable key degrades to capturing a stray lock-screen block, filtered from
+every display (§7), rather than to silently capturing nothing at all.
+
+**While the window server is what holds capture down, the daemon re-asks every 5 s**
+(`Daemon.syncRecheckTimer`), and *that* is what ends the suspension — the notifications are only
+an optimization for how fast it notices. This is measured, not defensive, over four real
+lock/unlock trials (2026-07-29, macOS 26):
+
+- **Locking is reliable.** Every trial suspended capture the same second the screen locked, and
+  held it clean: 16 minutes locked with not one row inserted and no `last_seen` bumped, where
+  roughly sixteen heartbeats would each have bumped it before. A daemon *launched* into a locked
+  machine took zero captures — no lock edge to hear, and the query caught it anyway.
+- **Unlocking is not.** One trial delivered `com.apple.screenIsUnlocked` with the flag already
+  clear and capture returned in about a second. Another never resumed at all — still suspended
+  13 seconds after the unlock, which is where this timer came from. So the notification *is*
+  delivered on this OS but is **not ordered against the flag it describes**, and a re-decide
+  prompted by it can read a screen that still says locked.
+
+Querying rather than remembering keeps the answer from being *wrong*; nothing about it makes the
+answer *timely*, and a suspension that cannot end itself is silent data loss — worse than the
+marathon block this rung exists to prevent. The asymmetry is the whole argument: a missed lock
+costs one lock-screen block that no page charts anyway (§7), while a missed unlock costs every
+observation until the daemon restarts. The recheck costs one dictionary read per interval and
+only while the machine is locked or switched away, which is exactly when nothing else is
+happening; it never captures, it only re-decides. Timer throttling under lock doesn't weaken it
+either — the run loop unfreezes at the unlock, which is precisely when the recheck is needed.
 
 ### 3.2 Capture ladder (what we grab, cheapest first)
 
@@ -234,7 +295,7 @@ A: `SCScreenshotManager` (macOS 14+).
 
 The vault is a work database, not just flashcards:
 
-- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The prompt is built around what a human watching over your shoulder actually uses (`SemanticTaskEvidence.swift`). **The roster is a weighted prior, not a list of names**: every entry carries its minutes and days logged over the 14-day window, days since last worked, and the domains its time actually went to — so a `partiful.com` block matches the task that already lives there, not merely the one whose title reads closest. **Work is sticky**: the already-grouped blocks on either side of a batch ride along read-only (id-less, so they can't be re-assigned), with the instruction to prefer the surrounding task when a block's own evidence is thin — the strongest cue a human has, since switches are punctuated events. That prior is explicitly **fenced against interruptions**: a short messaging/social/entertainment detour between two stretches of one task is a break from it, never part of it — the *return* is the continuity evidence, not the detour. **The evidence per block is denser at the same token cost**: observations are sampled across the block's whole span (first, last, and an even fan between) instead of its opening minutes, and browser blocks carry sanitized page identities (`github.com/org/repo` — origin plus two path segments, query and fragment dropped, then re-redacted, since `observations.url` is stored raw) instead of the bare host. Everything stays token-budgeted (CLAUDE.md invariant 7): backends under 16k context get the compact tier — the twelve heaviest tasks, names and gists only, and a shorter context section — which keeps on-device Foundation Models' 4k window in budget. The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, never hand-filed tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. System shell surfaces — the lock screen, the Dock, one-shot dialogs, Shifu's own UI, bundle-less `unknown.<pid>` processes — are denylisted from grouping outright (`TaskGrouper.isSystemBundle`): they carry no topic or domain, so they'd bottom out at the `app:` key and mint permanent nonsense tasks ("loginwindow") that accrue time daily and never go stale; their blocks keep ledger time but never mint or join a task, and prune reaps ones minted before the list existed regardless of size, recency, or theme filing (the denylist starves them of new blocks anyway) — only a rename spares one. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
+- **Tasks**: the analyzer groups activities into ongoing tasks. With an LLM backend, `SemanticTaskGrouper` assigns blocks to *intent-level* tasks — "Applying to YC afterparties", "Booking flights for the trip" — spanning apps and domains: each block's evidence plus a roster of recent semantic tasks goes to the model, which joins existing tasks or mints new ones (title + one-line gist), confidence-gated (0.6) and attempt-capped (3, like §4.2's classifier). The prompt is built around what a human watching over your shoulder actually uses (`SemanticTaskEvidence.swift`). **The roster is a weighted prior, not a list of names**: every entry carries its minutes and days logged over the 14-day window, days since last worked, and the domains its time actually went to — so a `partiful.com` block matches the task that already lives there, not merely the one whose title reads closest. **Work is sticky**: the already-grouped blocks on either side of a batch ride along read-only (id-less, so they can't be re-assigned), with the instruction to prefer the surrounding task when a block's own evidence is thin — the strongest cue a human has, since switches are punctuated events. That prior is explicitly **fenced against interruptions**: a short messaging/social/entertainment detour between two stretches of one task is a break from it, never part of it — the *return* is the continuity evidence, not the detour. **The evidence per block is denser at the same token cost**: observations are sampled across the block's whole span (first, last, and an even fan between) instead of its opening minutes, and browser blocks carry sanitized page identities (`github.com/org/repo` — origin plus two path segments, query and fragment dropped, then re-redacted, since `observations.url` is stored raw) instead of the bare host. Everything stays token-budgeted (CLAUDE.md invariant 7): backends under 16k context get the compact tier — the twelve heaviest tasks, names and gists only, and a shorter context section — which keeps on-device Foundation Models' 4k window in budget. The verdict lands in `activities.sem_key`, carried across rebuilds by span identity. Blocks the model can't place — and all blocks when no backend is configured — fall back to the mechanical key: classified topic, else domain, else app (`TaskGrouper`). The fallback is hardened against fragmentation: the classifier prompt lists recent topics and the model repeats one verbatim when a block continues that effort (keys only recur if wording recurs), a never-seen mechanical key mints a task only once a window shows ≥ 5 min behind it (`minNewTaskMs`), and sub-threshold, never-renamed, never hand-filed tasks inactive for a week are pruned (`TaskStore.prune`) — passing subjects stay task-less while their time still counts in the ledger. System shell surfaces — the lock screen, the Dock, one-shot dialogs, Shifu's own UI, bundle-less `unknown.<pid>` processes — are denylisted from grouping outright (`TaskGrouper.isSystemBundle`): they carry no topic or domain, so they'd bottom out at the `app:` key and mint permanent nonsense tasks ("loginwindow") that accrue time daily and never go stale; their blocks keep their ledger rows and their category but never mint or join a task, and are not charted on the Time page either (§7 — the same denylist, as `notSystemBundleSQL`), and prune reaps ones minted before the list existed regardless of size, recency, or theme filing (the denylist starves them of new blocks anyway) — only a rename spares one. Tasks span days (the key recurs), are renameable, and renames survive re-analysis (keys never overwrite names, and the semantic pass never overwrites either).
 - **Work logs**: one compiled log row per task per local day (`task_logs`): duration plus a "where — what" line ("Xcode, github.com — debugging capture daemon"). Rebuilt idempotently for every day an analyzer window touches; `private` time never becomes a task.
 - **Themes** (replaced projects, v14): the broad initiatives blocks cluster into (`ThemeClusterer`), which is also what the user files a task under by hand. Filing is per block, so a task's theme is the one its time mostly sits in; filing one from the Task log writes all of that task's blocks and sets `theme_user_set`, the bit prune and auto-merge read as "the user judged this". A theme's tasks also form a review deck (§5.2).
 - **Vault tab** shows today's compiled log (most recently worked task first) and the task list with its latest log line, behind a Themes / Task log toggle. Inbox triage lives on the *Cards* tab with the decks.
@@ -382,6 +443,7 @@ Shifu is a full desktop app with a menu bar companion, and it is not a window th
   - *Summary* — where the time went. A hero total with its change against the same window before it, a donut, and one row per group: color, name, duration, share, a proportional bar, expanding into the apps and domains inside it, its block count, and the hour it peaked. This is what makes "3 h 10 m of today was work, and 40 m of that was Chrome" a thing you can read at a glance.
   - *Timeline* — when it happened. Stacked bars over the hours or days, plus the block list. Its legend carries each group's total, so the strip under the chart is a breakdown rather than a color key.
   - A group wears the same color in both modes. Every chart hue comes from the eight `Dojo.chartSlots`, validated for color-vision-deficiency separation (adjacent ΔE ≥ 12) and ≥3:1 contrast on both surfaces, with light and dark steps chosen separately. Category hues are fixed — work wears the accent terracotta — while theme/task hues come from a stable hash of the name so a theme keeps its color as the window changes. Past the top 7 groups everything folds into "Other" rather than growing the palette.
+  - **System shells are not charted.** Both reads behind the page (`LedgerBuilder.labeledActivities` and `.totals`, so Today's rings, the menu bar's hours and the digest agree with it) apply the same denylist that bars those bundles from task grouping (`TaskGrouper.notSystemBundleSQL`, §5.3). Their rows stay in the ledger, but the lock screen, the Dock, auth prompts and Shifu's own UI are not groups any lens can name, and charting them puts hours on screen that the Task log has no row for. Not a rounding difference: the dogfood ledger held 849 h of `loginwindow`, enough that opening Time on one of those days showed nothing else at all.
 - **Review session**: minimal card interface (see §5.2), also openable as its own small window from the menu bar.
 - **Onboarding**: a 4-screen flow in the sensei's voice that (1) explains exactly what is and isn't captured, (2) requests Screen Recording + Accessibility permissions, (3) sets exclusions (password managers, banking category, private browsing), (4) picks analysis backend (local-only default). The banner scene walks dusk → night → dawn → day across the four steps, so finishing lands you on a morning.
 

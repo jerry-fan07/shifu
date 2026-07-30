@@ -12,12 +12,23 @@ final class PauseController {
     private var resumeTimer: Timer?
     private var wasPaused = false
 
-    var pausedUntil: Date? { PauseFile.expiry() }
+    /// Where `pause_until` lives, or nil for the real `~/Shifu` — the same
+    /// override every `PauseFile` entry point takes, and for the same reason: a
+    /// test can point one controller somewhere else without mutating
+    /// `SHIFU_HOME`, which is process-global and serializes everything that
+    /// touches it.
+    private let home: URL?
+
+    init(home: URL? = nil) {
+        self.home = home
+    }
+
+    var pausedUntil: Date? { PauseFile.expiry(home: home) }
 
     var isPaused: Bool { pausedUntil != nil }
 
     func startWatching() {
-        let fd = open(ShifuPaths.home.path, O_EVTONLY)
+        let fd = open((home ?? ShifuPaths.home).path, O_EVTONLY)
         guard fd >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.write], queue: .main

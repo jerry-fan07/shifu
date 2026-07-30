@@ -137,17 +137,16 @@ extension PatternMiner {
     private static func taskBlocks(
         _ db: Database, taskID: Int64, from: Int64, to: Int64
     ) throws -> [Block] {
-        let denied = TaskGrouper.systemBundles.sorted()
+        let denied = TaskGrouper.notSystemBundleSQL()
         return try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, domain, category
             FROM activities
             WHERE task_id = ? AND ended_at > ? AND started_at < ?
               AND category != 'private'
-              AND LOWER(app_bundle) NOT LIKE 'unknown.%'
-              AND LOWER(app_bundle) NOT LIKE 'com.shifu.%'
-              AND LOWER(app_bundle) NOT IN (\(databaseQuestionMarks(count: denied.count)))
+              AND \(denied.clause)
             ORDER BY started_at
-            """, arguments: [taskID, from, to] + StatementArguments(denied)).map(block)
+            """, arguments: [taskID, from, to]
+                + StatementArguments(denied.arguments)).map(block)
     }
 
     private static func block(_ row: Row) -> Block {
