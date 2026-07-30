@@ -194,22 +194,43 @@ public enum LedgerBuilder {
         public var themeName: String?
 
         public var durationMs: Int64 { endedAt - startedAt }
+
+        public init(
+            id: Int64, startedAt: Int64, endedAt: Int64, category: String, source: String,
+            taskName: String? = nil, themeName: String? = nil
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.category = category
+            self.source = source
+            self.taskName = taskName
+            self.themeName = themeName
+        }
     }
 
     /// Labeled activities overlapping [from, to), oldest first.
+    ///
+    /// System shells are left out (`TaskGrouper.isSystemBundle`). They are
+    /// barred from task grouping, so counting them here charts hours the Task
+    /// log has no row for — and the lock screen is not a group the user can
+    /// reach through any lens. It is not a rounding difference: the dogfood
+    /// ledger held 849 h of `loginwindow`, enough that opening the Time page on
+    /// one of those days showed nothing else at all.
     public static func labeledActivities(
         database: ShifuDatabase, from: Int64, to: Int64
     ) throws -> [LabeledActivity] {
-        try database.queue.read { db in
+        let denied = TaskGrouper.notSystemBundleSQL(column: "a.app_bundle")
+        return try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT a.id, a.started_at, a.ended_at, a.category, a.domain, a.app_bundle,
                        t.name AS task_name, th.name AS theme_name
                 FROM activities a
                 LEFT JOIN tasks t ON t.id = a.task_id
                 LEFT JOIN themes th ON th.key = a.theme_key
-                WHERE a.ended_at > ? AND a.started_at < ?
+                WHERE a.ended_at > ? AND a.started_at < ? AND \(denied.clause)
                 ORDER BY a.started_at
-                """, arguments: [from, to]
+                """, arguments: [from, to] + StatementArguments(denied.arguments)
             ).map { row in
                 let bundle: String = row["app_bundle"]
                 return LabeledActivity(
@@ -222,16 +243,20 @@ public enum LedgerBuilder {
         }
     }
 
-    /// Category totals (ms) for activities overlapping [from, to) — dashboard fuel.
+    /// Category totals (ms) for activities overlapping [from, to) — dashboard
+    /// fuel. Skips system shells for the same reason `labeledActivities` does,
+    /// so Today's rings, the menu bar's hours and the digest agree with the
+    /// Time page rather than each counting a different day.
     public static func totals(
         database: ShifuDatabase, from: Int64, to: Int64
     ) throws -> [Category: Int64] {
+        let denied = TaskGrouper.notSystemBundleSQL()
         let rows = try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT category, SUM(MIN(ended_at, ?) - MAX(started_at, ?)) AS ms
-                FROM activities WHERE ended_at > ? AND started_at < ?
+                FROM activities WHERE ended_at > ? AND started_at < ? AND \(denied.clause)
                 GROUP BY category
-                """, arguments: [to, from, from, to])
+                """, arguments: [to, from, from, to] + StatementArguments(denied.arguments))
         }
         var totals: [Category: Int64] = [:]
         for row in rows {

@@ -1,9 +1,9 @@
 import ShifuCore
 import SwiftUI
 
-/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One green
-/// hue, light→dark with count (sequential ramp); zero-days sit on the
-/// recessive surface. Tooltips carry the exact numbers.
+/// GitHub-style calendar heatmap of reviews per day, last 26 weeks. One hue —
+/// the accent terracotta — light→dark with count (sequential ramp); zero-days
+/// sit on the recessive surface. Tooltips carry the exact numbers.
 struct ReviewHeatmapView: View {
     let counts: [Date: Int]
     var now: Date = Date()
@@ -122,10 +122,10 @@ struct ReviewHeatmapView: View {
     static func rampColor(_ count: Int) -> Color {
         switch count {
         case 0: return Color.primary.opacity(0.06)
-        case 1...2: return .green.opacity(0.30)
-        case 3...5: return .green.opacity(0.55)
-        case 6...9: return .green.opacity(0.80)
-        default: return .green
+        case 1...2: return Dojo.accent.opacity(0.30)
+        case 3...5: return Dojo.accent.opacity(0.55)
+        case 6...9: return Dojo.accent.opacity(0.80)
+        default: return Dojo.accent
         }
     }
 }

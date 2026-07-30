@@ -54,6 +54,26 @@ public enum TaskGrouper {
         return systemBundles.contains(normalized)
     }
 
+    /// `isSystemBundle` as a SQL predicate, with the values it binds in order.
+    ///
+    /// Four queries have to agree with the Swift check — the Time page's two
+    /// reads (`LedgerBuilder`), the semantic candidate sweep, the radar dossier
+    /// — and a hand-copied `NOT LIKE`/`NOT IN` trio silently drifts the first
+    /// time a prefix family is added here. `column` is interpolated into SQL, so
+    /// it takes a literal column name from a caller in this package, never
+    /// user input.
+    public static func notSystemBundleSQL(
+        column: String = "app_bundle"
+    ) -> (clause: String, arguments: [String]) {
+        let denied = systemBundles.sorted()
+        let clause = """
+            LOWER(\(column)) NOT LIKE 'unknown.%'
+              AND LOWER(\(column)) NOT LIKE 'com.shifu.%'
+              AND LOWER(\(column)) NOT IN (\(databaseQuestionMarks(count: denied.count)))
+            """
+        return (clause, denied)
+    }
+
     /// What one `run` did: distinct task keys assigned in the window, and
     /// day-log rows rewritten across every local day those activities touched.
     public struct Summary: Equatable, Sendable {

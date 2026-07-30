@@ -282,6 +282,43 @@ import Testing
         #expect(rows[1].taskName == nil)
         #expect(rows[1].themeName == nil)
     }
+
+    /// The Time page reads through here, and `TaskGrouper` will never file a
+    /// system shell under a task — so counting one here would chart hours no
+    /// lens can name and no Task log row accounts for. The dogfood ledger held a
+    /// 60-hour `loginwindow` block, which on the Time page buried a real day.
+    @Test func systemShellsAreNotCharted() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            let seeded = [
+                Activity(startedAt: 0, endedAt: 60_000,
+                         appBundle: "com.apple.dt.Xcode", category: .work),
+                Activity(startedAt: 60_000, endedAt: 3_660_000,
+                         appBundle: "com.apple.loginwindow", category: .work),
+                Activity(startedAt: 3_660_000, endedAt: 3_690_000,
+                         appBundle: "com.apple.dock", category: .admin),
+                // Both prefix families, plus a bundle whose case doesn't match
+                // the list — the denylist is compared lowercased.
+                Activity(startedAt: 3_690_000, endedAt: 3_720_000,
+                         appBundle: "com.shifu.app", category: .work),
+                Activity(startedAt: 3_720_000, endedAt: 3_750_000,
+                         appBundle: "unknown.4213", category: .work),
+                Activity(startedAt: 3_750_000, endedAt: 3_780_000,
+                         appBundle: "com.apple.LoginWindow", category: .work)
+            ]
+            for var activity in seeded { try activity.insert(sqlite) }
+        }
+
+        let rows = try LedgerBuilder.labeledActivities(database: db, from: 0, to: 4_000_000)
+        #expect(rows.map(\.source) == ["Xcode"])
+
+        // Today's rings, the menu bar and the digest read `totals`; it has to
+        // agree with the page, or one screen's day is an hour longer than the
+        // other's.
+        let totals = try LedgerBuilder.totals(database: db, from: 0, to: 4_000_000)
+        #expect(totals[.work] == 60_000)
+        #expect(totals[.admin] == nil)
+    }
 }
 
 @Suite struct RetentionTests {

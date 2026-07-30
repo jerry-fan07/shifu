@@ -260,32 +260,34 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         #expect(markdown.contains("debugging shifu daemon"))
     }
 
+    /// The digest is the one thing that has to land in the real `~/Shifu`
+    /// layout, so this case moves `SHIFU_HOME` — through `ShifuHomeOverride`,
+    /// because that variable is process-global and another suite moving it
+    /// mid-test is enough to make `generate` write somewhere this can't read.
     @Test func generateWritesFileOncePerDay() throws {
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("shifu-digest-test-\(UUID().uuidString)")
-        setenv("SHIFU_HOME", scratch.path, 1)
-        defer {
-            unsetenv("SHIFU_HOME")
-            try? FileManager.default.removeItem(at: scratch)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        try ShifuHomeOverride.with(scratch.path) {
+            let db = try ShifuDatabase.inMemory()
+            let dayStart = Calendar.current.startOfDay(for: Date())
+            let base = Int64(dayStart.timeIntervalSince1970 * 1_000)
+            try db.queue.write { sqlite in
+                var activity = Activity(
+                    startedAt: base + 3_600_000, endedAt: base + 7_200_000,
+                    appBundle: "com.apple.dt.Xcode", category: .work, topic: "shifu phase 3")
+                try activity.insert(sqlite)
+            }
+
+            let first = try #require(try DigestGenerator.generate(database: db))
+            let contents = try String(contentsOf: first, encoding: .utf8)
+            #expect(contents.contains("**work**: 1.0 h"))
+            #expect(contents.contains("shifu phase 3"))
+
+            // Second run same day: idempotent, no rewrite.
+            let second = try DigestGenerator.generate(database: db)
+            #expect(second == nil)
         }
-
-        let db = try ShifuDatabase.inMemory()
-        let dayStart = Calendar.current.startOfDay(for: Date())
-        let base = Int64(dayStart.timeIntervalSince1970 * 1_000)
-        try db.queue.write { sqlite in
-            var activity = Activity(startedAt: base + 3_600_000, endedAt: base + 7_200_000,
-                                    appBundle: "com.apple.dt.Xcode", category: .work, topic: "shifu phase 3")
-            try activity.insert(sqlite)
-        }
-
-        let first = try DigestGenerator.generate(database: db)
-        #expect(first != nil)
-        let contents = try String(contentsOf: first!, encoding: .utf8)
-        #expect(contents.contains("**work**: 1.0 h"))
-        #expect(contents.contains("shifu phase 3"))
-
-        // Second run same day: idempotent, no rewrite.
-        let second = try DigestGenerator.generate(database: db)
-        #expect(second == nil)
     }
 }

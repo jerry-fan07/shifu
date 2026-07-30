@@ -17,7 +17,7 @@ did, learned, and worked toward*. Three properties define it:
 1. **Complete** — every non-private working session leaves a distilled trace
    (a work note, and for substantial tasks an overview document).
 2. **Queryable** — full-text (later semantic) search across everything, from the
-   CLI and the Vault tab. "What did I read about SQLite WAL?" has an answer.
+   CLI and the *Scrolls* page. "What did I read about SQLite WAL?" has an answer.
 3. **Organized by meaning** — sessions cluster into tasks by what they're
    *about*, not just which app was frontmost; tasks roll up into themes.
 
@@ -32,7 +32,7 @@ new capture, no new daemon code paths (invariant 1).
   summaries (§5.3).
 - Task filing with time totals and per-theme review decks (originally
   user-created projects; §5.3 replaced them with themes).
-- Vault tab: today's compiled log, recent tasks, themes.
+- Task log page: today's compiled log, recent tasks; themes on their own page.
 
 This spec builds on that baseline; nothing shipped is thrown away.
 
@@ -214,7 +214,7 @@ activities (per analyzer window)
   └─► DeckBuilder.drainPending ──► deck cards (§2.1c)
 
 weekly:
-  └─► DeckSuggester ────────► deck_suggestions → Cards home
+  └─► DeckSuggester ────────► deck_suggestions → Practice page
 
 on request (app launches `shifu-analyzer --build-deck <key>`):
   └─► DeckBuilder ──────────► deck cards, kept + FSRS-seeded
@@ -250,7 +250,7 @@ so the vault is queryable without ever locking users into the DB.
   `shifu vault reindex` rebuilds from zero; deleting the index loses nothing.
 - **CLI:** `shifu vault search <query> [--task] [--kind] [--since]`
   → ranked snippets with file paths.
-- **UI:** a search field on the Vault tab; results open the note in-place, with
+- **UI:** the *Scrolls* page is the search field; results open the note in-place, with
   "Reveal in Finder" for editing elsewhere.
 
 **Semantic search is a later phase** (§7): store an on-device sentence
@@ -365,22 +365,23 @@ caught up.
 
 ---
 
-## 6. UI (Vault tab)
+## 6. UI (the Scrolls and Task log pages)
 
-Stays one screen (design principle 2). Top to bottom:
+Written when both were one Vault tab; the redesign (design.md §7) split them into
+stations on the trail, but the contents and their order are unchanged.
 
-1. **Search field** (§4) — the tab's headline feature once this ships.
+1. **Search field** (§4) — now a page of its own, *Scrolls*.
 2. **Today** — compiled log, as today, but each row now opens its work note.
 3. **Tasks** — recent tasks with latest log line; the strongest few merge
    suggestions appear inline here (accept / dismiss), capped at
    `LedgerStore.suggestionLimit`. Everything past the cap is a
    "Review N more suggestions" row into **Merge review** (`MergeReviewView`) —
-   the one screen this tab is allowed to grow, because a queue that outnumbers
+   the one screen this page is allowed to grow, because a queue that outnumbers
    the task list can't be triaged inline and needs a bulk *Dismiss all*.
 4. **Projects** — time totals; each opens its project note; pending
    task-assignment suggestions inline (also capped, same review screen).
 
-Spaced repetition stays on the *Cards* tab (§5.2) — decks now select by
+Spaced repetition stays on the *Practice* page (§5.2) — decks now select by
 explicit `task_key`/project instead of slug matching.
 
 ---
@@ -427,7 +428,7 @@ exit criteria don't need).
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **V1 — Index & search** | `vault_index` + FTS5, reconcile pass, `shifu vault search`, Vault tab search field | A week-old fact is findable in one query from CLI and UI |
+| **V1 — Index & search** | `vault_index` + FTS5, reconcile pass, `shifu vault search`, the Scrolls page's search field | A week-old fact is findable in one query from CLI and UI |
 | **V2 — Work notes** | `WorkNoteCompiler`: deterministic line + LLM sessions, `## Captured` links, `task_key` frontmatter on knowledge notes, date-range delete covers notes | 1 week dogfooding: yesterday's work note answers "what did I do?" without opening the DB |
 | **V3 — Clustering** | Embedding assignment + centroids, merge suggestions, threshold setting | Two-slug-one-effort fragmentation visibly drops on dogfood data; zero unwanted merges (they're all manual) |
 | **V4 — Projects & semantic** | Project notes, project/task suggestions, `vault_vectors` + hybrid search | Project note is the honest one-page status of a real effort; a paraphrased query finds a note bm25 misses |

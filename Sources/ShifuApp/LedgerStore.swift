@@ -127,14 +127,8 @@ final class LedgerStore: ObservableObject {
     }
 
     func refresh() {
-        if let raw = try? String(contentsOf: ShifuPaths.pauseFile, encoding: .utf8),
-           let expiry = TimeInterval(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-           Date(timeIntervalSince1970: expiry) > Date() {
-            pausedUntil = Date(timeIntervalSince1970: expiry)
-        } else {
-            pausedUntil = nil
-        }
-        workModeOn = FileManager.default.fileExists(atPath: ShifuPaths.workModeFile.path)
+        pausedUntil = PauseFile.expiry()
+        workModeOn = WorkModeFile.isOn()
         refreshVaultNotes()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
@@ -254,6 +248,16 @@ final class LedgerStore: ObservableObject {
             database: database, filter: filter)) ?? []
         matchingTaskCount = (try? TaskStore.matchingTaskCount(
             database: database, filter: filter)) ?? filteredTasks.count
+    }
+
+    /// loadTasks(), one runloop turn later. The filter bar's `onChange` fires
+    /// inside SwiftUI's action-dispatch phase; republishing `filteredTasks`
+    /// there deletes List rows whose NavigationLink activation attributes that
+    /// same phase is still dispatching — AttributeGraph then reads a dead
+    /// attribute and crashes (EXC_BAD_ACCESS in
+    /// NavigationLinkListActivationModifier, macOS 26).
+    func loadTasksSoon() {
+        Task { @MainActor [weak self] in self?.loadTasks() }
     }
 
     /// "12 tasks", or "50 of 364" when the cap is hiding the rest — without

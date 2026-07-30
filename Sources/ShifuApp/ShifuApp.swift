@@ -1,16 +1,34 @@
 import ShifuCore
 import SwiftUI
 
-// Shifu.app — menu bar UI (design.md §7). One menu bar item, one window.
+// Shifu.app — a full desktop app with a menu bar companion (design.md §7).
+// The main window is the mountain itself, with the trail and the current
+// place's scroll over it; the menu bar item stays the always-visible surface
+// for state, pause, and Work Mode.
 @main
 struct ShifuApp: App {
-    @NSApplicationDelegateAdaptor(WindowActivationController.self) private var activation
     @StateObject private var store = LedgerStore()
     @StateObject private var settings = SettingsStore()
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        MenuBarExtra("Shifu", systemImage: store.isPaused ? "eye.slash" : "eye") {
+        Window("Shifu", id: "dashboard") {
+            MainWindow()
+                .environmentObject(store)
+                .task {
+                    // Menu opens refresh implicitly; the window polls gently.
+                    while !Task.isCancelled {
+                        store.refresh()
+                        try? await Task.sleep(for: .seconds(60))
+                    }
+                }
+        }
+        .defaultSize(width: 1_280, height: 820)
+        // The mountain runs to all four edges; a title bar would slice the top
+        // off the sky, and the window names its own place anyway.
+        .windowStyle(.hiddenTitleBar)
+
+        MenuBarExtra {
             Text(store.todaySummaryLine)
                 .onAppear {
                     store.refresh()       // menu open = refresh
@@ -50,46 +68,40 @@ struct ShifuApp: App {
                 }
             }
 
-            Button("Open Dashboard") {
+            Button("Open Shifu") {
                 openWindow(id: "dashboard")
                 NSApp.activate(ignoringOtherApps: true)
             }
 
-            Button("Settings…") {
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
+            SettingsLink {
+                Text("Settings…")
             }
 
             Divider()
 
             Button("Quit") { NSApplication.shared.terminate(nil) }
+        } label: {
+            if let mark = MenuBarMark.image(paused: store.isPaused) {
+                Image(nsImage: mark)
+                    .accessibilityLabel(store.isPaused ? "Shifu, resting" : "Shifu, watching")
+            } else {
+                Image(systemName: store.isPaused ? "zzz" : "mountain.2.fill")
+            }
         }
         .menuBarExtraStyle(.menu)
-
-        Window("Shifu", id: "dashboard") {
-            DashboardView()
-                .environmentObject(store)
-                .task {
-                    // Menu opens refresh implicitly; the window polls gently.
-                    while !Task.isCancelled {
-                        store.refresh()
-                        try? await Task.sleep(for: .seconds(60))
-                    }
-                }
-        }
-        .defaultSize(width: 720, height: 640)
 
         // Resizable: cards can carry code blocks and display math (§5.2).
         Window("Review", id: "review") {
             ReviewSessionView()
                 .environmentObject(store)
+                .tint(Dojo.accent)
         }
         .defaultSize(width: 520, height: 480)
 
-        Window("Settings", id: "settings") {
+        Settings {
             SettingsView()
                 .environmentObject(settings)
+                .tint(Dojo.accent)
         }
-        .defaultSize(width: 460, height: 520)
     }
 }

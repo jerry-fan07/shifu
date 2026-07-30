@@ -14,8 +14,37 @@ final class CaptureEngine {
     /// map is a bounded LRU rather than a plain dictionary.
     static let defaultDHashCacheCapacity = 256
 
+    /// Everything the ladder reads from outside this process, behind one seam.
+    ///
+    /// Production wires these straight to `AXHelper` and `OCRCapture`; the
+    /// point of the indirection is that the ladder's *ordering* is then an
+    /// assertion rather than a code review. Invariants 3 and 4 (design.md §8,
+    /// §3.2) are both statements about what is never *called* — an excluded
+    /// window must reach no reader at all — and a fake that records its calls
+    /// is the only way to state that as a test.
+    struct Probe {
+        var focusedWindow: (pid_t) -> AXUIElement?
+        var title: (AXUIElement) -> String?
+        var webAreaURL: (AXUIElement) -> String?
+        var extractText: (AXUIElement, Int) -> String
+        var enableWebAccessibility: (pid_t) -> Void
+        var ocrText: (pid_t) async throws -> OCRCapture.Result?
+
+        @MainActor
+        static func live() -> Probe {
+            let ocr = OCRCapture()
+            return Probe(
+                focusedWindow: { AXHelper.focusedWindow(pid: $0) },
+                title: { AXHelper.string($0, kAXTitleAttribute) },
+                webAreaURL: { AXHelper.webAreaURL(in: $0) },
+                extractText: { AXHelper.extractText(from: $0, byteCap: $1) },
+                enableWebAccessibility: { AXHelper.enableWebAccessibility(pid: $0) },
+                ocrText: { try await ocr.captureText(pid: $0) })
+        }
+    }
+
     private struct OCRTarget {
-        let app: NSRunningApplication
+        let pid: pid_t
         let bundle: String
         let title: String?
         let url: String?
@@ -25,9 +54,12 @@ final class CaptureEngine {
 
     private let recorder: ObservationRecorder
     private let exclusions: Exclusions
-    private let ocr = OCRCapture()
+    private let probe: Probe
     private var lastDHashByKey: BoundedLRUCache<String, UInt64>
     private var ocrInFlight = false
+    /// The in-flight OCR rung. Held only so a test can await the rung it just
+    /// triggered; nothing in the daemon reads it.
+    private(set) var ocrTask: Task<Void, Never>?
     /// Chromium pids already asked to build their web-content AX tree,
     /// paired with the process's launch date. macOS recycles pids (they
     /// wrap at ~100k), so a bare pid can't tell a live process from a dead
@@ -44,11 +76,13 @@ final class CaptureEngine {
     init(
         recorder: ObservationRecorder,
         exclusions: Exclusions,
-        dhashCacheCapacity: Int = CaptureEngine.defaultDHashCacheCapacity
+        dhashCacheCapacity: Int = CaptureEngine.defaultDHashCacheCapacity,
+        probe: Probe? = nil
     ) {
         self.recorder = recorder
         self.exclusions = exclusions
         self.lastDHashByKey = BoundedLRUCache(capacity: dhashCacheCapacity)
+        self.probe = probe ?? .live()
     }
 
     func captureFrontmost(trigger: String) {
@@ -57,9 +91,16 @@ final class CaptureEngine {
     }
 
     func capture(app: NSRunningApplication, trigger: String) {
+        capture(
+            bundle: app.bundleIdentifier ?? "unknown.\(app.processIdentifier)",
+            pid: app.processIdentifier, launchDate: app.launchDate, trigger: trigger)
+    }
+
+    /// The ladder itself, over an app's identity rather than its
+    /// `NSRunningApplication` — so it can be walked without one.
+    func capture(bundle: String, pid: pid_t, launchDate: Date?, trigger: String) {
         lastCaptureAt = Date()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
-        let bundle = app.bundleIdentifier ?? "unknown.\(app.processIdentifier)"
 
         // Rung 0: exclusion by bundle — nothing is captured, duration only (§8).
         if exclusions.isExcluded(bundleID: bundle) {
@@ -68,12 +109,12 @@ final class CaptureEngine {
         }
 
         // Metadata via AX (title, URL for browsers).
-        guard let window = AXHelper.focusedWindow(pid: app.processIdentifier) else {
+        guard let window = probe.focusedWindow(pid) else {
             // No AX (permission missing or opaque app): metadata-only rung.
             record(.init(timestamp: now, appBundle: bundle, captureKind: .meta))
             return
         }
-        let title: String? = AXHelper.string(window, kAXTitleAttribute)
+        let title: String? = probe.title(window)
 
         var url: String?
         if Browsers.isBrowser(bundle) {
@@ -82,7 +123,7 @@ final class CaptureEngine {
                 record(.init(timestamp: now, appBundle: bundle, captureKind: .excluded))
                 return
             }
-            url = AXHelper.webAreaURL(in: window)
+            url = probe.webAreaURL(window)
             if let url, exclusions.isExcluded(url: url) {
                 record(.init(timestamp: now, appBundle: bundle, captureKind: .excluded))
                 return
@@ -97,16 +138,16 @@ final class CaptureEngine {
             // would never match and would put two AX round-trips on every
             // capture of that app (design.md §3.4).
             if Browsers.isChromium(bundle) {
-                let launchDate = app.launchDate ?? .distantPast
-                if webAXEnabledLaunchDates[app.processIdentifier] != launchDate {
-                    AXHelper.enableWebAccessibility(pid: app.processIdentifier)
-                    webAXEnabledLaunchDates[app.processIdentifier] = launchDate
+                let launched = launchDate ?? .distantPast
+                if webAXEnabledLaunchDates[pid] != launched {
+                    probe.enableWebAccessibility(pid)
+                    webAXEnabledLaunchDates[pid] = launched
                 }
             }
         }
 
         // Rung 2: AX text extraction.
-        let text = AXHelper.extractText(from: window, byteCap: ObservationRecorder.maxTextBytes)
+        let text = probe.extractText(window, ObservationRecorder.maxTextBytes)
         if text.count >= Self.axTextFloor {
             record(.init(timestamp: now, appBundle: bundle, windowTitle: title, url: url,
                          captureKind: .ax, text: text))
@@ -115,7 +156,7 @@ final class CaptureEngine {
 
         // Rung 3: screenshot → OCR, gated by dHash change detection.
         let target = OCRTarget(
-            app: app, bundle: bundle, title: title, url: url,
+            pid: pid, bundle: bundle, title: title, url: url,
             timestamp: now, axFallbackText: text
         )
         captureViaOCR(target: target)
@@ -124,11 +165,11 @@ final class CaptureEngine {
     private func captureViaOCR(target: OCRTarget) {
         guard !ocrInFlight else { return }
         ocrInFlight = true
-        Task { @MainActor [weak self] in
+        ocrTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.ocrInFlight = false }
             do {
-                guard let result = try await self.ocr.captureText(pid: target.app.processIdentifier) else {
+                guard let result = try await self.probe.ocrText(target.pid) else {
                     self.recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
                                         timestamp: target.timestamp, axText: target.axFallbackText)
                     return

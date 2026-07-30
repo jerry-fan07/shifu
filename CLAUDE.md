@@ -23,7 +23,7 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 | `shifud` | capture daemon (LaunchAgent, headless) | §3 |
 | `shifu-analyzer` | batch analysis worker | §4–6 |
 | `shifu-cli` (product `shifu`) | CLI: log, review, pause, status | §5, §11 |
-| `ShifuApp` | SwiftUI menu bar app + dashboard | §7 |
+| `ShifuApp` | SwiftUI desktop app + menu bar item | §7 |
 
 ## Standing invariants (violations are bugs, no exceptions)
 

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Bundle ShifuApp into a standalone Shifu.app (menu bar app) and install it.
+# Bundle ShifuApp into a standalone Shifu.app (desktop app + menu bar item)
+# and install it.
 # The capture daemon is separate — see install-daemon.sh.
 set -euo pipefail
 
@@ -37,7 +38,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>LSUIElement</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
@@ -50,5 +50,5 @@ codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Frameworks/GRDB.framewor
 codesign --force --sign "${IDENTITY:--}" "$APP"
 
 echo "installed $APP"
-echo "launch: open \"$APP\"   (menu bar eye icon; no Dock icon)"
+echo "launch: open \"$APP\"   (desktop app + menu bar sensei)"
 echo "start at login: System Settings → General → Login Items → + → Shifu.app"

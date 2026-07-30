@@ -5,28 +5,29 @@ import ShifuCore
 /// same two files the CLI and the daemon read, so the app toggles them by
 /// writing the file, never by messaging the daemon. Split out of
 /// LedgerStore.swift for length only.
+///
+/// The formats themselves live in `ShifuCore/ControlFiles.swift` — the app is
+/// one of three processes that agree on them, and the parse used to exist
+/// here, in `shifu-cli`, and in `PauseController` separately.
 @MainActor
 extension LedgerStore {
     // MARK: - Pause (same control file as the CLI)
 
     func pause(until: Date) {
-        try? ShifuPaths.ensureHomeExists()
-        try? String(Int(until.timeIntervalSince1970))
-            .write(to: ShifuPaths.pauseFile, atomically: true, encoding: .utf8)
+        try? PauseFile.pause(until: until)
         refresh()
     }
 
     func resume() {
-        try? FileManager.default.removeItem(at: ShifuPaths.pauseFile)
+        PauseFile.resume()
         refresh()
     }
 
     func toggleWorkMode() {
-        try? ShifuPaths.ensureHomeExists()
         if workModeOn {
-            try? FileManager.default.removeItem(at: ShifuPaths.workModeFile)
+            WorkModeFile.turnOff()
         } else {
-            try? Data().write(to: ShifuPaths.workModeFile)
+            try? WorkModeFile.turnOn()
         }
         refresh()
     }

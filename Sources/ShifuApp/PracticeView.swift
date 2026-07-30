@@ -1,15 +1,14 @@
 import ShifuCore
 import SwiftUI
 
-/// *Cards* tab home (design.md §5.2): suggested decks, review-activity
+/// The *Practice* page (design.md §5.2): suggested decks, review-activity
 /// heatmap, deck picker, and an urgency overview of every card. The review
-/// session is a separate screen pushed from here.
+/// session is a separate screen pushed from here into the page's stack.
 ///
-/// There is no inbox. Nothing proposes a card any more — a card exists
-/// because a deck was asked for, so there is nothing to triage.
-struct CardsTabView: View {
+/// There is no inbox. Nothing proposes a card any more — a card exists because
+/// a deck was asked for, so there is nothing to triage.
+struct PracticeView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var path: [Screen] = []
     @State private var editingCard: Note?
 
     enum Screen: Hashable {
@@ -17,7 +16,9 @@ struct CardsTabView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
+        PageScaffold(destination: .practice) {
+            reviewButton
+        } content: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     statsRow
@@ -26,12 +27,13 @@ struct CardsTabView: View {
                     deckRow
                     cardsSection
                 }
-                .padding(20)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            .navigationDestination(for: Screen.self) { screen in
-                switch screen {
-                case .review: ReviewSessionView()
-                }
+        }
+        .navigationDestination(for: Screen.self) { screen in
+            switch screen {
+            case .review: ReviewSessionView()
             }
         }
         .onAppear { store.refresh() }
@@ -44,7 +46,7 @@ struct CardsTabView: View {
 
     private var statsRow: some View {
         HStack(spacing: 12) {
-            StatTile(value: store.dueNotes.count, label: "due now")
+            StatTile(value: store.dueNotes.count, label: "due now", accented: true)
             StatTile(value: store.decks.count, label: "decks")
             StatTile(value: store.allCards.count, label: "cards")
             StatTile(value: store.reviewsToday, label: "reviewed today")
@@ -53,10 +55,12 @@ struct CardsTabView: View {
     }
 
     private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Review activity")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(
+                "Review activity",
+                trailing: "\(LedgerStore.HeatmapSpan.weeks) weeks")
             ReviewHeatmapView(counts: store.reviewsByDay)
+                .dojoCard(padding: 14)
         }
     }
 
@@ -69,26 +73,38 @@ struct CardsTabView: View {
         let building = store.decks.filter { $0.status != .ready }
         if !store.deckSuggestions.isEmpty || !building.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Suggested decks")
-                    .font(.headline)
+                SectionHeading("Suggested decks")
                 ForEach(store.deckSuggestions) { suggestion in
                     DeckSuggestionCard(suggestion: suggestion)
                 }
                 ForEach(building) { deck in
-                    HStack(spacing: 8) {
+                    HStack(spacing: 9) {
                         ProgressView()
                             .controlSize(.small)
                         Text("Building “\(deck.title)”…")
                         Text("finishes with the next analysis if DeepSeek is unavailable")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
+                    .dojoCard(padding: 12)
                 }
             }
         }
     }
 
     // MARK: - Deck + navigation
+
+    /// The one door out of this page, in the header where it can't be
+    /// scrolled past.
+    private var reviewButton: some View {
+        NavigationLink(value: Screen.review) {
+            Label("Review \(store.deckDueNotes.count)", systemImage: "play.fill")
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .disabled(store.deckDueNotes.isEmpty)
+    }
 
     /// Decks first, then themes, then tasks: a deck is a thing the user asked
     /// for, the other two are filters over whatever happens to be there.
@@ -110,39 +126,41 @@ struct CardsTabView: View {
     }
 
     private var deckRow: some View {
-        HStack {
+        HStack(spacing: 10) {
+            Eyebrow("deck")
             FilterMenu(options: deckOptions, selection: $store.reviewDeck)
             Spacer()
-            Button {
-                path.append(.review)
-            } label: {
-                Label("Review · \(store.deckDueNotes.count) due", systemImage: "play.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.deckDueNotes.isEmpty)
         }
+        .font(.caption)
     }
 
     // MARK: - All cards by urgency
 
     private var cardsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("All cards")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeading(
+                "All cards",
+                trailing: store.allCards.isEmpty ? nil : "\(store.allCards.count)")
             if store.allCards.isEmpty {
                 emptyDeckView
             } else {
-                CardUrgencyGridView(cards: store.allCards) { note in
-                    editingCard = note
+                VStack(alignment: .leading, spacing: 10) {
+                    CardUrgencyGridView(cards: store.allCards) { note in
+                        editingCard = note
+                    }
+                    urgencyLegend
                 }
-                urgencyLegend
-                Divider()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .dojoCard(padding: 14)
                 LazyVStack(spacing: 0) {
                     ForEach(store.allCards) { note in
                         CardListRow(note: note) { editingCard = note }
-                        Divider()
+                        if note.id != store.allCards.last?.id {
+                            Divider()
+                        }
                     }
                 }
+                .dojoCard(padding: 0)
             }
         }
     }
@@ -150,11 +168,10 @@ struct CardsTabView: View {
     /// Empty deck. Cards come from decks the user asked for (§5.2) and from
     /// nowhere else, so that is the only thing the empty state can point at.
     private var emptyDeckView: some View {
-        ContentUnavailableView(
-            "No cards yet", systemImage: "rectangle.stack",
-            description: Text("Cards come from decks. Accept a suggested deck above, "
-                + "or open a task in the Vault tab and ask for one.")
-        )
+        SenseiEmptyState(
+            "No cards yet",
+            message: "Cards come from decks. Accept a suggested deck above, or "
+                + "open a task in the Task log and ask me for one.")
     }
 
     private var urgencyLegend: some View {
@@ -181,11 +198,11 @@ private struct DeckSuggestionCard: View {
     let suggestion: DeckStore.PendingSuggestion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(suggestion.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(Dojo.display(14))
                     Text("from task \(suggestion.taskName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -194,6 +211,7 @@ private struct DeckSuggestionCard: View {
                 if store.hasLLMBackend {
                     Button("Create") { store.acceptDeckSuggestion(suggestion) }
                         .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                 } else {
                     // Without a key the build could never run, and the deck
                     // would sit "Building…" forever (§5.2).
@@ -202,11 +220,13 @@ private struct DeckSuggestionCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Button("Dismiss") { store.dismissDeckSuggestion(suggestion) }
+                    .controlSize(.small)
             }
             ForEach(Array(suggestion.samples.enumerated()), id: \.offset) { _, card in
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
                     Text(card.topic)
-                        .font(.caption.weight(.medium))
+                        .font(Dojo.label(10, .medium))
+                        .foregroundStyle(.secondary)
                         .frame(width: 110, alignment: .leading)
                     Text(CardMarkup.plainText(card.question))
                         .font(.caption)
@@ -215,30 +235,13 @@ private struct DeckSuggestionCard: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dojoCard(padding: 12)
     }
 }
 
-/// Hero-number tile: big value, muted label underneath.
-private struct StatTile: View {
-    let value: Int
-    let label: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("\(value)")
-                .font(.system(size: 22, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
+// StatTile lives in DojoChrome.swift — the Today page shares it.
+// ReviewHeatmapView lives in ReviewHeatmapView.swift.
 
 /// Where a card sits in the review cycle. Status colors always ship with a
 /// text label (legend, list rows) — never color alone.
@@ -276,11 +279,11 @@ enum CardStatus: CaseIterable {
 
     var color: Color {
         switch self {
-        case .overdue: return .red
-        case .dueToday: return .orange
-        case .newCard: return .blue
-        case .soon: return .yellow
-        case .later: return .green
+        case .overdue: return Dojo.statusRed
+        case .dueToday: return Dojo.statusAmber
+        case .newCard: return Dojo.blue
+        case .soon: return Dojo.teal
+        case .later: return Dojo.statusGreen
         }
     }
 
@@ -353,7 +356,8 @@ private struct CardListRow: View {
                 statusChip
             }
             .contentShape(Rectangle())
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
         }
         .buttonStyle(.plain)
     }

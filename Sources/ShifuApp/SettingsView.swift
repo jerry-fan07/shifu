@@ -10,7 +10,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
 
     var body: some View {
-        List {
+        Form {
             ForEach(SettingsSection.allCases, id: \.self) { section in
                 let ints = SettingsCatalog.ints.filter { $0.section == section }
                 let lists = SettingsCatalog.domainLists.filter { $0.section == section }
@@ -38,7 +38,8 @@ struct SettingsView: View {
                 }
             }
         }
-        .listStyle(.inset)
+        .formStyle(.grouped)
+        .frame(minWidth: 480, minHeight: 520)
         .onAppear { store.load() }
     }
 }

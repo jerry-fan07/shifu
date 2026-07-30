@@ -161,24 +161,100 @@ enum TimeBreakdown {
     }
 }
 
-/// Chart colors for both Time-tab modes, so a group wears the same color in the
-/// timeline bars, the summary donut, and every legend.
+/// The timeline mode's stacked bars: the same window as `TimeBreakdown.slices`,
+/// cut into calendar buckets instead of ranked into groups. Groups come *from*
+/// the breakdown so both modes agree on what "Other" holds.
+enum TimeBuckets {
+    struct Bucket: Identifiable, Equatable {
+        let label: String
+        let group: String
+        let hours: Double
+        /// Chronological position, so the bars sort by time rather than by label.
+        let order: Int
+
+        var id: String { "\(order)-\(label)-\(group)" }
+    }
+
+    /// The span the bars cover, and the calendar that decides where its
+    /// boundaries fall — one value because they are only ever meaningful
+    /// together, and a DST-correct cut depends on both.
+    struct Window {
+        let from: Date
+        let to: Date
+        var calendar: Calendar = .current
+    }
+
+    /// Blocks are clipped to the window and split at every bucket boundary
+    /// through `CalendarSlices`, which is DST-correct — a 23- or 25-hour day
+    /// keeps its real hours instead of dropping or double-counting one.
+    static func buckets(
+        _ activities: [LedgerBuilder.LabeledActivity], lens: TimeLens, span: TimeView.Span,
+        groups: Set<String>, window: Window
+    ) -> [Bucket] {
+        let (from, to, calendar) = (window.from, window.to, window.calendar)
+        let dayZero = calendar.startOfDay(for: from)
+        // bucket label → (chronological order, group → ms)
+        var sums: [String: (order: Int, byGroup: [String: Int64])] = [:]
+        for activity in activities {
+            let raw = lens.label(activity)
+            let group = groups.contains(raw) ? raw : TimeBreakdown.otherLabel
+            let start = Date(timeIntervalSince1970: Double(activity.startedAt) / 1_000)
+            let end = min(Date(timeIntervalSince1970: Double(activity.endedAt) / 1_000), to)
+            CalendarSlices.walk(
+                from: max(start, from), to: end,
+                unit: span == .day ? .hour : .day, calendar: calendar
+            ) { sliceStart, ms in
+                let (label, order) = bucket(sliceStart, span: span,
+                                            dayZero: dayZero, calendar: calendar)
+                var entry = sums[label] ?? (order: order, byGroup: [:])
+                entry.byGroup[group, default: 0] += ms
+                sums[label] = entry
+            }
+        }
+        return sums.flatMap { label, entry in
+            entry.byGroup.map { group, ms in
+                Bucket(label: label, group: group, hours: Double(ms) / 3_600_000,
+                       order: entry.order)
+            }
+        }
+        .sorted { $0.order < $1.order }
+    }
+
+    /// One slice's bucket: "00"…"23" for a day, the weekday's short name for a
+    /// week. `order` is days from the window's first day, so the week's bars
+    /// stay in calendar order rather than alphabetical.
+    private static func bucket(
+        _ date: Date, span: TimeView.Span, dayZero: Date, calendar: Calendar
+    ) -> (label: String, order: Int) {
+        switch span {
+        case .day:
+            let hour = calendar.component(.hour, from: date)
+            return (String(format: "%02d", hour), hour)
+        case .week:
+            let days = calendar.dateComponents(
+                [.day], from: dayZero, to: calendar.startOfDay(for: date)).day ?? 0
+            return (date.formatted(.dateTime.weekday(.abbreviated)), days)
+        }
+    }
+}
+
+/// Chart colors for both Time-page modes, so a group wears the same color in
+/// the timeline bars, the summary donut, and every legend. All hues come from
+/// `Dojo.chartSlots`, validated for CVD separation and 3:1 contrast on both
+/// surfaces (design.md §7). Work wears the robe's terracotta; the low-signal
+/// categories (admin, private, unclassified) stay recessive grays.
 enum TimePalette {
-    /// Fixed category hues. `KeyValuePairs` because that is the shape
-    /// `chartForegroundStyleScale` takes; `categoryColors` mirrors it for lookup.
-    static let categoryScale: KeyValuePairs<String, Color> = [
-        "work": .blue, "learning": .green, "entertainment": .orange,
-        "social": .pink, "communication": .teal, "admin": .gray,
+    /// Fixed category hues.
+    private static let categoryColors: [String: Color] = [
+        "work": Dojo.terracotta, "learning": Dojo.jade, "entertainment": Dojo.gold,
+        "social": Dojo.magenta, "communication": Dojo.blue, "admin": .gray,
         "private": .secondary, "unclassified": Color.gray.opacity(0.4)
     ]
 
-    private static let categoryColors: [String: Color] =
-        Dictionary(uniqueKeysWithValues: categoryScale.map { ($0.key, $0.value) })
-
-    /// Hue order for theme and task groups, checked for color-vision-deficiency
-    /// separation against the chart surface. Deliberately a *fixed* list: a 9th
-    /// group never gets a generated hue, it folds into "Other".
-    static let groupHues: [Color] = [.blue, .orange, .green, .purple, .teal, .pink, .indigo, .mint]
+    /// Hue order for theme and task groups — the validated slot order, which is
+    /// what makes adjacent assignments CVD-distinct. Deliberately a *fixed*
+    /// list: a 9th group never gets a generated hue, it folds into "Other".
+    static let groupHues: [Color] = Dojo.chartSlots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.
     static let otherColor = Color.gray.opacity(0.5)

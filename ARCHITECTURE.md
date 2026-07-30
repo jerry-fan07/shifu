@@ -16,7 +16,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 | `shifud` | executable | Capture daemon. LaunchAgent, headless, runs for weeks. | **forbidden** |
 | `shifu-analyzer` | executable | Batch analysis worker. Spawned hourly by `shifud`, or on demand. | only binary allowed |
 | `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `forget`, `vault`, `encrypt`. | never |
-| `ShifuApp` | executable | SwiftUI menu bar app + dashboard. | never |
+| `ShifuApp` | executable | SwiftUI desktop app + menu bar item. | never |
 
 **The one architectural fact to internalize: there is no IPC.** No sockets, no
 XPC, no message bus. The processes coordinate through shared state on disk:
@@ -30,9 +30,13 @@ under launchd, and why the menu bar app can show today's totals without asking
 anyone. Every process opens the same database and reads.
 
 Anything testable is pushed down into `ShifuCore`, which is why `ShifuCore` is
-~60% of the Swift in the repo and holds essentially all of the test coverage.
-`shifud` and `ShifuApp` are deliberately thin: event wiring and views over
-`ShifuCore` logic. They have no test targets.
+~60% of the Swift in the repo and holds most of the test coverage. `shifud` and
+`ShifuApp` are deliberately thin: event wiring and views over `ShifuCore`
+logic. Each still has a test target (`ShifudTests`, `ShifuAppTests`,
+`ShifuCLITests`) — SwiftPM can test an executable target on macOS — because the
+thin layer is where the capture ladder's *ordering* and the app's calendar
+arithmetic live, and both are load-bearing. New pure logic still belongs in
+`ShifuCore`; the executable test targets are for the wiring that cannot move.
 
 ```
 Sources/ShifuCore/
@@ -222,8 +226,9 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
 | Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
-| The Time tab's modes, span and lens | [`ShifuApp/DashboardView.swift`](Sources/ShifuApp/DashboardView.swift) — `TimeTabView` |
+| The Time page's modes, span and lens | [`ShifuApp/TimeView.swift`](Sources/ShifuApp/TimeView.swift) — `TimeView` |
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
+| What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`, both filtered by `TaskGrouper.notSystemBundleSQL` so the lock screen and Shifu's own UI are charted nowhere (design.md §7) |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
@@ -248,7 +253,11 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
-| Menu bar + dashboard | [`ShifuApp/`](Sources/ShifuApp/) — read model is `LedgerStore.swift` |
+| The main window's layout, camera flights, pages and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
+| The trail — where places live and how you pick one | [`ShifuApp/TrailRail.swift`](Sources/ShifuApp/TrailRail.swift); a place's spot on the mountain is `Destination.stationIndex` / `.landmark` in [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) |
+| The mountain: terrain, camera math, ridgelines | [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) — `WorldMap.runs` is the one source of truth for the stair |
+| Painting the mountain, and the temples on it | [`ShifuApp/WorldStage.swift`](Sources/ShifuApp/WorldStage.swift), [`ShifuApp/WorldLandmarks.swift`](Sources/ShifuApp/WorldLandmarks.swift) |
+| The app's look — colors, cards, wisdom, the sensei | [`ShifuApp/Dojo.swift`](Sources/ShifuApp/Dojo.swift), [`ShifuApp/SenseiView.swift`](Sources/ShifuApp/SenseiView.swift) |
 | CLI commands | [`shifu-cli/main.swift`](Sources/shifu-cli/main.swift) |
 | The analyzer's stage order | [`shifu-analyzer/main.swift`](Sources/shifu-analyzer/main.swift) |
 
@@ -396,17 +405,18 @@ This is where each is actually enforced, and what would catch a regression.
 |---|---|---|---|
 | 1 | No network code in `shifud` | `DeepSeekBackend` lives in the `shifu-analyzer` target — the SwiftPM target graph makes it unlinkable from `shifud` | ✅ `scripts/check-no-network.sh` — `nm -u` symbol scan, run by `make check` |
 | 2 | Redaction is a single choke point before every DB write | `ObservationRecorder.record` calls `Redactor.redact` before insert; nothing else writes `observations` | ✅ `ObservationRecorderTests.textIsRedactedBeforeDisk`, `RedactorTests` |
-| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ⚠️ Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText`. **The ordering inside `CaptureEngine` itself is structural — no test** |
-| 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ⚠️ **Structural only — no automated guard** |
-| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer | ⚠️ **Structural only — no automated guard** |
+| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ✅ `CaptureLadderTests` drives the ladder over a fake `CaptureEngine.Probe` that records every read, so "an excluded window reaches no reader" is asserted, not reviewed. Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText` |
+| 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ✅ `PixelsNeverPersistedTests` — reflects over `OCRCapture.Result` and the recorder's `Candidate` for image-shaped fields, and asserts `observations` has no BLOB column |
+| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer. `Daemon.syncCapture` is the only caller of the start/stop pair and every reason capture is down is *queried* there — pause, a locked screen, another session on the console (§3.1) — so no reason can clear another's teardown. A suspension must also be able to *end*: while the window server holds capture down, `syncRecheckTimer` re-asks every 5 s rather than trusting an unlock notification that a real machine never delivered | ✅ `DaemonTeardownTests` over `Daemon.observerState` — including that the analyzer timer *survives* pause; `DaemonSuspensionTests` over an injected `Daemon.SessionProbe`: a wake before the unlock stays down, and `theRecheckTimerFiresOnItsOwn` services a real run loop, so an unscheduled timer fails it (the direct-call test does not) |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
 | 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
-**Invariants 4 and 5 have no automated guard** because both live in `shifud`,
-which has no test target (it is AppKit/AX event wiring). Changes to
-`OCRCapture` or `Daemon.stopCapture` deserve a manual read against design.md
-§3.2 / §8 — that review *is* the guard today.
+All eight now have a guard. Invariants 3–5 got theirs by giving `shifud` a
+test target and two small seams: `CaptureEngine.Probe` (the ladder's outside
+world, injectable) and `Daemon.observerState` (what is currently wired up).
+Both exist so the invariant can be *stated* — an ordering guarantee is a claim
+about which calls never happen, and only a recording fake can assert that.
 
 ---
 
@@ -468,7 +478,8 @@ valid.
 
 **Add a category.** Add the case to `Category` in `Models/Activity.swift`
 (raw value = the string stored in SQLite), add seeds to `RulesClassifier`, and
-add a color in `TimeTabView.categoryColors`. `AmbiguousClassifier.prompt`
+add a color in `TimePalette.categoryColors` (pick a `Dojo.chartSlots` hue).
+`AmbiguousClassifier.prompt`
 derives its category list from `Category.allCases`, so the LLM tier updates
 itself — except `privateTime` and `unclassified`, which it filters out.
 
@@ -571,9 +582,11 @@ Runs `shifud` against a synthetic feed and asserts design.md §3.4 budgets, plus
 the vault index/search budgets. **A perf regression blocks like a test
 failure.**
 
-Nearly all coverage lives in `Tests/ShifuCoreTests/`; `shifud`, `ShifuApp`, and
-`shifu-cli` have no test targets, so logic that needs testing belongs in
-`ShifuCore`. SwiftLint caps files at 500 lines (warning) and lines at 120/160
+Most coverage lives in `Tests/ShifuCoreTests/`; `ShifudTests`, `ShifuAppTests`
+and `ShifuCLITests` cover the wiring that cannot move down (the capture
+ladder's ordering, pause teardown, the Time page's calendar arithmetic, the
+CLI's argument parsing). New pure logic still belongs in `ShifuCore`.
+SwiftLint caps files at 500 lines (warning) and lines at 120/160
 (warning/error) — the most common way an otherwise-fine change fails
 `make check`.
 
@@ -607,3 +620,13 @@ current — an entry here is a debt, not a decision.
 
 Six lines asserting `Shifu.version` is non-empty — the `swift package init`
 stub. Harmless, but it is not a real test.
+
+### The Time page's hour bucketing is DST-correct only through `CalendarSlices`
+
+`DayTrail.stones` and `TimeBuckets.buckets` both walk a span one calendar unit
+at a time. The obvious implementation — `date(bySettingHour:minute:second:of:)`
+— force-unwraps an optional that is nil on a spring-forward, and on a fall-back
+resolves the repeated hour to the occurrence *behind* the cursor, so the loop
+never terminates. Both were written that way and both hung. Any new
+span-walking code must go through
+[`Analysis/CalendarSlices.swift`](Sources/ShifuCore/Analysis/CalendarSlices.swift).

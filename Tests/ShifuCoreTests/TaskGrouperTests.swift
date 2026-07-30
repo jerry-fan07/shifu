@@ -32,14 +32,8 @@ import Testing
         #expect(!TaskGrouper.isDefaultName("Reading", forKey: "domain:github.com"))
     }
 
-    @Test func systemBundlesAreBarredBySetAndPrefix() {
-        #expect(TaskGrouper.isSystemBundle("com.apple.loginwindow"))
-        #expect(TaskGrouper.isSystemBundle("com.apple.LoginWindow"))
-        #expect(TaskGrouper.isSystemBundle("unknown.4242"))   // CaptureEngine's pid fallback
-        #expect(TaskGrouper.isSystemBundle("com.shifu.app"))  // self-observation
-        #expect(!TaskGrouper.isSystemBundle("com.mitchellh.ghostty"))
-        #expect(!TaskGrouper.isSystemBundle("com.google.chrome"))
-    }
+    // The denylist itself is covered in `SystemBundleDenylistTests`, which
+    // asserts the Swift check and its SQL twin against each other.
 
     @Test func summaryLineReadsWhereThenWhat() {
         #expect(TaskGrouper.summaryLine(sources: ["Xcode", "github.com"],

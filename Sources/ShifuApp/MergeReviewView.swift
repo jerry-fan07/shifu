@@ -61,12 +61,13 @@ struct MergeReviewView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .overlay {
             if store.allMergeSuggestions.isEmpty && store.allThemeSuggestions.isEmpty {
-                ContentUnavailableView(
-                    "Nothing to review", systemImage: "checkmark.circle",
-                    description: Text("Suggestions appear here when the weekly analysis "
-                        + "finds tasks that look like the same work."))
+                SenseiEmptyState(
+                    "Nothing to review",
+                    message: "Suggestions appear when the weekly analysis finds "
+                        + "tasks that look like the same work.")
             }
         }
         .navigationTitle("Merge review")
