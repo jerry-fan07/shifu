@@ -87,6 +87,67 @@ enum Instrument {
     /// the warm chart slot the mark has to sit on without joining it (6 → 9).
     static let beacon = Color(light: 0xB8632A, dark: 0xE8AC78)
 
+    /// A 0…1 reading on the verdict ramp: the accent at full marks, stepping
+    /// down through its own range and out into a light red at the floor. For
+    /// a figure that *is* a verdict — the focus score — where the colour says
+    /// how the number reads, and the number is always printed beside it, so
+    /// the ramp is never the only cue.
+    ///
+    /// Two things here are deliberate and easy to get wrong:
+    ///
+    /// - The ends are anchored *per appearance*, not per token. The accent's
+    ///   salient step swaps sides in dark — light mode's strong blue is the
+    ///   dark slate, dark mode's is the pale one — so a ramp built from the
+    ///   slot names would make a *falling* score glow brighter in dark.
+    /// - The stops carry their own positions rather than being spaced evenly.
+    ///   Real focus scores crowd the top third of the scale, and an even ramp
+    ///   parks an 81 and a 98 on the same step; the blue range is spread over
+    ///   0.45…1 where the readings actually live, which leaves the red end to
+    ///   the genuinely bad sessions. The meter's *length* still carries the
+    ///   true value linearly — the colour is emphasis, so it may spend its
+    ///   range unevenly.
+    static func verdict(_ reading: Double) -> Color {
+        // A tint of `overdue` rather than a new hue: the palette has no light
+        // red because nothing else needs one — a mark that must be read at a
+        // glance uses the full-strength token.
+        let stops = [
+            Stop(at: 0.00, light: 0xD08E79, dark: 0xE07A5F),   // light red — the floor
+            // Held, so a poor score reads as red rather than as the crossfade
+            // out of it: red and blue are a hue apart, and every mix on the
+            // way between them is a mauve that says nothing.
+            Stop(at: 0.22, light: 0xD08E79, dark: 0xE07A5F),
+            Stop(at: 0.45, light: 0xB9CADB, dark: 0x2E5C8C),   // the accent's faded step
+            Stop(at: 0.70, light: 0x7F9EC0, dark: 0x6F9DD0),   // its middle
+            Stop(at: 1.00, light: 0x27405F, dark: 0xD3E3F4)    // the deepest — full marks
+        ]
+        let place = min(1, max(0, reading))
+        let upper = stops.firstIndex { place <= $0.at } ?? stops.count - 1
+        guard upper > 0 else { return Color(light: stops[0].light, dark: stops[0].dark) }
+        let lower = stops[upper - 1]
+        let fraction = (place - lower.at) / (stops[upper].at - lower.at)
+        return Color(
+            light: blend(lower.light, stops[upper].light, fraction),
+            dark: blend(lower.dark, stops[upper].dark, fraction))
+    }
+
+    /// One stop of the `verdict` ramp: where on the 0…1 reading it sits, and
+    /// the hex it takes in each appearance.
+    private struct Stop {
+        let at: Double
+        let light: UInt32
+        let dark: UInt32
+    }
+
+    /// Channel-wise sRGB mix of two hex colors, `fraction` of the way along.
+    private static func blend(_ from: UInt32, _ to: UInt32, _ fraction: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let base = Double((from >> shift) & 0xFF)
+            let target = Double((to >> shift) & 0xFF)
+            return UInt32((base + (target - base) * fraction).rounded()) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
+    }
+
     // MARK: - Data hues
 
     /// The five slots a chart may use, in assignment order: the accent stepped

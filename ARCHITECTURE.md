@@ -255,6 +255,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
 | What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`, both filtered by `TaskGrouper.notSystemBundleSQL` so the lock screen and Shifu's own UI are charted nowhere (design.md §7) |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
+| Focus sessions read back + the focus score | [`Storage/FocusModeSessions.swift`](Sources/ShifuCore/Storage/FocusModeSessions.swift) — `overlapping`; scored by [`Analysis/FocusReport.swift`](Sources/ShifuCore/Analysis/FocusReport.swift) (mirrors `FocusModeController`'s on/off-task split); drawn by [`ShifuApp/FocusViews.swift`](Sources/ShifuApp/FocusViews.swift) behind the Breakdown picker's Focus position |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What the LLM calls cost — token accounting and its rollups | [`Storage/LLMUsage.swift`](Sources/ShifuCore/Storage/LLMUsage.swift); recorded in `DeepSeekBackend.send`, read by `shifu status` |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
