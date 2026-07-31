@@ -139,6 +139,14 @@ right of `observations` happens in `shifu-analyzer`.
    leaves the ledger *permanently*, since a static screen keeps matching that
    cached hash on every later heartbeat — the bug that
    `unchangedScreenPastTheDedupeTTLIsLoggedAgain` pins.
+
+   The two must also **name a window identically** — bundle, title *and* URL.
+   The gate only ever acts on its verdict by looking the window up in the
+   recorder, so a coarser key there is a cache slot two windows share: an 8×8
+   dHash cannot tell one page of a site from another, and two tabs of one site
+   share a title, so the gate ends up answering about one tab using the other's
+   pixels. `CaptureEngine.gateKey` is that alignment;
+   `theGateComparesAWindowAgainstItsOwnLastScreen` pins it.
 3. **[ObservationRecorder.swift](Sources/ShifuCore/Capture/ObservationRecorder.swift)**
    is the single write path, and applies in order: drop text for excluded
    kinds → truncate to 8 KB → **`Redactor.redact`** → SimHash near-duplicate

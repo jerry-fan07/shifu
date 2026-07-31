@@ -443,17 +443,57 @@ private func collidingCaptures(_ harness: Harness, bundle: String) async {
         #expect(seen == ["com.example.reader", "com.example.reader"])
     }
 
+    /// Two tabs of the same site, one title between them: the gate must judge a
+    /// window against **its own** last screen, never against the other tab's.
+    ///
+    /// Keyed on `bundle|title` alone the two tabs share a cache slot, so the
+    /// hash the gate compares against belongs to whichever tab wrote last. Same
+    /// site means same layout, and an 8×8 dHash is coarse enough that two pages
+    /// of one site sit well within `unchangedThreshold` of each other while
+    /// their text has nothing in common — so the gate calls tab A "unchanged"
+    /// on the strength of tab B's pixels and drops A's new content. Qualifying
+    /// the key by URL, exactly as the recorder does, makes every comparison
+    /// apples-to-apples.
+    @Test func theGateComparesAWindowAgainstItsOwnLastScreen() async throws {
+        let harness = try makeHarness()
+        harness.spy.title = "Instagram - Google Chrome"
+
+        harness.spy.url = "https://www.instagram.com/"
+        harness.spy.ocrResult = OCRCapture.Result(
+            text: "home feed posts from people you follow", dhash: 0x0000_0000)
+        await capture(harness, bundle: "com.google.Chrome")
+
+        harness.spy.url = "https://www.instagram.com/explore/"
+        harness.spy.ocrResult = OCRCapture.Result(
+            text: "explore grid suggested reels and topics", dhash: 0xffff_ffff)
+        await capture(harness, bundle: "com.google.Chrome")
+
+        // Back to the first tab, scrolled on to wholly new content. Its screen
+        // now resembles the *other* tab's — same site, same chrome — but not
+        // its own earlier one.
+        harness.clock.advance(10)
+        harness.spy.url = "https://www.instagram.com/"
+        harness.spy.ocrResult = OCRCapture.Result(
+            text: "direct messages inbox unread threads", dhash: 0xffff_fffe)
+        await capture(harness, bundle: "com.google.Chrome")
+
+        let rows = try harness.observations()
+        #expect(rows.count == 3)
+        #expect(rows[2].url == "https://www.instagram.com/")
+        #expect(rows[2].text == "direct messages inbox unread threads")
+    }
+
     /// Two URLs behind one window title — Instagram Stories, or a pair of
     /// "New Tab" pages — captured back to back on a visually similar screen.
     ///
-    /// The gate keys on `bundle|title`, which the recorder qualifies further by
-    /// URL, so these two windows *share* a cached hash while owning separate
-    /// rows. That mismatch is a second, independent way into the stuck state:
-    /// the gate reports the second URL unchanged on the strength of the first
-    /// one's hash, and before `touch`'s answer was honoured the second URL was
-    /// never written at all — permanently, since the shared hash goes on
-    /// matching. Both are real shapes in the dogfood ledger, where one "New Tab"
-    /// title covers 157 OCR rows across 2 URLs.
+    /// Historically a second, independent way into the stuck state: the gate
+    /// keyed on `bundle|title` while the recorder qualified by URL too, so the
+    /// two shared a cached hash while owning separate rows, and the second URL
+    /// was reported unchanged on the strength of the first one's hash — then
+    /// dropped for good, since that hash goes on matching. Two guards now stand
+    /// between: the gate key names the URL as well, and a failed `touch` is
+    /// honoured rather than swallowed. Real shapes in the dogfood ledger, where
+    /// one "New Tab" title covers 157 OCR rows across 2 URLs.
     @Test func twoURLsSharingATitleAreLoggedSeparately() async throws {
         let harness = try makeHarness()
         harness.spy.title = "New Tab - Google Chrome"

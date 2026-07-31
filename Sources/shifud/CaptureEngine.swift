@@ -10,8 +10,8 @@ final class CaptureEngine {
     static let axTextFloor = 80
 
     /// Default capacity of `lastDHashByKey` (design.md §3.4: <80 MB steady
-    /// RSS). Window titles are unbounded in cardinality, so the dHash dedupe
-    /// map is a bounded LRU rather than a plain dictionary.
+    /// RSS). Window titles and URLs are both unbounded in cardinality, so the
+    /// dHash dedupe map is a bounded LRU rather than a plain dictionary.
     static let defaultDHashCacheCapacity = 256
 
     /// Everything the ladder reads from outside this process, behind one seam.
@@ -200,7 +200,8 @@ final class CaptureEngine {
                                         timestamp: target.timestamp, axText: target.axFallbackText)
                     return
                 }
-                let key = "\(target.bundle)|\(target.title ?? "")"
+                let key = Self.gateKey(
+                    bundle: target.bundle, title: target.title, url: target.url)
                 if let last = self.lastDHashByKey.get(key), DHash.isUnchanged(last, result.dhash),
                    self.touchOpenObservation(for: target) {
                     // Same screen as last time (e.g. fullscreen video): bump last_seen only.
@@ -221,6 +222,23 @@ final class CaptureEngine {
                                     timestamp: target.timestamp, axText: target.axFallbackText)
             }
         }
+    }
+
+    /// Key for the dHash gate's cache.
+    ///
+    /// **Must name a window exactly as the recorder does** — bundle, title
+    /// *and* URL. The gate never acts on its own verdict: it hands the window
+    /// to `touchOpenObservation`, which looks it up under the recorder's key.
+    /// A coarser key here means the two disagree about what "this window" is,
+    /// and the cached hash the gate compares against belongs to whichever
+    /// window last collided with it. Two tabs of one site share a title, an
+    /// 8×8 dHash cannot tell one page of a site from another (same chrome,
+    /// same layout), and the gate would then answer a question about one tab
+    /// using the other's pixels — dropping content it wrongly called
+    /// unchanged. Cardinality is the recorder's problem too, and the LRU is
+    /// what bounds it (design.md §3.4).
+    private static func gateKey(bundle: String, title: String?, url: String?) -> String {
+        "\(bundle)|\(title ?? "")|\(url ?? "")"
     }
 
     /// Bumps the `last_seen` of this window's open observation, reporting
