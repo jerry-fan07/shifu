@@ -348,4 +348,31 @@ import Testing
         #expect(rows[0].textSimhash == nil)
         #expect(rows[1].text == "fresh text")
     }
+
+    /// The window is a setting now (design.md §8 promised "configurable
+    /// 1–90"), and the analyzer reads it on every run. This is that
+    /// composition: shortening it in Settings has to scrub rows the default
+    /// would have kept, or the dial is decoration.
+    @Test func storedWindowGovernsWhatIsScrubbed() throws {
+        let db = try ShifuDatabase.inMemory()
+        let now = Date(timeIntervalSince1970: 100 * 86_400)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try db.queue.write { sqlite in
+            var recent = Observation(startedAt: nowMs - 10 * 86_400_000, appBundle: "a",
+                                     captureKind: .ax, text: "ten days old", textSimhash: 1)
+            try recent.insert(sqlite)
+        }
+        let setting = SettingsCatalog.textRetentionDays
+
+        // The default keeps a ten-day-old row…
+        #expect(try Retention.scrubExpiredText(
+            database: db, olderThanDays: Settings.value(setting, database: db),
+            now: now) == 0)
+
+        // …and a shortened window doesn't.
+        try Settings.set(setting, to: 7, database: db)
+        #expect(try Retention.scrubExpiredText(
+            database: db, olderThanDays: Settings.value(setting, database: db),
+            now: now) == 1)
+    }
 }

@@ -16,12 +16,14 @@ struct MainWindow: View {
     @StateObject private var router: Router
     /// The Settings place's model. Owned here rather than by the app so a
     /// harness that hosts the window alone still renders that place.
-    @StateObject private var settings = SettingsStore()
+    @StateObject private var settings: SettingsStore
 
-    /// The router is a parameter so the app's menu bar item and a harness can
-    /// both open the window already pointed at a place.
-    init(router: Router = Router()) {
+    /// Both models are parameters for the same reason: the app's menu bar item
+    /// and a harness need to open the window already pointed somewhere —
+    /// at a place, and (since Settings has a rail of its own) at a section.
+    init(router: Router = Router(), settings: SettingsStore = SettingsStore()) {
         _router = StateObject(wrappedValue: router)
+        _settings = StateObject(wrappedValue: settings)
     }
 
     var body: some View {
@@ -76,6 +78,11 @@ struct MainWindow: View {
     /// names a document.
     private var title: String {
         switch router.route {
+        // Settings is a rail of sections inside one place, so the bar names
+        // the section too — it is the only place where "where am I" needs two
+        // words, and the only one whose page has its own navigation.
+        case .none where router.place == .settings:
+            return "Settings · \(settings.section.rawValue)"
         case .none: return router.place.title
         case .task(let taskID): return store.taskDetail(taskID)?.task.name ?? "Task"
         case .theme(let themeID): return store.themeDetail(themeID)?.overview.name ?? "Theme"

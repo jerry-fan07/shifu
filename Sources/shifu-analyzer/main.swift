@@ -73,7 +73,12 @@ let from: Int64 = rebuildAll ? 0 : nowMs - 48 * 3_600_000
 
 let summary = try LedgerBuilder.rebuild(
     database: database, classifier: classifier, from: from, to: nowMs)
-let scrubbed = try Retention.scrubExpiredText(database: database)
+// Read per run, not per release: shortening the window in Settings has to
+// take effect at the next scrub, which is the only thing that makes it a
+// promise rather than a preference.
+let scrubbed = try Retention.scrubExpiredText(
+    database: database,
+    olderThanDays: Settings.value(SettingsCatalog.textRetentionDays, database: database))
 
 print("analyzed \(summary.observationsProcessed) observations → "
     + "\(summary.blocksWritten) activities"

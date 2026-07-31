@@ -16,10 +16,17 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var choices: [String: String] = [:]
     @Published private(set) var texts: [String: String] = [:]
     @Published private(set) var lastError: String?
-    /// Today's estimated LLM spend as its figure alone ("≈ $0.043") — the row
-    /// carries the label, like every other reading on the page. Nil when
-    /// nothing was billed today or analysis is off.
-    @Published private(set) var llmSpendToday: String?
+    /// Which section the page is showing. Held here rather than in the view so
+    /// the window's title bar can name it — "Settings · Analysis" — and so
+    /// stepping away to another place and back doesn't reset it.
+    @Published var section: SettingsSection = .capture
+    /// The user's own exclusion rows, by kind — the built-ins are merged in by
+    /// `Exclusions.init(database:)` at capture time and are not in here, so a
+    /// list can show what's removable without guessing.
+    @Published private(set) var exclusions: [Exclusions.Kind: [String]] = [:]
+    /// What the machine is actually doing, for the page's right-hand column.
+    /// Nil until the first read.
+    @Published private(set) var diagnostics: SettingsDiagnostics?
 
     private var database: ShifuDatabase?
 
@@ -46,13 +53,49 @@ final class SettingsStore: ObservableObject {
             for setting in SettingsCatalog.texts {
                 texts[setting.key] = Settings.value(setting, database: database)
             }
-            // Same estimate the analyzer logs (LLMPrices): configured rates ×
-            // today's llm_usage rows. Shown beside the rates it depends on.
-            let dayStart = Int64(
-                Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
-            let spent = LLMPriceBook.load(database: database)
-                .cost(from: dayStart, to: Int64.max, database: database)
-            llmSpendToday = spent > 0 ? String(format: "≈ $%.3f", spent) : nil
+            for kind in [Exclusions.Kind.bundle, .domain] {
+                exclusions[kind] = try Exclusions.userValues(kind: kind, database: database)
+            }
+            lastError = nil
+        } catch {
+            lastError = "\(error)"
+        }
+        loadDiagnostics()
+    }
+
+    /// Re-reads the right-hand column alone. Separate from `load()` because
+    /// the dials are stable and these numbers are not: the column refreshes on
+    /// a timer while Settings is open, and re-reading every setting underneath
+    /// a half-typed API key would put the stored value back in the field.
+    func loadDiagnostics() {
+        guard let database = try? db() else { return }
+        diagnostics = SettingsDiagnostics.read(database: database)
+    }
+
+    // MARK: - Exclusions (their own table, not a setting)
+
+    /// The user's rows for one kind. Built-ins are deliberately not merged in
+    /// here — the Privacy page shows them separately, as unremovable.
+    func excluded(_ kind: Exclusions.Kind) -> [String] { exclusions[kind] ?? [] }
+
+    func exclude(_ value: String, kind: Exclusions.Kind) {
+        write(kind) { try Exclusions.add(value, kind: kind, database: $0) }
+    }
+
+    func unexclude(_ value: String, kind: Exclusions.Kind) {
+        write(kind) { try Exclusions.remove(value, kind: kind, database: $0) }
+    }
+
+    /// Re-reads after every write rather than mutating optimistically: the
+    /// table de-duplicates and drops built-ins, so what's shown has to be what
+    /// the daemon will read on its next capture, not what we asked for.
+    private func write(
+        _ kind: Exclusions.Kind, _ change: (ShifuDatabase) throws -> Void
+    ) {
+        do {
+            let database = try db()
+            try change(database)
+            exclusions[kind] = try Exclusions.userValues(kind: kind, database: database)
             lastError = nil
         } catch {
             lastError = "\(error)"
@@ -78,10 +121,6 @@ final class SettingsStore: ObservableObject {
             lastError = "\(error)"
             load()
         }
-    }
-
-    func binding(for setting: IntSetting) -> Binding<Int> {
-        Binding(get: { self.value(for: setting) }, set: { self.set(setting, to: $0) })
     }
 
     // MARK: - Choices & text (AI backend config)

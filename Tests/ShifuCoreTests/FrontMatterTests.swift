@@ -154,8 +154,12 @@ import Testing
         let increasing = (0..<(9 * 8)).map { UInt8(($0 % 9) * 20) }
         #expect(DHash.hash(luminance: increasing) == 0)
 
-        // Strictly decreasing sets every bit.
-        let decreasing = (0..<(9 * 8)).map { UInt8((8 - ($0 % 9)) * 20) }
+        // Strictly decreasing sets every bit. Typed step by step: as one
+        // literal expression the type checker times out on it.
+        let decreasing: [UInt8] = (0..<(9 * 8)).map { index in
+            let column: Int = index % 9
+            return UInt8((8 - column) * 20)
+        }
         #expect(DHash.hash(luminance: decreasing) == UInt64.max)
     }
 

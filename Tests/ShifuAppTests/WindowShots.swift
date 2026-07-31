@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ShifuCore
 import SwiftUI
 import Testing
 @testable import ShifuApp
@@ -45,6 +46,8 @@ import Testing
                 store: store, into: directory)
         }
 
+        shootEverySettingsSection(store: store, into: directory)
+
         // The Day/Week window is view state, not a place, so the ledger pages
         // get a second pass with it flipped.
         UserDefaults.standard.set(true, forKey: "shifu.ledger.week")
@@ -82,6 +85,24 @@ import Testing
             shoot(
                 .decks, route: .looseCards, as: "loose-cards", dark: true,
                 store: store, into: directory)
+        }
+    }
+
+    /// Settings is one place with a rail of its own, so it gets one shot per
+    /// section — a single settings.png would only ever show Capture.
+    @MainActor private func shootEverySettingsSection(
+        store: LedgerStore, into directory: URL
+    ) {
+        for section in SettingsSection.allCases {
+            let settings = SettingsStore()
+            settings.section = section
+            let router = Router()
+            router.go(to: .settings)
+            let slug = section.rawValue.lowercased().replacingOccurrences(of: " ", with: "-")
+            shoot(
+                MainWindow(router: router, settings: settings).environmentObject(store),
+                to: directory.appendingPathComponent("settings-\(slug).png"),
+                dark: section == .privacy)
         }
     }
 
