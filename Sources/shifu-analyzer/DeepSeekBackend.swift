@@ -13,12 +13,20 @@ import ShifuCore
 /// post-exclusion, post-redaction text samples are ever sent, and only once
 /// the user has supplied an API key — the key *is* the opt-in (§8).
 ///
-/// Thinking models (DeepSeek reasoner-style) stream chain-of-thought into
-/// `reasoning_content` before any `content`, and `max_tokens` covers both —
-/// a cap sized for the answer alone truncates mid-thought and yields an empty
-/// answer. So every call requests `thinkingHeadroomTokens` up front (clamped
-/// to the context window): a cap, not a target — unused budget isn't billed,
-/// and non-thinking models simply never use it.
+/// Thinking mode is stated on every call and never left to the provider:
+/// DeepSeek defaults it to *enabled* on both slots, so a body that merely
+/// omits the toggle buys chain-of-thought for the high-volume labeling stages
+/// and bills it as output at the full rate. Measured on 2026-07-30, that was
+/// 76% of a day's spend — flash averaged 9,241 completion tokens on prompts
+/// asking for ~400, and the two calls that ran past the cap returned no
+/// content at all after four minutes.
+///
+/// Only the reasoning slot asks for thinking (`Role.thinks`), and only that
+/// slot carries the `thinkingHeadroomTokens` floor: a thinking model streams
+/// its reasoning into `reasoning_content` out of the same `max_tokens` budget
+/// as its answer, so a cap sized for the answer alone truncates it mid-thought
+/// and yields an empty answer. On a non-thinking slot that same floor bounds
+/// nothing and only hides runaway generation.
 struct DeepSeekBackend: LLMBackend {
     let name: String
     let apiKey: String
@@ -27,6 +35,9 @@ struct DeepSeekBackend: LLMBackend {
     /// Nonzero only for the reasoning slot — see
     /// `reasoningResponseHeadroomTokens`.
     let responseHeadroomTokens: Int
+    /// Whether this slot's chain-of-thought is worth paying for — see
+    /// `Role.thinks`.
+    let thinks: Bool
     /// Where billed token counts land (`LLMUsage`). This is the only place in
     /// the codebase that ever sees a provider's `usage` object, so if it isn't
     /// written here the cost of a day's analysis is gone for good.
@@ -37,13 +48,14 @@ struct DeepSeekBackend: LLMBackend {
     /// points the base URL at. Batching sizes prompts to it (invariant 7).
     let contextWindowTokens = 60_000
 
-    /// The `max_tokens` floor for every call: observed reasoning runs are
-    /// 2-3k tokens, so this is generous while staying inside the output limit
-    /// of any OpenAI-compatible server. It still exists (rather than sending
-    /// the whole window remainder) to bound a runaway reasoning loop's cost
-    /// and latency. A run that thinks past it gets one retry at the whole
+    /// The `max_tokens` floor for a *thinking* call: observed reasoning runs
+    /// are 2-3k tokens, so this is generous while staying inside the output
+    /// limit of any OpenAI-compatible server. It still exists (rather than
+    /// sending the whole window remainder) to bound a runaway reasoning loop's
+    /// cost and latency. A run that thinks past it gets one retry at the whole
     /// window remainder (see `complete`) — escalation is the exception path,
-    /// so the common case stays bounded.
+    /// so the common case stays bounded. Non-thinking calls never take this
+    /// floor: they ask for what the stage asked for.
     static let thinkingHeadroomTokens = 16_000
 
     /// What reasoning-slot batchers must keep free in the window
@@ -54,10 +66,11 @@ struct DeepSeekBackend: LLMBackend {
 
     static let defaultBaseURL = "https://api.deepseek.com"
     /// Two model slots, one backend. The fast slot (V4 Flash: an order of
-    /// magnitude cheaper, non-reasoning, returns in seconds) serves the
-    /// high-volume labeling stages; the reasoning slot (V4 Pro, a thinking
-    /// model) serves the judgment-heavy grouping stages that decide what a
-    /// task *is*. Either can be overridden independently in settings.
+    /// magnitude cheaper, and run with thinking off — see `Role.thinks` — so
+    /// it answers in seconds) serves the high-volume labeling stages; the
+    /// reasoning slot (V4 Pro, run as the thinking model it is) serves the
+    /// judgment-heavy grouping stages that decide what a task *is*. Either can
+    /// be overridden independently in settings.
     static let defaultModel = "deepseek-v4-flash"
     static let defaultReasoningModel = "deepseek-v4-pro"
 
@@ -86,6 +99,17 @@ struct DeepSeekBackend: LLMBackend {
             case .reasoning: return DeepSeekBackend.reasoningResponseHeadroomTokens
             }
         }
+
+        /// Whether chain-of-thought is what this slot is bought for. Stated
+        /// per slot rather than inferred from `responseHeadroomTokens == 0`
+        /// because it is a claim about the model, not about batch sizing, and
+        /// the two only happen to coincide.
+        var thinks: Bool {
+            switch self {
+            case .fast: return false
+            case .reasoning: return true
+            }
+        }
     }
 
     /// Nil when analysis is off or no key exists. No key ⇒ rules-only and
@@ -103,25 +127,39 @@ struct DeepSeekBackend: LLMBackend {
             name: model, apiKey: key, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
             responseHeadroomTokens: role.responseHeadroomTokens,
-            database: database)
+            thinks: role.thinks, database: database)
+    }
+
+    /// The `max_tokens` one call asks for, clamped so prompt + response still
+    /// fit the context window. Only a thinking slot takes the headroom floor;
+    /// a non-thinking one asks for exactly what the stage reserved, so a card
+    /// prompt written for ~400 tokens is capped near 400 and a model that
+    /// starts generating without stopping is cut off rather than indulged.
+    func responseCap(prompt: String, maxTokens: Int) -> Int {
+        let remainder = contextWindowTokens - LLMTokens.estimate(prompt)
+        let wanted = thinks ? max(maxTokens, Self.thinkingHeadroomTokens) : maxTokens
+        return min(wanted, max(maxTokens, remainder))
     }
 
     func complete(prompt: String, maxTokens: Int) async throws -> String {
-        // Headroom for chain-of-thought on every call, clamped so prompt +
-        // response still fit the context window.
         let remainder = contextWindowTokens - LLMTokens.estimate(prompt)
-        let cap = min(
-            max(maxTokens, Self.thinkingHeadroomTokens),
-            max(maxTokens, remainder))
+        let cap = responseCap(prompt: prompt, maxTokens: maxTokens)
         do {
             return try await send(prompt: prompt, maxTokens: cap)
-        } catch is ResponseTruncated where remainder > cap {
-            // The model thought past the cap and returned no answer. One
-            // retry at the whole window remainder — batchers reserve
+        } catch is ResponseTruncated where thinks && remainder > cap {
+            // A thinking model thought past the cap and returned no answer.
+            // One retry at the whole window remainder — batchers reserve
             // `responseHeadroomTokens`, so a reasoning-slot retry always has
             // at least another `thinkingHeadroomTokens` to grow into. Paying
             // the prompt twice beats losing the pass, and the provider's
             // context cache discounts the resent prompt.
+            //
+            // Deliberately not offered to the fast slot: with thinking off,
+            // a labeling call that runs out of budget without emitting content
+            // is a bug in the prompt or the reserve, and re-asking at a bigger
+            // cap buys a second full-price answer to hide it. The two
+            // escalations measured on 2026-07-30 cost 50.6% of the day and
+            // produced nothing.
             do {
                 return try await send(prompt: prompt, maxTokens: remainder)
             } catch let again as ResponseTruncated {
@@ -140,20 +178,35 @@ struct DeepSeekBackend: LLMBackend {
         let detail: String
     }
 
+    /// The JSON body of one chat-completions call. Split out of `send` so the
+    /// wire format can be asserted without a live call: what this dictionary
+    /// does or doesn't say about thinking mode is worth more than the rest of
+    /// the bill put together, and nothing else in the process observes it.
+    func requestBody(prompt: String, maxTokens: Int) -> [String: Any] {
+        [
+            "model": model,
+            "max_tokens": maxTokens,
+            "temperature": 0.2,
+            // Never omitted: DeepSeek's default is `enabled` on both slots.
+            "thinking": ["type": thinks ? "enabled" : "disabled"],
+            "messages": [["role": "user", "content": prompt]]
+        ]
+    }
+
     private func send(prompt: String, maxTokens: Int) async throws -> String {
         guard let url = URL(string: baseURL + "/chat/completions") else {
             throw LLMError.unavailable("bad base URL: \(baseURL)")
         }
         var request = URLRequest(url: url)
+        // URLSession's 60s default assumes a chatty cloud endpoint; a local
+        // server prefilling a long prompt sends nothing until it finishes, so
+        // the client must outwait the whole compute, not a network round trip.
+        request.timeoutInterval = 600
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model,
-            "max_tokens": maxTokens,
-            "temperature": 0.2,
-            "messages": [["role": "user", "content": prompt]]
-        ])
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: requestBody(prompt: prompt, maxTokens: maxTokens))
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
