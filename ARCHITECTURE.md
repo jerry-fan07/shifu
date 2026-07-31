@@ -127,6 +127,18 @@ right of `observations` happens in `shifu-analyzer`.
    - **Rung 3 — OCR.** Screenshot → dHash gate → Vision OCR. Only reached when
      rung 2 came up short. The dHash gate means a fullscreen video records
      *one* observation, not one per heartbeat.
+
+   The gate's "unchanged" verdict is a claim about the *screen*, never on its
+   own a licence to write nothing. It sits over two dedupe states with
+   different lifetimes — the engine's `lastDHashByKey` (LRU, no TTL) and the
+   recorder's per-window state (below, expires) — so an unchanged screen
+   returned to after a long enough absence hits a gate that still says
+   "unchanged" and a row that is already gone. `touch` reporting **`false` is
+   the seam between them**: it means the observation the gate had in mind has
+   expired, and the capture must be recorded fresh. Swallow it and the window
+   leaves the ledger *permanently*, since a static screen keeps matching that
+   cached hash on every later heartbeat — the bug that
+   `unchangedScreenPastTheDedupeTTLIsLoggedAgain` pins.
 3. **[ObservationRecorder.swift](Sources/ShifuCore/Capture/ObservationRecorder.swift)**
    is the single write path, and applies in order: drop text for excluded
    kinds → truncate to 8 KB → **`Redactor.redact`** → SimHash near-duplicate
