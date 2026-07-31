@@ -66,7 +66,7 @@ extension ShifuDatabase {
                 table.primaryKey("key", .text)
                 table.column("value", .text).notNull()
             }
-            // Work Mode sessions, for adherence stats (design.md §4.4).
+            // Focus Mode sessions, for adherence stats (design.md §4.4).
             try db.create(table: "work_mode_sessions") { table in
                 table.autoIncrementedPrimaryKey("id")
                 table.column("started_at", .integer).notNull()
@@ -524,6 +524,100 @@ extension ShifuDatabase {
                     """, arguments: [
                         row["title"], shape.summary, shape.words, shape.sections, row["rowid"]
                     ])
+            }
+        }
+
+        migrator.registerMigration("v25-focus-mode-names") { db in
+            // "Work Mode" named the feature after the thing it is not: the glow
+            // fires on distraction, and the list below governs a nudge, not a
+            // ledger category. The rename is cosmetic everywhere except here,
+            // where the old name is written down — and a stored name left
+            // behind is how a rename becomes two vocabularies instead of one.
+            //
+            // Both statements move data the user owns: adherence history, and
+            // the sites they listed themselves. Neither is derived, so neither
+            // can be rebuilt if it is dropped instead of carried.
+            try db.rename(table: "work_mode_sessions", to: "focus_mode_sessions")
+            try db.execute(sql: """
+                UPDATE settings SET key = 'focusmode.distracting_domains'
+                WHERE key = 'workmode.distracting_domains'
+                """)
+        }
+
+        migrator.registerMigration("v26-system-shell-purge") { db in
+            // System shells (TaskGrouper.isSystemBundle) stop at the ledger's
+            // write boundary now — `LedgerBuilder.rebuild` drops their blocks
+            // before insert. Everything already on disk was written under the
+            // old rule, where nine read paths each had to remember to exclude
+            // them and four didn't, so leaving the rows would leave those four
+            // bugs alive on history alone: the dogfood DB held 629 such rows,
+            // 849 h of `loginwindow`, 145 theme-clustering attempts spent on
+            // lock screens, and 8.1 of "Shifu Development"'s 40.5 h.
+            //
+            // Deleting derived rows is safe in a way deleting captures would
+            // not be: `activities` is re-derived from `observations`, which
+            // this migration does not touch. `shifu-analyzer --rebuild` puts
+            // back anything a future edit to the denylist should have kept.
+            //
+            // Filtering in Swift rather than as a SQL predicate keeps
+            // `isSystemBundle` the single source of truth — a hand-copied
+            // `NOT LIKE`/`NOT IN` here is exactly the drift this change exists
+            // to end. Only the distinct bundles are read, so the scan is cheap
+            // whatever the ledger's size.
+            let doomedBundles = try String
+                .fetchAll(db, sql: "SELECT DISTINCT app_bundle FROM activities")
+                .filter(TaskGrouper.isSystemBundle)
+            guard !doomedBundles.isEmpty else { return }
+            let bundleMarks = databaseQuestionMarks(count: doomedBundles.count)
+            let bundleArguments = StatementArguments(doomedBundles)
+
+            // Days whose `task_logs` are about to be wrong. `TaskGrouper` only
+            // ever *set* `task_id`, so blocks filed under a real task before
+            // the grouper began skipping them kept that assignment — which is
+            // why the ledger showed "loginwindow" among a task's busiest
+            // sources. Their minutes are inside those days' totals, and the
+            // hourly rebuild only recomputes the last 48 h of logs, so the
+            // days behind that window would keep the deleted time forever.
+            // Read before the delete: afterwards there is nothing to ask.
+            let orphanedSpans = try Row.fetchAll(db, sql: """
+                SELECT started_at, ended_at FROM activities
+                WHERE task_id IS NOT NULL AND app_bundle IN (\(bundleMarks))
+                """, arguments: bundleArguments
+            ).map { (start: $0["started_at"] as Int64, end: $0["ended_at"] as Int64) }
+
+            try db.execute(
+                sql: "DELETE FROM activities WHERE app_bundle IN (\(bundleMarks))",
+                arguments: bundleArguments)
+
+            // The `app:` tasks those blocks minted, before the grouper's
+            // denylist existed. They are unreachable now — nothing can give
+            // them another block — but they still sit in the task list, and
+            // `TaskStore.prune` no longer carries the clause that took them.
+            // A rename still spares one: it is the user's row at that point,
+            // and `isDefaultName` is the same test prune uses.
+            let deadTasks = try Row
+                .fetchAll(db, sql: "SELECT id, key, name FROM tasks WHERE key LIKE 'app:%'")
+                .filter { row in
+                    let key: String = row["key"]
+                    return TaskGrouper.isSystemBundle(String(key.dropFirst(4)))
+                        && TaskGrouper.isDefaultName(row["name"], forKey: key)
+                }
+                .map { $0["id"] as Int64 }
+            if !deadTasks.isEmpty {
+                let taskMarks = databaseQuestionMarks(count: deadTasks.count)
+                let taskArguments = StatementArguments(deadTasks)
+                // `activities.task_id` carries no foreign key, so a plain
+                // DELETE would leave live blocks pointing at nothing.
+                try db.execute(
+                    sql: "UPDATE activities SET task_id = NULL WHERE task_id IN (\(taskMarks))",
+                    arguments: taskArguments)
+                // task_logs cascade with their task.
+                try db.execute(sql: "DELETE FROM tasks WHERE id IN (\(taskMarks))",
+                               arguments: taskArguments)
+            }
+
+            for day in TaskGrouper.affectedDays(of: orphanedSpans, calendar: .current) {
+                try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
             }
         }
 

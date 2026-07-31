@@ -20,6 +20,17 @@ enum LedgerShapes {
 
         var span: Int { max(1, endHour - startHour) }
 
+        /// Midnight to midnight — the clock a single day's rail is drawn on.
+        ///
+        /// Fixed rather than fitted, for the reason the Timeline's columns are:
+        /// where a band sits *is* where in the day you were, and an empty
+        /// evening should look like an empty evening. A rail cut to the hours
+        /// that happened to have blocks in them reads as a full day at a
+        /// glance and isn't one — the same 9-to-5 draws edge to edge on a
+        /// working day and half that wide on a day that also had a late
+        /// night — and its axis ends wherever the last block did.
+        static let day = Clock(startHour: 0, endHour: 24)
+
         /// This clock placed on one particular day.
         func on(_ day: Date, calendar: Calendar = .current) -> (from: Date, to: Date) {
             let midnight = calendar.startOfDay(for: day)
@@ -31,19 +42,29 @@ enum LedgerShapes {
 
     /// The hours worth drawing: the earliest hour any block starts to the last
     /// hour any block ends, over the blocks *inside* `from...to`. An eight-hour
-    /// day then fills the rail instead of sitting in the middle of a
-    /// twenty-four-hour one. Empty windows fall back to a working day.
+    /// week then fills the rails instead of sitting in the middle of
+    /// twenty-four-hour ones. Empty windows fall back to a working day.
+    ///
+    /// For the week band, where seven rails share one clock and the point is
+    /// the *shift* of the bands down the column: fitting it is what makes that
+    /// shift visible. A single day is drawn on `Clock.day` instead — see there
+    /// for why the two disagree on purpose.
+    ///
+    /// `plus` widens the fit with spans that aren't blocks — the focus week
+    /// passes its sessions, so one that ran past the last tracked block still
+    /// fits on the clock instead of being clipped mid-band.
     static func clock(
-        _ activities: [LedgerBuilder.LabeledActivity], from: Date, to: Date,
-        calendar: Calendar = .current
+        _ activities: [LedgerBuilder.LabeledActivity],
+        plus spans: [(Int64, Int64)] = [],
+        from: Date, to: Date, calendar: Calendar = .current
     ) -> Clock {
         let fromMs = Int64(from.timeIntervalSince1970 * 1_000)
         let toMs = Int64(to.timeIntervalSince1970 * 1_000)
         var earliest = 24
         var latest = 0
-        for activity in activities {
-            let start = max(activity.startedAt, fromMs)
-            let end = min(activity.endedAt, toMs)
+        for span in activities.map({ ($0.startedAt, $0.endedAt) }) + spans {
+            let start = max(span.0, fromMs)
+            let end = min(span.1, toMs)
             guard end > start else { continue }
             let startDate = Date(timeIntervalSince1970: Double(start) / 1_000)
             let endDate = Date(timeIntervalSince1970: Double(end) / 1_000)
@@ -140,6 +161,95 @@ enum LedgerShapes {
             id: segments.count, weight: 1, fill: fill, caption: caption))
     }
 
+    /// The window resampled the way `ribbon` resamples it, but answering one
+    /// question: when was Focus Mode on. Session time draws in the warm slot —
+    /// the one gold in the band, so it cannot be mistaken for a series —
+    /// tracked time outside a session recedes to the quiet grey, and untracked
+    /// stretches stay gaps. Each gold band carries its session's span in the
+    /// tooltip; columns merge only within one session, so two sessions
+    /// back-to-back still read as two.
+    static func focusRibbon(
+        sessions: [FocusReport.Session], activities: [LedgerBuilder.LabeledActivity],
+        from: Date, to: Date
+    ) -> [RibbonSegment] {
+        let fromMs = Int64(from.timeIntervalSince1970 * 1_000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1_000)
+        guard toMs > fromMs else { return [] }
+        let columnMs = Double(toMs - fromMs) / Double(columns)
+        guard columnMs > 0 else { return [] }
+
+        // column → session id → ms of it under Focus Mode, and the plain
+        // tracked ms beside it for the receded context.
+        var focus = [[Int64: Double]](repeating: [:], count: columns)
+        var tracked = [Double](repeating: 0, count: columns)
+        for session in sessions {
+            eachColumn((session.startedAt, session.endedAt),
+                       fromMs: fromMs, toMs: toMs, columnMs: columnMs) { column, overlap in
+                focus[column][session.id, default: 0] += overlap
+            }
+        }
+        for activity in activities {
+            eachColumn((activity.startedAt, activity.endedAt),
+                       fromMs: fromMs, toMs: toMs, columnMs: columnMs) { column, overlap in
+                tracked[column] += overlap
+            }
+        }
+
+        let captions = Dictionary(uniqueKeysWithValues: sessions.map {
+            ($0.id, "Focus — " + span($0))
+        })
+        var segments: [RibbonSegment] = []
+        for column in 0..<columns {
+            let inSession = focus[column].values.reduce(0, +)
+            if inSession >= columnMs * 0.5,
+               let winner = focus[column].max(by: { $0.value < $1.value }) {
+                append(&segments, fill: .series(Instrument.warm),
+                       caption: captions[winner.key] ?? "Focus")
+            } else if tracked[column] >= columnMs * coverage {
+                append(&segments, fill: .series(Instrument.quiet), caption: "Outside focus")
+            } else {
+                append(&segments, fill: .gap, caption: "")
+            }
+        }
+        return segments
+    }
+
+    /// "10:05 AM – 1:40 PM", or "since 10:05 AM" while the session is still
+    /// open — the ribbon tooltip's and the session table's shared label.
+    ///
+    /// Two clock times rather than one interval on purpose: the interval
+    /// style spells out both full dates the moment a session crosses
+    /// midnight, and the overnight sessions on a real ledger are exactly the
+    /// long ones the table exists to show.
+    static func span(_ session: FocusReport.Session) -> String {
+        let start = Date(timeIntervalSince1970: Double(session.startedAt) / 1_000)
+        guard !session.isLive else {
+            return "since " + start.formatted(.dateTime.hour().minute())
+        }
+        let end = Date(timeIntervalSince1970: Double(session.endedAt) / 1_000)
+        return start.formatted(.dateTime.hour().minute()) + " – "
+            + end.formatted(.dateTime.hour().minute())
+    }
+
+    /// One span's overlap with every column it touches — the same walk
+    /// `ribbon` does inline, shared here between the two accumulators.
+    private static func eachColumn(
+        _ span: (Int64, Int64), fromMs: Int64, toMs: Int64, columnMs: Double,
+        _ add: (Int, Double) -> Void
+    ) {
+        let start = max(span.0, fromMs)
+        let end = min(span.1, toMs)
+        guard end > start else { return }
+        let first = Int(Double(start - fromMs) / columnMs)
+        let last = Int(Double(end - fromMs - 1) / columnMs)
+        for column in max(0, first)...min(columns - 1, max(0, last)) {
+            let columnStart = Double(fromMs) + Double(column) * columnMs
+            let overlap = min(Double(end), columnStart + columnMs) - max(Double(start), columnStart)
+            guard overlap > 0 else { continue }
+            add(column, overlap)
+        }
+    }
+
     /// Where an instant falls across one rail, 0…1 — nil for one outside it.
     ///
     /// Takes the rail's own bounds rather than the clock's hours, so a mark
@@ -225,16 +335,35 @@ enum LedgerShapes {
         let hour: Int
         let place: Double
 
-        var id: Int { hour }
+        /// Two digits, so the run of them is a column of the same width: the
+        /// closing tick of a midnight-to-midnight rail is "24", the end of the
+        /// day rather than the start of it.
+        var label: String { String(format: "%02d", hour) }
+
+        /// The place, not the hour: a rail can name the same hour twice — 00 at
+        /// its start and 00 the following midnight — and identity by hour would
+        /// collapse the two into one label.
+        var id: Double { place }
     }
 
-    /// The hours to tick under a rail: at most `limit`, every `step` hours,
-    /// always including the first.
+    /// The hours to tick under a rail: at most `limit` evenly spaced, every
+    /// `step` hours from the first, plus the hour the rail closes on.
+    ///
+    /// The closing hour is ticked separately because the stride can't reach it:
+    /// eight ticks over a day land every three hours and stop at 21:00, leaving
+    /// the rail's last three hours — an evening — under an unnamed edge. The
+    /// rail *ends* somewhere, and the axis is the thing you read that off.
     static func ticks(_ clock: Clock, limit: Int = 8) -> [AxisTick] {
         let step = max(1, Int((Double(clock.span) / Double(limit)).rounded(.up)))
-        return stride(from: 0, to: clock.span, by: step).map {
+        var ticks = stride(from: 0, to: clock.span, by: step).map {
             AxisTick(hour: (clock.startHour + $0) % 24, place: Double($0) / Double(clock.span))
         }
+        // Wrapped into 1…24 rather than 0…23: a rail closing at midnight closes
+        // on the 24th hour, and labelling that end "00" would read as the
+        // morning it isn't. A rail closing at 04:00 the next day still says 04.
+        ticks.append(
+            AxisTick(hour: (clock.startHour + clock.span - 1) % 24 + 1, place: 1))
+        return ticks
     }
 
     /// Weekly totals per group over the trailing `weeks` calendar weeks,

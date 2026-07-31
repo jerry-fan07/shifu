@@ -6,7 +6,9 @@ import SwiftUI
 /// draw over them.
 ///
 /// - *Breakdown* — where the time went: the window as a ribbon (one rail a
-///   day), then a ranked table with a meter per row.
+///   day), then a ranked table with a meter per row. Its picker carries a
+///   third position, Focus, which swaps the page for the Focus Mode session
+///   view (FocusViews) — a reading of the same window, not another grouping.
 /// - *Timeline* — when it happened, in detail: stacked bars over the hours or
 ///   days with each group's total under them, then every block in order. The
 ///   ribbon says "what was the morning"; the bars say "how much at 10 AM".
@@ -25,6 +27,9 @@ struct LedgerView: View {
     @AppStorage("shifu.ledger.week") private var isWeek = false
     /// The week's blocks, read once on appear — the day's come from the store.
     @State private var weekBlocks: [LedgerBuilder.LabeledActivity] = []
+    /// The window's Focus Mode sessions, read in `load()` with everything else
+    /// — the Focus page's rows.
+    @State private var focusSessions: [FocusModeSessions.Session] = []
     /// Tracked ms in the window one day (or week) back, read once in `load()`
     /// with the blocks. The body must never open the database: it re-runs on
     /// every store publish, and it used to re-run per hover crossing — the
@@ -34,6 +39,16 @@ struct LedgerView: View {
     /// they came from. Week only: a single day has no run to read.
     @State private var signals: [Rhythms.Signal] = []
 
+    /// What the Breakdown's third segment selects. Not a `TimeLens` case: it
+    /// doesn't group blocks, it swaps the page — but it shares the persisted
+    /// raw value, so the picker remembers Focus across launches the way it
+    /// remembers a lens.
+    private static let focusRaw = "Focus"
+
+    private var isFocus: Bool { mode == .breakdown && lensRaw == Self.focusRaw }
+
+    /// Coerces an unknown raw (Focus here, or a retired lens) to Category, so
+    /// the Timeline always has a real grouping to draw.
     private var lens: TimeLens {
         get { TimeLens(rawValue: lensRaw) ?? .category }
         nonmutating set { lensRaw = newValue.rawValue }
@@ -42,12 +57,28 @@ struct LedgerView: View {
     var body: some View {
         let window = range
         let blocks = isWeek ? weekBlocks : store.todayActivities
+        Group {
+            if isFocus {
+                FocusPage(
+                    blocks: blocks, raw: focusSessions, window: window, isWeek: isWeek
+                ) { pickers }
+            } else {
+                lensPage(blocks: blocks, window: window)
+            }
+        }
+        .onAppear(perform: load)
+        .onChange(of: isWeek) { _, _ in load() }
+    }
+
+    private func lensPage(
+        blocks: [LedgerBuilder.LabeledActivity], window: (from: Date, to: Date)
+    ) -> some View {
         let slices = TimeBreakdown.slices(
             blocks, lens: lens, from: window.from, to: window.to,
             limit: lens == .category ? nil : TimeBreakdown.maxGroups)
         let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
 
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             head(blocks: blocks, window: window)
             if !blocks.isEmpty {
                 Band {
@@ -66,13 +97,14 @@ struct LedgerView: View {
             }
             table(blocks: blocks, slices: slices)
         }
-        .onAppear(perform: load)
-        .onChange(of: isWeek) { _, _ in load() }
     }
 
     private func load() {
         store.refresh()
         let window = range
+        if mode == .breakdown {
+            focusSessions = store.focusSessions(from: window.from, to: window.to)
+        }
         if isWeek {
             weekBlocks = store.activities(sinceWeeksAgo: 1)
             signals = Rhythms.signals(weekBlocks, from: window.from, to: window.to)
@@ -101,10 +133,27 @@ struct LedgerView: View {
         ) {
             summaryLine(blocks: blocks, total: total)
         } trailing: {
-            HStack(spacing: 6) {
+            pickers
+        }
+    }
+
+    /// The window and lens controls, shared with the Focus page so switching
+    /// off Focus is the same gesture that switched it on. The Breakdown's
+    /// picker works on raw values because Focus isn't a `TimeLens`; the
+    /// Timeline's stays on the enum and never offers Focus.
+    private var pickers: some View {
+        HStack(spacing: 6) {
+            SegmentedBar(
+                options: [("Day", false), ("Week", true)],
+                selection: $isWeek)
+            if mode == .breakdown {
                 SegmentedBar(
-                    options: [("Day", false), ("Week", true)],
-                    selection: $isWeek)
+                    options: TimeLens.allCases.map { ($0.rawValue, $0.rawValue) }
+                        + [(Self.focusRaw, Self.focusRaw)],
+                    selection: Binding(
+                        get: { isFocus ? Self.focusRaw : lens.rawValue },
+                        set: { lensRaw = $0 }))
+            } else {
                 SegmentedBar(
                     options: TimeLens.allCases.map { ($0.rawValue, $0) },
                     selection: Binding(get: { lens }, set: { lens = $0 }))
@@ -141,16 +190,18 @@ struct LedgerView: View {
 
     // MARK: - Ribbons
 
+    /// The day on one rail, midnight to midnight — `LedgerShapes.Clock.day`
+    /// rather than the day's own fitted hours, so the rail is the same clock
+    /// every day and a band's position along it is the hour it happened at.
     private func dayRibbon(
         blocks: [LedgerBuilder.LabeledActivity], colors: [String: Color],
         window: (from: Date, to: Date)
     ) -> some View {
-        let clock = LedgerShapes.clock(blocks, from: window.from, to: window.to)
-        let rail = clock.on(window.from)
+        let rail = LedgerShapes.Clock.day.on(window.from)
         return VStack(spacing: 0) {
             Ribbon(segments: LedgerShapes.ribbon(
                 blocks, lens: lens, colors: colors, from: rail.from, to: rail.to))
-            RibbonAxis(ticks: LedgerShapes.ticks(clock))
+            RibbonAxis(ticks: LedgerShapes.ticks(.day))
         }
     }
 
@@ -262,11 +313,12 @@ struct LedgerView: View {
 
 /// The head's summary, cut to the room it has: the longest run of leading
 /// `parts` whose joined line fits, so the facts at the end are the first to
-/// go. The fit is *measured*, with the face's own NSFont, the way a drop-down
+/// go. Shared with the Focus page's head, which carries the same kind of
+/// line. The fit is *measured*, with the face's own NSFont, the way a drop-down
 /// sizes its panel — not solved by `ViewThatFits`, whose trial layout of
 /// every candidate re-ran on every commit of the page, whatever had changed,
 /// and was most of a pinned core under a hover sweep of the table below.
-private struct SummaryLine: View {
+struct SummaryLine: View {
     let parts: [(text: String, color: Color)]
 
     @MainActor private static let font = Instrument.sansFont(12.5)
@@ -338,8 +390,7 @@ private struct TimelineChart: View {
     /// were, and an empty evening should look like an empty evening.
     private var hourSlots: [LedgerShapes.Slot] {
         let calendar = Calendar.current
-        let ticked = Set(
-            LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)).map(\.hour))
+        let ticked = Set(LedgerShapes.ticks(.day).map(\.hour))
         let midnight = calendar.startOfDay(for: window.from)
         return (0..<24).compactMap { hour in
             guard let from = calendar.date(byAdding: .hour, value: hour, to: midnight),

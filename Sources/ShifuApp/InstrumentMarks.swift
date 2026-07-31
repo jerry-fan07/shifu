@@ -114,11 +114,12 @@ struct Ribbon: View {
 /// The hours the ribbon spans, ticked under it.
 ///
 /// Each label is centred on the instant it names. The obvious layout — an
-/// `HStack` of labels with `Spacer`s between them — is wrong for any rail
-/// whose last tick isn't its last hour: eight ticks over a 24-hour clock cover
-/// 00:00 to 21:00, and spacing them by count stretches seven eighths of a day
-/// across all of it, so every label drifts right of the band it belongs to,
-/// reaching nearly three hours by the end. An axis that disagrees with the
+/// `HStack` of labels with `Spacer`s between them — is wrong for any rail whose
+/// ticks aren't a uniform division of it: a rail from 07:00 to 22:00 ticked
+/// every two hours runs 07, 09 … 21, 22, and the closing hour is one hour past
+/// its neighbour where every other gap is two. Spacing those nine by count puts
+/// 21 seven eighths along when the hour itself falls fourteen fifteenths along,
+/// an hour's drift off the band it names. An axis that disagrees with the
 /// bands above it is worse than no axis, because it is the thing you check
 /// them against.
 ///
@@ -137,7 +138,7 @@ struct RibbonAxis: View {
     var body: some View {
         GeometryReader { proxy in
             ForEach(ticks) { tick in
-                Text(String(format: "%02d", tick.hour))
+                Text(tick.label)
                     .font(Instrument.mono(10))
                     .foregroundStyle(Instrument.ghost)
                     .position(

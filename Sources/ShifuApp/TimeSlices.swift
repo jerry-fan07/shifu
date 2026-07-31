@@ -4,17 +4,19 @@ import SwiftUI
 /// What the Ledger breaks time down by (design.md §7, §5.3). Breakdown,
 /// Timeline, and Week all read the same lens, so changing place never changes
 /// what a group means — only how much of it you are looking at.
+///
+/// The Breakdown's picker carries a third option, Focus, which is not a lens
+/// at all — it swaps the whole page for the focus-session view (FocusViews) —
+/// so it lives beside this enum in `LedgerView`, not in it.
 enum TimeLens: String, CaseIterable {
     case category = "Category"
     case theme = "Theme"
-    case task = "Task"
 
     /// This lens's group label for one activity block.
     func label(_ activity: LedgerBuilder.LabeledActivity) -> String {
         switch self {
         case .category: return activity.category
         case .theme: return activity.themeName ?? "No theme"
-        case .task: return activity.taskName ?? "No task"
         }
     }
 
@@ -61,7 +63,7 @@ struct TimeSlice: Identifiable {
 enum TimeBreakdown {
     /// Where everything past the lens's group limit lands.
     static let otherLabel = "Other"
-    /// How many groups a theme or task lens ranks before folding the rest into
+    /// How many groups the theme lens ranks before folding the rest into
     /// `otherLabel`, so the table and the ribbon stay readable over a busy
     /// week. Lives here rather than on the view that passes it, because it is
     /// half of an invariant whose other half is `TimePalette.groupHues`: a
@@ -210,14 +212,14 @@ enum TimePalette {
         "private": Instrument.quiet, "unclassified": Instrument.other
     ]
 
-    /// Hue order for theme and task groups. Still a *short* fixed list — a
-    /// seventh group takes a slot again rather than minting a hue, and anything
-    /// past the lens's limit folds into "Other" — but no longer shorter than
-    /// the limit it serves: at five slots against a `TimeBreakdown.maxGroups`
-    /// of six, the sixth group had nowhere to go and always duplicated one of
-    /// the five. Six hues for six groups is what makes "two groups on screen
-    /// together never share one" true rather than aspirational, and it is exact
-    /// — raising `maxGroups` means adding a hue in the same commit.
+    /// Hue order for theme groups. Still a *short* fixed list — a seventh group
+    /// takes a slot again rather than minting a hue, and anything past the
+    /// lens's limit folds into "Other" — but no longer shorter than the limit
+    /// it serves: at five slots against a `TimeBreakdown.maxGroups` of six, the
+    /// sixth group had nowhere to go and always duplicated one of the five. Six
+    /// hues for six groups is what makes "two groups on screen together never
+    /// share one" true rather than aspirational, and it is exact — raising
+    /// `maxGroups` means adding a hue in the same commit.
     static let groupHues: [Color] = Instrument.slots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.
@@ -225,7 +227,7 @@ enum TimePalette {
 
     /// Colors for one lens's groups, in ranked order.
     ///
-    /// Category names have fixed colors. Theme and task names take a hue from a
+    /// Category names have fixed colors. Theme names take a hue from a
     /// stable hash of the name — color follows the *group*, not its rank, so
     /// flipping Day↔Week or dropping a group doesn't repaint the survivors.
     /// Hash collisions fall forward to the first free hue so two groups on

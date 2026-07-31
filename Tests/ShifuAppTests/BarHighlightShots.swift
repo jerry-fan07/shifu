@@ -32,12 +32,12 @@ import Testing
         let window = (from: Calendar.current.startOfWeek(for: now), to: now)
 
         // Both scales, because they are different palettes and only one of
-        // them is a ramp. Task hues come from a hash over `Instrument.slots`;
+        // them is a ramp. Theme hues come from a hash over `Instrument.slots`;
         // Category hues are a fixed eight-name table that reaches for the
         // greys the recede also lives among — so it is the Category lens, in
         // dark, that says whether the recede clears every series or only the
         // colourful ones.
-        for lens in [TimeLens.task, .category] {
+        for lens in [TimeLens.theme, .category] {
             let slices = TimeBreakdown.slices(
                 blocks, lens: lens, from: window.from, to: window.to,
                 limit: lens == .category ? nil : 6)

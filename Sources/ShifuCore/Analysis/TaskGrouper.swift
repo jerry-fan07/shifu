@@ -23,7 +23,9 @@ public enum TaskGrouper {
     /// so stay forever above the prune threshold. Checked through
     /// `isSystemBundle`, which adds two prefix families a set can't
     /// enumerate. Grounded in the dogfood ledger rather than exhaustive: a
-    /// missed bundle just means one more junk task until it's added here.
+    /// missed bundle just means one more junk task until it's added here —
+    /// and adding it is retroactive, since `--rebuild` re-derives the whole
+    /// ledger from the observations, which are never filtered.
     public static let systemBundles: Set<String> = [
         "com.apple.loginwindow",              // lock/login screen
         "com.apple.dock",
@@ -42,36 +44,24 @@ public enum TaskGrouper {
         "com.apple.inputmethod.ironwood"      // dictation UI
     ]
 
-    /// True for bundles barred from task grouping entirely — mechanical and
-    /// semantic alike (`SemanticTaskGrouper.pendingSamples` mirrors this in
-    /// SQL): their blocks keep their ledger time but never mint or join a
-    /// task. Covers the `systemBundles` set, CaptureEngine's `unknown.<pid>`
-    /// placeholder for processes without a bundle id, and Shifu's own UI
-    /// (`com.shifu.*`) — watching the dashboard isn't work to track.
+    /// True for bundles that never reach the ledger at all. Covers the
+    /// `systemBundles` set, CaptureEngine's `unknown.<pid>` placeholder for
+    /// processes without a bundle id, and Shifu's own UI (`com.shifu.*`) —
+    /// watching the dashboard isn't work to track.
+    ///
+    /// **This has exactly one caller** (`LedgerBuilder.rebuild`) and that is
+    /// the point. The rule used to be enforced at read time, which meant
+    /// every query that touched `activities` had to remember it: five did,
+    /// four didn't, and the four were bugs — the theme clusterer spent 15% of
+    /// its attempts on lock screens, `CardBuilder` offered "logging into
+    /// system" as a topic to reuse, and 20% of the "Shifu Development" theme
+    /// was the user watching Shifu. Enforcing it where the row is written is
+    /// the same shape as the capture exclusions (CLAUDE.md invariant 3), and
+    /// it means a query added later cannot get this wrong.
     public static func isSystemBundle(_ bundle: String) -> Bool {
         let normalized = bundle.lowercased()
         if normalized.hasPrefix("unknown.") || normalized.hasPrefix("com.shifu.") { return true }
         return systemBundles.contains(normalized)
-    }
-
-    /// `isSystemBundle` as a SQL predicate, with the values it binds in order.
-    ///
-    /// Four queries have to agree with the Swift check — the Time page's two
-    /// reads (`LedgerBuilder`), the semantic candidate sweep, the radar dossier
-    /// — and a hand-copied `NOT LIKE`/`NOT IN` trio silently drifts the first
-    /// time a prefix family is added here. `column` is interpolated into SQL, so
-    /// it takes a literal column name from a caller in this package, never
-    /// user input.
-    public static func notSystemBundleSQL(
-        column: String = "app_bundle"
-    ) -> (clause: String, arguments: [String]) {
-        let denied = systemBundles.sorted()
-        let clause = """
-            LOWER(\(column)) NOT LIKE 'unknown.%'
-              AND LOWER(\(column)) NOT LIKE 'com.shifu.%'
-              AND LOWER(\(column)) NOT IN (\(databaseQuestionMarks(count: denied.count)))
-            """
-        return (clause, denied)
     }
 
     /// What one `run` did: distinct task keys assigned in the window, and
@@ -134,6 +124,21 @@ public enum TaskGrouper {
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 
+    /// True when the model echoed a prompt's `<…>` fill-in slot instead of
+    /// answering. Every placeholder in our prompts is punctuation only, so it
+    /// slugs to nothing — the same test `SemanticTaskGrouper.resolve` already
+    /// applies to titles, named here so gists can share it. Gists need it:
+    /// they bottom out in no key, so an echoed slot would reach the DB.
+    ///
+    /// The prompts used to carry a plausible *answer* in that slot instead
+    /// ("Booking flights for the SF trip" / "Comparing fares and picking
+    /// travel dates.") and the first task the model ever minted was that
+    /// example, verbatim, over unrelated evidence. An empty roster is the
+    /// worst case — a new install has to mint every task, with nothing but
+    /// the prompt to imitate — and a bad mint is a roster entry every later
+    /// batch is invited to reuse.
+    public static func isPlaceholder(_ text: String) -> Bool { slug(text).isEmpty }
+
     /// One log line: where the time went, then what it was about.
     /// "Xcode, github.com — debugging capture daemon; reading GRDB docs"
     static func summaryLine(sources: [String], topics: [String]) -> String {
@@ -180,7 +185,7 @@ public enum TaskGrouper {
         }
         var groups: [String: [Item]] = [:]
         var keyOrder: [String] = []
-        for item in items where !isSystemBundle(item.appBundle) {
+        for item in items {
             let itemKey = item.semKey
                 ?? key(topic: item.topic, domain: item.domain, appBundle: item.appBundle)
             if groups[itemKey] == nil { keyOrder.append(itemKey) }

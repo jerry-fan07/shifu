@@ -148,7 +148,6 @@ import Testing
         #expect(TimeLens.category.counted(8) == "8 categories")
         #expect(TimeLens.theme.counted(1) == "1 theme")
         #expect(TimeLens.theme.counted(3) == "3 themes")
-        #expect(TimeLens.task.counted(2) == "2 tasks")
     }
 }
 
@@ -179,14 +178,14 @@ import Testing
 
     /// The claim above is only worth anything up to the number of groups a
     /// lens actually ranks. The palette was five hues against a limit of six,
-    /// so a real week always drew two tasks in one colour while this suite —
+    /// so a real week always drew two themes in one colour while this suite —
     /// which only ever asked for `groupHues.count` names — stayed green.
     @Test func thePaletteHasAHueForEveryGroupALensWillRank() {
         #expect(TimePalette.groupHues.count >= TimeBreakdown.maxGroups)
 
-        let names = (0..<TimeBreakdown.maxGroups).map { "task-\($0)" }
+        let names = (0..<TimeBreakdown.maxGroups).map { "theme-\($0)" }
         let colors = TimePalette.colors(
-            for: names + [TimeBreakdown.otherLabel], lens: .task)
+            for: names + [TimeBreakdown.otherLabel], lens: .theme)
         #expect(Set(names.compactMap { colors[$0] }).count == names.count)
     }
 

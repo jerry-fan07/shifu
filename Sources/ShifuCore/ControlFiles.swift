@@ -65,24 +65,56 @@ public enum PauseFile {
     }
 }
 
-/// The Work Mode control file (design.md §4.4). Presence alone is the state;
+/// The Focus Mode control file (design.md §4.4). Presence alone is the state;
 /// contents are ignored, which is why the daemon watches *identity*
 /// (`ControlFileToken`) rather than mtime — see that type for why.
-public enum WorkModeFile {
+public enum FocusModeFile {
     static func file(in home: URL?) -> URL {
-        home.map { $0.appendingPathComponent("work_mode") } ?? ShifuPaths.workModeFile
+        home.map { $0.appendingPathComponent("focus_mode") } ?? ShifuPaths.focusModeFile
+    }
+
+    static func legacyFile(in home: URL?) -> URL {
+        home.map { $0.appendingPathComponent("work_mode") } ?? ShifuPaths.legacyFocusModeFile
+    }
+
+    /// Carries a pre-rename `work_mode` file over to `focus_mode`.
+    ///
+    /// Moved rather than recreated, because `rename(2)` keeps the inode and
+    /// birth time: Focus Mode left on across an upgrade keeps the same
+    /// `ControlFileToken`, so the daemon reads it as the session it already
+    /// has rather than ending one and starting another under the user.
+    ///
+    /// Every entry point calls this before it reads, so it does not matter
+    /// which of the three — daemon, app, CLI — runs first after the upgrade.
+    /// Idempotent, and after the first run it costs one `stat` on a path that
+    /// no longer exists.
+    public static func adoptLegacyName(home: URL? = nil) {
+        let manager = FileManager.default
+        let legacy = legacyFile(in: home)
+        guard manager.fileExists(atPath: legacy.path) else { return }
+        // Both names present means an older binary has been toggling the old
+        // one alongside a newer binary on the new one. The new name is the
+        // live state; the stale file is dropped rather than allowed to win.
+        if manager.fileExists(atPath: file(in: home).path) {
+            try? manager.removeItem(at: legacy)
+        } else {
+            try? manager.moveItem(at: legacy, to: file(in: home))
+        }
     }
 
     public static func isOn(home: URL? = nil) -> Bool {
-        FileManager.default.fileExists(atPath: file(in: home).path)
+        adoptLegacyName(home: home)
+        return FileManager.default.fileExists(atPath: file(in: home).path)
     }
 
     public static func turnOn(home: URL? = nil) throws {
         if home == nil { try ShifuPaths.ensureHomeExists() }
+        adoptLegacyName(home: home)
         try Data().write(to: file(in: home))
     }
 
     public static func turnOff(home: URL? = nil) {
+        adoptLegacyName(home: home)
         try? FileManager.default.removeItem(at: file(in: home))
     }
 }

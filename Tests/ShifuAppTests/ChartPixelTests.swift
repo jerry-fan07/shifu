@@ -57,7 +57,7 @@ import Testing
     @MainActor @Test func noGroupIsEverPaintedGrey() throws {
         for dark in [false, true] {
             let mode = dark ? "dark" : "light"
-            for band in try Self.bands(Self.tasks(TimeBreakdown.maxGroups), dark: dark) {
+            for band in try Self.bands(Self.themes(TimeBreakdown.maxGroups), dark: dark) {
                 let chroma = Int(Self.chroma(band))
                 let drawn = Self.hex(band)
                 #expect(chroma >= Self.hued, "\(mode) painted a group #\(drawn), chroma \(chroma)")
@@ -72,9 +72,9 @@ import Testing
     @MainActor @Test func onlyTheThingsThatAreNotGroupsArePaintedGrey() throws {
         for dark in [false, true] {
             let mode = dark ? "dark" : "light"
-            let overflowed = Self.tasks(TimeBreakdown.maxGroups + 1)
+            let overflowed = Self.themes(TimeBreakdown.maxGroups + 1)
             for (lens, groups, expected) in [
-                (TimeLens.task, overflowed, 1),          // "Other"
+                (TimeLens.theme, overflowed, 1),         // "Other"
                 (TimeLens.category, Self.categories, 2)  // admin, unclassified
             ] {
                 let bands = try Self.bands(groups, lens: lens, dark: dark)
@@ -113,10 +113,10 @@ import Testing
         }
     }
 
-    /// Both scales a chart can draw with: the hashed one theme and task
-    /// groups take hues from, and the fixed one the categories wear.
+    /// Both scales a chart can draw with: the hashed one theme groups take
+    /// hues from, and the fixed one the categories wear.
     @MainActor static var scales: [(TimeLens, [String])] {
-        [(.task, tasks(TimeBreakdown.maxGroups)), (.category, categories)]
+        [(.theme, themes(TimeBreakdown.maxGroups)), (.category, categories)]
     }
 
     // MARK: - Thresholds
@@ -131,8 +131,8 @@ import Testing
 
     // MARK: - The chart under test
 
-    /// The hashed scale, asked for as many groups as a lens will rank.
-    static func tasks(_ count: Int) -> [String] { (0..<count).map { "task-\($0)" } }
+    /// The hashed scale, asked for as many groups as the lens will rank.
+    static func themes(_ count: Int) -> [String] { (0..<count).map { "theme-\($0)" } }
 
     /// The fixed scale. `private` is left out: it draws hatched, so a scan
     /// down it reads the stripes rather than a band, and texture — not hue —
@@ -153,7 +153,7 @@ import Testing
             return LedgerBuilder.LabeledActivity(
                 id: Int64(index + 1), startedAt: from, endedAt: from + Self.hour,
                 category: lens == .category ? name : "work", source: "app",
-                taskName: lens == .category ? nil : name)
+                themeName: lens == .category ? nil : name)
         }
     }
 
@@ -179,7 +179,7 @@ import Testing
     /// The distinct colours the chart paints down its one column, ground and
     /// the hairlines between bands dropped.
     @MainActor static func bands(
-        _ groups: [String], lens: TimeLens = .task, highlight: String? = nil, dark: Bool
+        _ groups: [String], lens: TimeLens = .theme, highlight: String? = nil, dark: Bool
     ) throws -> [NSColor] {
         let span = window(groups)
         let slices = slices(groups, lens: lens)
