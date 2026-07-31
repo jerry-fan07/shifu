@@ -13,8 +13,6 @@ extension LedgerStore {
         var cards: [Note] = []
         var due: [Note] = []
         var reviewsByDay: [Date: Int] = [:]
-        /// Everything the vault holds, cards or not — what the Notes row counts.
-        var total = 0
     }
 
     /// One vault walk feeding the review queue and the Cards screens.
@@ -23,7 +21,6 @@ extension LedgerStore {
     func vaultSnapshot() -> VaultSnapshot {
         var snapshot = VaultSnapshot()
         let notes = (try? vault.allNotes()) ?? []
-        snapshot.total = notes.count
         snapshot.cards = notes
             .filter { $0.state == .kept && $0.questionAnswer != nil }
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }

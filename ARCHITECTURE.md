@@ -251,6 +251,9 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Per-task-day work notes + tiering | [`Vault/WorkNoteCompiler.swift`](Sources/ShifuCore/Vault/WorkNoteCompiler.swift) |
 | Per-task overview documents | [`Vault/TaskOverviewCompiler.swift`](Sources/ShifuCore/Vault/TaskOverviewCompiler.swift) |
 | Search ranking / hybrid retrieval | [`Vault/VaultSearch.swift`](Sources/ShifuCore/Vault/VaultSearch.swift) |
+| Browsing the vault; how deep a note is; what a row displays | [`Vault/VaultLibrary.swift`](Sources/ShifuCore/Vault/VaultLibrary.swift) — `Entry`, `Depth`, `Filter`, `Census` |
+| Everything around one note (task, theme, day, siblings, raw blocks) | [`Vault/VaultDossier.swift`](Sources/ShifuCore/Vault/VaultDossier.swift) |
+| The Notes place and the note page | [`ShifuApp/NotesView.swift`](Sources/ShifuApp/NotesView.swift), [`ShifuApp/NotePage.swift`](Sources/ShifuApp/NotePage.swift) |
 | Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
 | Work Mode nudge behavior | [`shifud/WorkModeController.swift`](Sources/shifud/WorkModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
@@ -395,6 +398,15 @@ those strand duplicates across a time-zone change (the `task_logs` bug).
 truth.** These three are a cache; `shifu vault reindex` rebuilds them from the
 files. Losing them loses nothing, which is why `vault_fts` is plain FTS5 rather
 than external-content.
+
+`vault_index` carries display and shape columns (`title`, `summary`,
+`task_key`, `duration_ms`, `words`, `sections`) so the Notes place can browse
+without opening seven hundred files per scroll (vault-features.md §4.1). They
+are derived like every other column here, so the rule is unchanged: reconcile
+refills them from the Markdown. A migration that adds one zeroes `mtime` and
+`content_hash` to force that re-read — and backfills from `vault_fts` where it
+can, because "correct after the next reconcile" is an upgrade whose first
+screen is blank.
 
 ### Where data lives on disk
 

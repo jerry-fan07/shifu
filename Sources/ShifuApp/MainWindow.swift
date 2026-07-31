@@ -71,6 +71,8 @@ struct MainWindow: View {
             LooseCardsPage()
         case .merges:
             MergeReviewView()
+        case .note(let noteID):
+            NotePage(noteID: noteID)
         }
     }
 
@@ -91,6 +93,7 @@ struct MainWindow: View {
         case .newDeck: return "New deck"
         case .looseCards: return "Loose cards"
         case .merges: return "Suggestions"
+        case .note: return "Note"
         }
     }
 }
@@ -110,6 +113,10 @@ enum Route: Hashable {
     /// pages the same way, but with nothing to rename or configure.
     case looseCards
     case merges
+    /// One note, read with everything around it (`VaultLibrary.Dossier`).
+    /// Keyed by note id rather than by path so the link survives the file
+    /// being renamed or moved under it — which a rebuild does routinely.
+    case note(String)
 }
 
 /// Where the window is pointed, and what the source list is therefore showing.

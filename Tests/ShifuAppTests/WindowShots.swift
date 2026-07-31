@@ -91,6 +91,40 @@ import Testing
                 .decks, route: .looseCards, as: "loose-cards", dark: true,
                 store: store, into: directory)
         }
+        shootNotes(store: store, into: directory)
+    }
+
+    /// The Notes place has three states worth looking at and one page behind a
+    /// row, and `Place.allCases` only reaches the first of them.
+    @MainActor private func shootNotes(store: LedgerStore, into directory: URL) {
+        store.loadLibrary()
+        // The deepest note the vault holds: the shape the page exists for, and
+        // the one whose dossier has every section populated.
+        let deepest = store.vaultShelf.max { $0.words < $1.words }
+        if let deepest {
+            shoot(
+                .notes, route: .note(deepest.noteID), as: "note-page", dark: false,
+                store: store, into: directory)
+            shoot(
+                .notes, route: .note(deepest.noteID), as: "note-page-dark", dark: true,
+                store: store, into: directory)
+        }
+        // A trace, so the page's "this is a receipt, not a note" line is
+        // visible rather than theoretical.
+        store.noteFilter.depth = .everything
+        store.loadLibrary()
+        if let trace = store.vaultShelf.first(where: { $0.depth == .trace }) {
+            shoot(
+                .notes, route: .note(trace.noteID), as: "note-page-trace", dark: false,
+                store: store, into: directory)
+        }
+        shoot(.notes, as: "notes-with-traces", dark: false, store: store, into: directory)
+        store.noteFilter = NoteLibraryFilter()
+
+        store.vaultQuery = "capture daemon"
+        shoot(.notes, as: "notes-search", dark: false, store: store, into: directory)
+        store.vaultQuery = ""
+        store.loadLibrary()
     }
 
     /// Settings is one place with a rail of its own, so it gets one shot per
