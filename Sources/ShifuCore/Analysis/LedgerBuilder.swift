@@ -63,7 +63,20 @@ public enum LedgerBuilder {
                 .order(Column("started_at"))
                 .fetchAll(db)
         }
+        // The one place system shells leave the pipeline (TaskGrouper.
+        // isSystemBundle). Filtering *blocks* rather than observations is
+        // deliberate: the sessionizer tiles, crediting a sub-threshold gap to
+        // the block before it, so dropping the observations first would let a
+        // short lock extend or merge its neighbours and change their spans —
+        // and a span is `carriedDerivedState`'s key, so every neighbouring
+        // block would re-bill its card and its grouping verdict.
+        //
+        // Nothing is lost by not writing them. The raw observations stay
+        // (retention scrubs their text on age, not on membership in a block),
+        // so a bundle added to the denylist by mistake comes back in full
+        // from `shifu-analyzer --rebuild`.
         let blocks = Sessionizer.sessionize(observations)
+            .filter { !TaskGrouper.isSystemBundle($0.appBundle) }
 
         let activities: [(Activity, [Int64])] = blocks.map { block in
             let result = classifier.classify(block: block)
@@ -226,26 +239,23 @@ public enum LedgerBuilder {
 
     /// Labeled activities overlapping [from, to), oldest first.
     ///
-    /// System shells are left out (`TaskGrouper.isSystemBundle`). They are
-    /// barred from task grouping, so counting them here charts hours the Task
-    /// log has no row for — and the lock screen is not a group the user can
-    /// reach through any lens. It is not a rounding difference: the dogfood
-    /// ledger held 849 h of `loginwindow`, enough that opening the Time page on
-    /// one of those days showed nothing else at all.
+    /// No system-shell clause: `rebuild` never writes one. Before it did, this
+    /// query and four others each carried their own copy of the denylist, and
+    /// the ledger held 849 h of `loginwindow` — enough that opening the Time
+    /// page on one of those days showed nothing else at all.
     public static func labeledActivities(
         database: ShifuDatabase, from: Int64, to: Int64
     ) throws -> [LabeledActivity] {
-        let denied = TaskGrouper.notSystemBundleSQL(column: "a.app_bundle")
-        return try database.queue.read { db in
+        try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT a.id, a.started_at, a.ended_at, a.category, a.domain, a.app_bundle,
                        t.name AS task_name, th.name AS theme_name
                 FROM activities a
                 LEFT JOIN tasks t ON t.id = a.task_id
                 LEFT JOIN themes th ON th.key = a.theme_key
-                WHERE a.ended_at > ? AND a.started_at < ? AND \(denied.clause)
+                WHERE a.ended_at > ? AND a.started_at < ?
                 ORDER BY a.started_at
-                """, arguments: [from, to] + StatementArguments(denied.arguments)
+                """, arguments: [from, to]
             ).map { row in
                 let bundle: String = row["app_bundle"]
                 return LabeledActivity(
@@ -259,19 +269,17 @@ public enum LedgerBuilder {
     }
 
     /// Category totals (ms) for activities overlapping [from, to) — dashboard
-    /// fuel. Skips system shells for the same reason `labeledActivities` does,
-    /// so Today's rings, the menu bar's hours and the digest agree with the
-    /// Time page rather than each counting a different day.
+    /// fuel. Today's rings, the menu bar's hours and the digest all read this,
+    /// so they agree with the Time page by construction.
     public static func totals(
         database: ShifuDatabase, from: Int64, to: Int64
     ) throws -> [Category: Int64] {
-        let denied = TaskGrouper.notSystemBundleSQL()
         let rows = try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT category, SUM(MIN(ended_at, ?) - MAX(started_at, ?)) AS ms
-                FROM activities WHERE ended_at > ? AND started_at < ? AND \(denied.clause)
+                FROM activities WHERE ended_at > ? AND started_at < ?
                 GROUP BY category
-                """, arguments: [to, from, from, to] + StatementArguments(denied.arguments))
+                """, arguments: [to, from, from, to])
         }
         var totals: [Category: Int64] = [:]
         for row in rows {

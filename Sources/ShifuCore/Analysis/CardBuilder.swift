@@ -80,7 +80,13 @@ public enum CardBuilder {
     /// prompt hourly, so it is the amount one card is worth, not what the
     /// window can hold.
     public static let textSampleChars = 700
-    public static let responseTokenReserve = 3_000
+    /// One card is a topic, a category, a gist and a confidence — call it 120
+    /// tokens, so a full `batchLimit` batch needs ~4.8k. The old 3,000 was
+    /// 75 tokens a card and only ever worked because the backend used to floor
+    /// every call at 16k of thinking headroom; the first run without that
+    /// floor truncated the batch mid-JSON and built 0 cards from 40 blocks.
+    /// Sized against `batchLimit` — move them together.
+    public static let responseTokenReserve = 6_000
     /// Topic anchors shown so a block that continues existing work repeats
     /// its wording — task keys only recur if topic wording recurs
     /// (`TaskGrouper.key` slugs the text).
@@ -245,28 +251,26 @@ public enum CardBuilder {
 extension CardBuilder {
     /// Card-less blocks in the window worth a card: closed (a sessionizer gap
     /// between `ended_at` and `to` — a growing block's card would die with
-    /// the next rebuild's span change), a minute or more, non-private,
-    /// non-system, and carrying some evidence beyond the app name.
+    /// the next rebuild's span change), a minute or more, non-private, and
+    /// carrying some evidence beyond the app name. System shells need no
+    /// clause here: `LedgerBuilder.rebuild` never writes one.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = batchLimit
     ) throws -> [BlockSample] {
-        let denied = TaskGrouper.notSystemBundleSQL()
-        return try database.queue.read { db in
+        try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, app_bundle, domain, ambiguous FROM activities
                 WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
                   AND category != 'private'
                   AND card IS NULL AND card_attempts < ?
                   AND ended_at - started_at >= ?
-                  AND \(denied.clause)
                   AND EXISTS (SELECT 1 FROM observations o
                               WHERE o.session_id = activities.id
                                 AND (o.window_title IS NOT NULL OR o.text IS NOT NULL
                                      OR o.url IS NOT NULL))
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
-                                 maxAttempts, SemanticTaskGrouper.minBlockMs]
-                    + StatementArguments(denied.arguments) + [limit])
+                                 maxAttempts, SemanticTaskGrouper.minBlockMs, limit])
             return try rows.map { row in
                 let id: Int64 = row["id"]
                 let evidence = try SemanticTaskGrouper.blockEvidence(

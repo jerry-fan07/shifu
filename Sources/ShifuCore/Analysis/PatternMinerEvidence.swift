@@ -122,31 +122,22 @@ extension PatternMiner {
             titles: sample.titles, textSample: sample.text)
     }
 
-    /// The task's blocks, minus private time and system shells.
+    /// The task's blocks, minus private time.
     ///
     /// `category != 'private'` is not decoration: private blocks are counted
     /// opaquely and never inspected (§8), and this dossier's sources, titles
     /// and text sample are shipped to the cloud describer. Every other
     /// LLM-facing query in the pipeline carries the same clause.
-    ///
-    /// System shells are excluded because `TaskGrouper` only ever *sets*
-    /// `task_id` — blocks filed under a task before it started skipping them
-    /// keep their assignment, which is why the dogfood ledger still shows
-    /// "loginwindow" among a task's busiest sources. The lock screen is
-    /// nobody's workflow.
     private static func taskBlocks(
         _ db: Database, taskID: Int64, from: Int64, to: Int64
     ) throws -> [Block] {
-        let denied = TaskGrouper.notSystemBundleSQL()
-        return try Row.fetchAll(db, sql: """
+        try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, domain, category
             FROM activities
             WHERE task_id = ? AND ended_at > ? AND started_at < ?
               AND category != 'private'
-              AND \(denied.clause)
             ORDER BY started_at
-            """, arguments: [taskID, from, to]
-                + StatementArguments(denied.arguments)).map(block)
+            """, arguments: [taskID, from, to]).map(block)
     }
 
     private static func block(_ row: Row) -> Block {

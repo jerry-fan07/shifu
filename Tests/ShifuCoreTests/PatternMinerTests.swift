@@ -166,42 +166,26 @@ private enum Fixture {
             try insert(database, start: day(offset, hour: 15), minutes: 40,
                        domain: "github.com", title: "shifu · pull requests")
         }
-        // 4. Browser chrome arriving as a domain, and a system shell that
-        //    predates the grouper's own exclusion.
+        // 4. Browser chrome arriving as a domain — the one kind of system
+        //    noise that still reaches a dossier, since it comes in as a
+        //    domain on a real browser rather than as a shell's own bundle.
         for offset in 0..<14 {
             for visit in 0..<12 {
                 try insert(database, start: day(offset, hour: 9 + Double(visit) / 2),
                            minutes: 0.4, domain: "omnibox-popup.top-chrome")
             }
         }
-        try seedSystemTask(database)
         try group(database)
 
         #expect(try mine(database).isEmpty)
     }
 
-    /// A `app:com.apple.loginwindow` task as it exists in a real dogfood DB —
-    /// minted before `TaskGrouper.isSystemBundle` barred the bundle, accruing
-    /// time every day since. Built by hand because the grouper won't make one.
-    private func seedSystemTask(_ database: ShifuDatabase) throws {
-        for offset in 0..<5 {
-            try insert(database, start: day(offset, hour: 7), minutes: 20,
-                       app: "com.apple.loginwindow")
-        }
-        try database.queue.write { db in
-            var task = WorkTask(key: "app:com.apple.loginwindow", name: "loginwindow",
-                                createdAt: ms(monday), lastActiveAt: ms(monday))
-            try task.insert(db)
-            try db.execute(
-                sql: "UPDATE activities SET task_id = ? WHERE app_bundle = ?",
-                arguments: [task.id, "com.apple.loginwindow"])
-            for offset in 0..<5 {
-                var log = TaskLog(taskID: task.id!, dayStart: ms(day(offset, hour: 0)),
-                                  durationMs: 20 * 60_000, summary: "loginwindow")
-                try log.insert(db)
-            }
-        }
-    }
+    // The dossier used to carry its own system-shell clause, and this suite
+    // hand-built an `app:com.apple.loginwindow` task to prove it — a real
+    // dogfood row, minted before the grouper barred the bundle and accruing
+    // time daily since. That state is unreachable now: `LedgerBuilder` writes
+    // no shell block, and `v26-system-shell-purge` deleted the rows and the
+    // tasks they had minted.
 
     @Test func alternationBecomesATaskSignalNotItsOwnSuggestion() throws {
         let database = try ShifuDatabase.inMemory()
