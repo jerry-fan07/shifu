@@ -197,10 +197,21 @@ if let backend {
 
 // Work notes (vault-features.md §2.1): deterministic parts always compile;
 // narratives need a backend and regenerate only when a day's activities
-// changed (content-hash gate).
+// changed (content-hash gate). The hash gate alone can't protect the day in
+// progress — active work changes it every pass — so the open day's narrative
+// additionally waits out an interval gate, while completed days regenerate
+// the moment they change. Stamped only on success, like the radar watermark.
+let openDayNarrativeIntervalMs: Int64 = 4 * 3_600_000
+let openDayDue = LLMStageGate.due(
+    "worknotes.open_day", everyMs: openDayNarrativeIntervalMs,
+    now: nowMs, database: database)
 do {
     let workSummary = try await WorkNoteCompiler.run(
-        database: database, vault: vault, backend: backend, from: from, to: nowMs)
+        database: database, vault: vault, backend: backend, from: from, to: nowMs,
+        regenerateOpenDay: openDayDue)
+    if openDayDue, backend != nil {
+        LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
+    }
     if workSummary.notesWritten > 0 {
         print("work notes: \(workSummary.notesWritten) compiled, "
             + "\(workSummary.narrativesGenerated) narratives")

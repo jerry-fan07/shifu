@@ -128,7 +128,8 @@ public enum ThemeClusterer {
 extension ThemeClusterer {
     /// Unassigned blocks in the window, oldest first. No evidence gate: after
     /// TaskGrouper every block has at least a task name, which is enough for
-    /// coarse clustering.
+    /// coarse clustering. Closed blocks only (`ended_at` a sessionizer gap
+    /// before `to`) — a growing block's verdict dies with the next rebuild.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
@@ -137,11 +138,13 @@ extension ThemeClusterer {
                 SELECT a.id, a.started_at, a.ended_at, a.app_bundle, a.domain, a.topic,
                        t.name AS task_name
                 FROM activities a LEFT JOIN tasks t ON t.id = a.task_id
-                WHERE a.ended_at > ? AND a.started_at < ? AND a.category != 'private'
+                WHERE a.ended_at > ? AND a.started_at < ? AND a.ended_at <= ?
+                  AND a.category != 'private'
                   AND a.theme_key IS NULL AND a.theme_attempts < ?
                   AND a.ended_at - a.started_at >= ?
                 ORDER BY a.started_at DESC LIMIT ?
-                """, arguments: [from, to, maxAttempts, minBlockMs, limit])
+                """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
+                                 maxAttempts, minBlockMs, limit])
             return rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let titles = (try? String.fetchAll(db, sql: """

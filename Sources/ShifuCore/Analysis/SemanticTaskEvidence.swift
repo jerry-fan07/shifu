@@ -200,6 +200,10 @@ extension SemanticTaskGrouper {
     /// (`TaskGrouper.isSystemBundle`) are excluded in SQL, not after: they can
     /// never join a task, and left in they'd hold candidate slots and burn
     /// tokens and attempts on lock screens and auth prompts.
+    ///
+    /// Only *closed* blocks (a sessionizer gap between `ended_at` and `to`):
+    /// a still-growing block's verdict is discarded on the next rebuild when
+    /// its span moves — paid twice, and grouped on partial evidence.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
@@ -208,7 +212,8 @@ extension SemanticTaskGrouper {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, started_at, ended_at, app_bundle, domain, topic
                 FROM activities
-                WHERE ended_at > ? AND started_at < ? AND category != 'private'
+                WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
+                  AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
                   AND ended_at - started_at >= ?
                   AND \(denied.clause)
@@ -216,7 +221,8 @@ extension SemanticTaskGrouper {
                         SELECT 1 FROM observations o WHERE o.session_id = activities.id
                           AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
                 ORDER BY started_at DESC LIMIT ?
-                """, arguments: [from, to, maxAttempts, minBlockMs]
+                """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
+                                 maxAttempts, minBlockMs]
                     + StatementArguments(denied.arguments) + [limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]

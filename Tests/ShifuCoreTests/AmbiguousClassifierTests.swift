@@ -155,6 +155,26 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         #expect(topics == ["booking flights", "debugging capture daemon"])
     }
 
+    /// A block ending within a sessionizer gap of `to` may still be growing;
+    /// LedgerBuilder's carry is by exact span, so a verdict bought now would
+    /// be discarded when `ended_at` moves — pay once, on the closed block.
+    @Test func aBlockStillInsideTheSessionGapIsNeverSent() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            var closed = Activity(startedAt: 0, endedAt: 600_000,
+                                  appBundle: "com.closed.app",
+                                  category: .unclassified, ambiguous: true)
+            var open = Activity(startedAt: 700_000, endedAt: 990_000,
+                                appBundle: "com.open.app",
+                                category: .unclassified, ambiguous: true)
+            try closed.insert(sqlite)
+            try open.insert(sqlite)
+        }
+        let samples = try AmbiguousClassifier.pendingSamples(
+            database: db, from: 0, to: 1_000_000)
+        #expect(samples.map(\.appBundle) == ["com.closed.app"])
+    }
+
     @Test func runAppliesConfidentVerdictsOnly() async throws {
         let db = try ShifuDatabase.inMemory()
         try await db.queue.write { sqlite in

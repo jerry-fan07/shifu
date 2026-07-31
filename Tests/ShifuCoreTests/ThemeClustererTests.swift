@@ -80,6 +80,19 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(theme?.1 == 1_900_000)                  // block end advanced it
     }
 
+    /// Same closed-blocks rule as the grouper: a block still inside the
+    /// sessionizer gap of `to` may grow, and its bought verdict would die
+    /// with the next rebuild's span change.
+    @Test func blocksStillInsideTheSessionGapAreNeverSent() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, ids: &ids, startedAt: 0)
+        try seedBlock(db, ids: &ids, startedAt: 9_150_000)   // ends past to − gap
+        let pending = try ThemeClusterer.pendingSamples(
+            database: db, from: 0, to: 10_000_000)
+        #expect(pending.map(\.id) == [ids[0]])
+    }
+
     @Test func unplacedBlockStopsBillingAfterMaxAttempts() async throws {
         let db = try ShifuDatabase.inMemory()
         var ids: [Int64] = []

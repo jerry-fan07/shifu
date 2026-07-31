@@ -262,6 +262,20 @@ private struct TaskRowSnapshot: Sendable {
         #expect(samples.map(\.id) == [ids[3]])
     }
 
+    /// A block whose `ended_at` is within a sessionizer gap of `to` may still
+    /// be growing — its verdict would be discarded by the next rebuild when
+    /// the span moves, so it must not be bought at all.
+    @Test func blocksStillInsideTheSessionGapAreNeverSent() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, id: &ids, startedAt: 0)
+        // Ends exactly at `to` — the shape of a block the user is still in.
+        try seedBlock(db, id: &ids, startedAt: 9_400_000)
+        let samples = try SemanticTaskGrouper.pendingSamples(
+            database: db, from: 0, to: 10_000_000)
+        #expect(samples.map(\.id) == [ids[0]])
+    }
+
     @Test func privateAndAlreadyAssignedBlocksAreNeverSent() async throws {
         let db = try ShifuDatabase.inMemory()
         var ids: [Int64] = []

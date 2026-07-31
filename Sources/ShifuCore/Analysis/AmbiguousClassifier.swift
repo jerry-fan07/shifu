@@ -155,6 +155,12 @@ public enum AmbiguousClassifier {
 
     /// Loads up to `batchLimit` ambiguous rules-classified activities in the
     /// window, with a text sample from their linked observations.
+    ///
+    /// Only *closed* blocks — ones a sessionizer gap already separates from
+    /// `to` (the caller's "now"). A block still inside the gap may still grow,
+    /// and LedgerBuilder carries verdicts by exact span identity: a verdict
+    /// bought on a growing block is discarded when `ended_at` moves, so it
+    /// would be paid for twice and describe less of the block both times.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = batchLimit
     ) throws -> [BlockSample] {
@@ -162,8 +168,9 @@ public enum AmbiguousClassifier {
             let activities = try Activity
                 .filter(sql: """
                     ambiguous = 1 AND source != 'llm' AND llm_attempts < ?
-                    AND ended_at > ? AND started_at < ?
-                    """, arguments: [maxAttempts, from, to])
+                    AND ended_at > ? AND started_at < ? AND ended_at <= ?
+                    """, arguments: [maxAttempts, from, to,
+                                     to - Sessionizer.gapThresholdMs])
                 .order(sql: "started_at DESC")
                 .limit(limit)
                 .fetchAll(db)
