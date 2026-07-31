@@ -24,3 +24,7 @@ type_body_length:
 
 file_length:
   warning: 500
+  # Count code, not commentary — matching type_body_length/function_body_length,
+  # which already ignore comments. The §-citations back to design.md are a
+  # convention here, so charging them against the budget just buys silent splits.
+  ignore_comment_only_lines: true
