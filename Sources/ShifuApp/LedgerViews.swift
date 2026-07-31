@@ -23,11 +23,13 @@ struct LedgerView: View {
     /// The Day / Week window, persisted the same way — leaving for the
     /// Timeline shouldn't snap the ledger back to today.
     @AppStorage("shifu.ledger.week") private var isWeek = false
-    /// Which group's apps are showing. Hover reveals them inline rather than
-    /// opening a row, so scanning the table never costs a click.
-    @State private var hovered: String?
     /// The week's blocks, read once on appear — the day's come from the store.
     @State private var weekBlocks: [LedgerBuilder.LabeledActivity] = []
+    /// Tracked ms in the window one day (or week) back, read once in `load()`
+    /// with the blocks. The body must never open the database: it re-runs on
+    /// every store publish, and it used to re-run per hover crossing — the
+    /// read alone was ~4 ms of every one of those passes on a dogfood week.
+    @State private var previousTotal: Int64 = 0
 
     /// Theme and task lenses fold everything past the biggest few into
     /// "Other", so the table and the ribbon stay readable over a busy week.
@@ -70,6 +72,15 @@ struct LedgerView: View {
     private func load() {
         store.refresh()
         if isWeek { weekBlocks = store.activities(sinceWeeksAgo: 1) }
+        let window = range
+        let calendar = Calendar.current
+        let shift = isWeek ? -7 : -1
+        if let previousFrom = calendar.date(byAdding: .day, value: shift, to: window.from),
+           let previousTo = calendar.date(byAdding: .day, value: shift, to: window.to) {
+            previousTotal = TimeBreakdown.total(
+                store.labeledActivities(from: previousFrom, to: previousTo),
+                from: previousFrom, to: previousTo)
+        }
     }
 
     // MARK: - Head
@@ -119,13 +130,7 @@ struct LedgerView: View {
         if privateMs > 0 {
             parts.append(("\(TimeBreakdown.duration(privateMs)) private", Instrument.faint))
         }
-
-        return ViewThatFits(in: .horizontal) {
-            if parts.count >= 4 { SummaryFacts(parts: parts.prefix(4)) }
-            if parts.count >= 3 { SummaryFacts(parts: parts.prefix(3)) }
-            if parts.count >= 2 { SummaryFacts(parts: parts.prefix(2)) }
-            SummaryFacts(parts: parts.prefix(1))
-        }
+        return SummaryLine(parts: parts)
     }
 
     // MARK: - Ribbons
@@ -214,72 +219,10 @@ struct LedgerView: View {
                     Text("Share").frame(width: 54, alignment: .trailing)
                     Text("Where").frame(width: 148, alignment: .leading)
                 }
-                ForEach(slices) { slice in
-                    groupRow(slice)
-                }
+                BreakdownTable(slices: slices, lens: lens)
                 if !isWeek { latestBlocks(blocks) }
             }
         }
-    }
-
-    private func groupRow(_ slice: TimeSlice) -> some View {
-        let isPrivate = slice.name == "private"
-        let isOpen = hovered == slice.id && !slice.sources.isEmpty
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 14) {
-                HStack(spacing: 9) {
-                    SeriesSwatch(color: slice.color, hatched: isPrivate)
-                    Text(lens.display(slice.name))
-                        .font(Instrument.sans(13, isOpen ? .medium : .regular))
-                        .foregroundStyle(isPrivate ? Instrument.muted : Instrument.ink)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Figure(
-                    TimeBreakdown.duration(slice.ms),
-                    color: isPrivate ? Instrument.muted : Instrument.ink)
-                    .frame(width: 76, alignment: .trailing)
-                Figure(percent(slice.share), color: isPrivate ? Instrument.ghost : Instrument.muted)
-                    .frame(width: 54, alignment: .trailing)
-                Group {
-                    if isPrivate {
-                        Text("never read")
-                            .font(Instrument.sans(11))
-                            .foregroundStyle(Instrument.ghost)
-                    } else {
-                        Meter(share: slice.share, color: slice.color)
-                    }
-                }
-                .frame(width: 148, alignment: .leading)
-            }
-            .padding(.vertical, 7)
-            if isOpen { sources(slice) }
-            Rule()
-        }
-        .background(isOpen ? Instrument.rowTint : Color.clear)
-        .contentShape(Rectangle())
-        .onHover { inside in
-            hovered = inside ? slice.id : (hovered == slice.id ? nil : hovered)
-        }
-    }
-
-    /// What the group was actually made of. Inline on hover — the drill-down a
-    /// legend could never give, at no cost to the scan.
-    private func sources(_ slice: TimeSlice) -> some View {
-        HStack(spacing: 18) {
-            ForEach(slice.sources) { source in
-                Figure(
-                    "\(source.name) \(TimeBreakdown.duration(source.ms))",
-                    size: 11, color: Instrument.faint)
-            }
-            if slice.sourceCount > slice.sources.count {
-                Figure(
-                    "+\(slice.sourceCount - slice.sources.count) more",
-                    size: 11, color: Instrument.ghost)
-            }
-        }
-        .padding(.leading, 18)
-        .padding(.bottom, 9)
     }
 
     /// The tail of the day under the table — enough to recognise where you
@@ -311,20 +254,11 @@ struct LedgerView: View {
     }
 
     /// "18% more than yesterday". Nil when there is nothing to compare with,
-    /// or the change is noise.
+    /// or the change is noise. Reads the `load()`-time `previousTotal` rather
+    /// than the database — see that property for why.
     private func deltaText(total: Int64) -> String? {
-        let window = range
-        let calendar = Calendar.current
-        let shift = isWeek ? -7 : -1
-        guard total > 0,
-              let previousFrom = calendar.date(byAdding: .day, value: shift, to: window.from),
-              let previousTo = calendar.date(byAdding: .day, value: shift, to: window.to)
-        else { return nil }
-        let previous = TimeBreakdown.total(
-            store.labeledActivities(from: previousFrom, to: previousTo),
-            from: previousFrom, to: previousTo)
-        guard previous > 0 else { return nil }
-        let change = Double(total - previous) / Double(previous)
+        guard total > 0, previousTotal > 0 else { return nil }
+        let change = Double(total - previousTotal) / Double(previousTotal)
         guard abs(change) >= 0.01 else { return nil }
         return "\(Int((abs(change) * 100).rounded()))% \(change > 0 ? "more" : "less") "
             + "than \(isWeek ? "last week" : "yesterday")"
@@ -347,14 +281,46 @@ struct LedgerView: View {
         return "busiest around \(TimeBreakdown.hourLabel(peak))"
     }
 
-    private func percent(_ share: Double) -> String {
-        share > 0 && share < 0.01 ? "<1%" : "\(Int((share * 100).rounded()))%"
+}
+
+/// The head's summary, cut to the room it has: the longest run of leading
+/// `parts` whose joined line fits, so the facts at the end are the first to
+/// go. The fit is *measured*, with the face's own NSFont, the way a drop-down
+/// sizes its panel — not solved by `ViewThatFits`, whose trial layout of
+/// every candidate re-ran on every commit of the page, whatever had changed,
+/// and was most of a pinned core under a hover sweep of the table below.
+private struct SummaryLine: View {
+    let parts: [(text: String, color: Color)]
+
+    @MainActor private static let font = Instrument.sansFont(12.5)
+    @MainActor private static let lineHeight = ceil(
+        font.ascender - font.descender + font.leading)
+
+    var body: some View {
+        GeometryReader { proxy in
+            SummaryFacts(parts: parts.prefix(fitting(proxy.size.width)))
+        }
+        .frame(height: Self.lineHeight)
+    }
+
+    /// How many leading parts fit in `width`. Never less than one: a head
+    /// too narrow for any fact still shows the first rather than none.
+    private func fitting(_ width: CGFloat) -> Int {
+        var count = parts.count
+        while count > 1 {
+            let line = parts.prefix(count).enumerated()
+                .map { index, part in (index == 0 ? "" : " · ") + part.text }
+                .joined()
+            // A hair of slack: the HStack below measures each part alone,
+            // and per-run rounding can land a point past one joined string.
+            if line.size(withAttributes: [.font: Self.font]).width <= width - 4 { break }
+            count -= 1
+        }
+        return count
     }
 }
 
-/// One candidate row of the head's summary: the leading `parts`, dot-joined
-/// on a single line. `ViewThatFits` walks these longest-first, so the facts
-/// at the end of the line are the first to go.
+/// One row of the summary: the leading `parts`, dot-joined on a single line.
 private struct SummaryFacts: View {
     let parts: ArraySlice<(text: String, color: Color)>
 
