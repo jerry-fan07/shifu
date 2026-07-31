@@ -317,3 +317,17 @@ if Calendar.current.component(.hour, from: Date()) >= digestHour || args.contain
         print("digest written: \(url.path)")
     }
 }
+
+// What today has cost so far, at the configured per-million rates (LLMPrices).
+// Printed every run so the log reads as a running meter; the ⚠ threshold is a
+// warning by design, never a governor — the user chose visibility over
+// throttling, so no stage above was gated on it. Local midnight is fine here:
+// the estimate answers "cheap day or expensive day?", not an invoice.
+let dayStartMs = Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
+let priceBook = LLMPriceBook.load(database: database)
+let spentToday = priceBook.cost(from: dayStartMs, to: Int64.max, database: database)
+if spentToday > 0 {
+    let warnAt = LLMPriceBook.dailyWarnUSD(database: database)
+    print(String(format: "llm spend today ≈ $%.3f", spentToday)
+        + (spentToday > warnAt ? String(format: " ⚠ (warn at $%.2f)", warnAt) : ""))
+}

@@ -29,6 +29,12 @@ struct SettingsView: View {
             }
 
             Section {
+                if let spend = store.llmSpendToday {
+                    Text(spend)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
                 Text("Capture and analysis changes apply to the running daemon "
                      + "without a restart.")
                     .font(.caption)

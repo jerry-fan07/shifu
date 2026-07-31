@@ -246,11 +246,42 @@ public enum SettingsCatalog {
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
+    // Cost estimation (LLMPrices). Rates as settings, not code: they change
+    // without warning, and an estimate that can be corrected in a text field
+    // beats one that waits for a release.
+    public static let llmPriceFast = TextSetting(
+        key: LLMPrices.fastKey, section: .analysis,
+        title: "Model price",
+        help: "Dollars per million tokens as in/cached/out, for estimating "
+            + "daily spend. Blank uses DeepSeek's published V4 Flash rates.",
+        placeholder: "0.14/0.0028/0.28",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
+    public static let llmPriceReasoning = TextSetting(
+        key: LLMPrices.reasoningKey, section: .analysis,
+        title: "Reasoning model price",
+        help: "Dollars per million tokens as in/cached/out. Blank uses "
+            + "DeepSeek's published V4 Pro rates.",
+        placeholder: "0.435/0.003625/0.87",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
+    public static let llmDailyWarn = TextSetting(
+        key: LLMPriceBook.dailyWarnKey, section: .analysis,
+        title: "Daily spend warning",
+        help: "The analyzer flags its spend line once today's estimate passes "
+            + "this many dollars. A warning only — analysis never stops.",
+        placeholder: "0.10",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
     public static let ints: [IntSetting] = [heartbeatSeconds, analysisIntervalSeconds]
     public static let domainLists: [DomainListSetting] = [workModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
-        deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel
+        deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,
+        llmPriceFast, llmPriceReasoning, llmDailyWarn
     ]
 }
 
