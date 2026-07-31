@@ -308,14 +308,14 @@ enum LedgerShapes {
                     .sorted { (tallies[$0] ?? 0) > (tallies[$1] ?? 0) }
             var segments = ranked.enumerated().map { position, name in
                 BarStack.Segment(
-                    id: position, ms: tallies[name] ?? 0,
+                    id: position, name: name, ms: tallies[name] ?? 0,
                     fill: .series(colors[name] ?? Instrument.other),
                     caption: "\(lens.display(name)) — "
                         + TimeBreakdown.duration(tallies[name] ?? 0))
             }
             if privateMs > 0 {
                 segments.append(BarStack.Segment(
-                    id: segments.count, ms: privateMs, fill: .hidden,
+                    id: segments.count, name: "private", ms: privateMs, fill: .hidden,
                     caption: "Private — never read · "
                         + TimeBreakdown.duration(privateMs)))
             }

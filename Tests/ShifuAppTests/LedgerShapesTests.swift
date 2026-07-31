@@ -21,13 +21,14 @@ import Testing
     }
 
     static func block(
-        from: Date, to: Date, category: String = "work", task: String? = nil
+        from: Date, to: Date, category: String = "work", task: String? = nil,
+        theme: String? = nil
     ) -> LedgerBuilder.LabeledActivity {
         LedgerBuilder.LabeledActivity(
             id: Int64(from.timeIntervalSince1970),
             startedAt: Int64(from.timeIntervalSince1970 * 1_000),
             endedAt: Int64(to.timeIntervalSince1970 * 1_000),
-            category: category, source: "app", taskName: task)
+            category: category, source: "app", taskName: task, themeName: theme)
     }
 
     @Test func theRailCoversTheHoursThatWereWorked() {
@@ -304,6 +305,32 @@ import Testing
             order: ["Other"], slots: Self.hourSlots(9..<10))
         #expect(stacks.first?.segments.count == 1)
         #expect(stacks.first?.segments.first?.caption.hasPrefix("Other") == true)
+    }
+
+    /// Every band names the group it came from, spelled the way the legend
+    /// spells it — that name is the only thing tying a legend row to its
+    /// bands, so a segment that folded into "Other" has to say "Other" and
+    /// not the label it arrived with.
+    @Test func everySegmentNamesItsGroup() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 20), theme: "writing"),
+             Fixture.block(from: Fixture.at(9, 20), to: Fixture.at(9, 40), theme: "stray")],
+            lens: .theme,
+            colors: ["writing": Instrument.strong, "Other": Instrument.other],
+            order: ["writing", "Other"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.map(\.name) == ["writing", "Other"])
+    }
+
+    /// Private time is named too, by the category it is — so under the
+    /// Category lens its legend row can find its own hatched bands.
+    @Test func privateTimeIsNamedByItsCategory() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 30)),
+             Fixture.block(
+                from: Fixture.at(9, 30), to: Fixture.at(10), category: "private")],
+            lens: .category, colors: ["work": Instrument.strong],
+            order: ["work"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.map(\.name) == ["work", "private"])
     }
 
     /// Time in a group the order forgot is still drawn — a chart that

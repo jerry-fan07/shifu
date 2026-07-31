@@ -63,6 +63,13 @@ struct TimeSlice: Identifiable {
 enum TimeBreakdown {
     /// Where everything past the lens's group limit lands.
     static let otherLabel = "Other"
+    /// How many groups the theme lens ranks before folding the rest into
+    /// `otherLabel`, so the table and the ribbon stay readable over a busy
+    /// week. Lives here rather than on the view that passes it, because it is
+    /// half of an invariant whose other half is `TimePalette.groupHues`: a
+    /// limit larger than the palette hands out means two groups on one chart
+    /// wearing one colour, and that has to be checkable.
+    static let maxGroups = 6
     /// How many sources a summary row names when expanded.
     static let maxSources = 3
 
@@ -175,9 +182,14 @@ enum TimeBreakdown {
 }
 
 /// Chart colors for every Ledger view, so a group wears the same color in the
-/// ribbon, the table's meter, and the week's rows. All hues come from
-/// `Instrument.slots` — the accent stepped, one neutral, one warm — because
-/// this is a one-accent instrument (design.md §7).
+/// ribbon, the table's meter, and the week's rows. Group hues come from
+/// `Instrument.slots` — the accent stepped, one warm, two greens — and nowhere
+/// else: the scale is short on purpose (design.md §7).
+///
+/// Grey is not among them. It is reserved for the three things that are not
+/// groups — the "Other" pile, `unclassified`, and `admin` — so a grey band
+/// always means "this is not work anyone named", and a theme or task never
+/// gets told it is filler by the colour it happens to hash into.
 ///
 /// Hue is never the only cue here: every series is named in the row beside its
 /// swatch, and the ribbon carries its group in the tooltip. That is what buys
@@ -186,16 +198,28 @@ enum TimePalette {
     /// Fixed category hues, ranked the way the ledger ranks the categories:
     /// work takes the strongest step, the low-signal ones (admin, private,
     /// unclassified) stay recessive.
+    ///
+    /// `unclassified` wears `other` and not `quiet`, which is where it started:
+    /// `quiet` is a hair off a receded band in dark, so hovering "unclassified"
+    /// in the Timeline's legend lit a set of bands that rendered #3D3D3C
+    /// against neighbours rendering #3D3D3C — the one series the highlight
+    /// couldn't point at. Nothing collides: `other` is the leftover bucket's
+    /// grey, and this scale is closed, so it never draws one.
     private static let categoryColors: [String: Color] = [
         "work": Instrument.strong, "communication": Instrument.mid,
         "learning": Instrument.soft, "social": Instrument.deep,
         "entertainment": Instrument.warm, "admin": Instrument.neutral,
-        "private": Instrument.quiet, "unclassified": Instrument.quiet
+        "private": Instrument.quiet, "unclassified": Instrument.other
     ]
 
-    /// Hue order for theme groups. Deliberately a *short* fixed list:
-    /// a sixth group takes slot one again rather than minting a hue, and
-    /// anything past the lens's limit folds into "Other".
+    /// Hue order for theme groups. Still a *short* fixed list — a seventh group
+    /// takes a slot again rather than minting a hue, and anything past the
+    /// lens's limit folds into "Other" — but no longer shorter than the limit
+    /// it serves: at five slots against a `TimeBreakdown.maxGroups` of six, the
+    /// sixth group had nowhere to go and always duplicated one of the five. Six
+    /// hues for six groups is what makes "two groups on screen together never
+    /// share one" true rather than aspirational, and it is exact — raising
+    /// `maxGroups` means adding a hue in the same commit.
     static let groupHues: [Color] = Instrument.slots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.

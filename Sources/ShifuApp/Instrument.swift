@@ -4,8 +4,11 @@ import SwiftUI
 /// The Instrument design system (design.md §7): Shifu as a measuring
 /// instrument rather than a place. A near-white ground, a permanent source
 /// list, hairline rules instead of cards, tabular mono for every figure, and
-/// exactly one accent — a slate blue, stepped three ways when a chart has to
-/// separate groups.
+/// exactly one accent — a slate blue, stepped three ways.
+///
+/// The accent is the *interface's*: every control, link, selection and meter
+/// is that blue and nothing else. Only the chart scale (`slots`) reaches past
+/// it, and only as far as separating one group from another demands.
 ///
 /// Nothing here is decorative. A color either separates two series, marks the
 /// one selected thing, or says a number needs acting on.
@@ -150,36 +153,81 @@ enum Instrument {
 
     // MARK: - Data hues
 
-    /// The five slots a chart may use, in assignment order: the accent stepped
-    /// three ways, then a neutral, then the one warm hue. Deliberately short
-    /// and deliberately reused — this is a one-accent instrument, so a sixth
-    /// group takes slot one again rather than minting a colour.
+    /// The slots a chart may hand to a *group*: the accent stepped three ways,
+    /// the one warm hue, then two steps of green. **Every one of them is
+    /// a hue.** Grey is not a series colour — it belongs to the three things
+    /// that are not groups (`other`, `unclassified`, `admin`), and a theme or
+    /// task landing in one was the scale saying "this is filler" about real
+    /// work. `neutral` therefore sits outside this list, reachable only by the
+    /// fixed category scale.
     ///
-    /// Hue is never the only cue: every series here is named in the table row
-    /// or the legend beside it.
+    /// The greens are capacity, not decoration. Taking the grey out costs a
+    /// slot, and the scale had none to spare: five hues against a six-group
+    /// limit already meant the hash had nowhere to put the sixth, so two series
+    /// on one chart always came out identical — a dogfood week drew "iCal" and
+    /// "applying for openai api credits" both at #8AADD5. Six hues is what lets
+    /// every group of a full lens have its own and none of them be grey.
+    ///
+    /// Green is a real departure from the one-accent rule, so it is held to the
+    /// muted register the rest of the scale keeps — moss and pine, not emerald
+    /// — and it was measured rather than eyeballed. Against every other colour
+    /// a single chart can draw, plus the tone a band recedes to on hover, the
+    /// whole set clears ΔE 14.7 in light and 17.2 in dark, and neither green is
+    /// the pair that binds.
+    ///
+    /// `pine` lifts slightly in dark (#496237 → #536F3E) rather than darkening
+    /// further, which is the same move `strong` makes. Below about this step a
+    /// dark hue stops being a dark hue on a near-black ground and starts being
+    /// a hole: the tone a receded band takes is #3D3D3C, and a series has to
+    /// stay clear of *that* to be findable when the legend holds it up.
+    ///
+    /// Deliberately still short: a seventh group takes a slot again rather than
+    /// minting another hue, and hue is never the only cue — every series here
+    /// is named in the table row or the legend beside it.
     static let slots: [Color] = [
         Color(light: 0x3A5F8A, dark: 0x3D6DA5),   // strong
         Color(light: 0x7F9EC0, dark: 0x6F9DD0),   // mid
         Color(light: 0xB9CADB, dark: 0xA8C6E6),   // soft
-        Color(light: 0x9C9A92, dark: 0x5E5D58),   // neutral
-        Color(light: 0xC98A3F, dark: 0xD09A5C)    // warm
+        Color(light: 0xC98A3F, dark: 0xD09A5C),   // warm
+        Color(light: 0x7C9669, dark: 0xA5BD93),   // moss
+        Color(light: 0x496237, dark: 0x536F3E)    // pine
     ]
 
     static let strong = slots[0]
     static let mid = slots[1]
     static let soft = slots[2]
-    static let neutral = slots[3]
-    static let warm = slots[4]
+    static let warm = slots[3]
+    /// The deeper green. Sits ΔE 10.8 from `live` under protanopia, which is
+    /// inside the band that needs a second cue — and has one by construction:
+    /// `live` is only ever a `StatusDot` with "Watching" or "Paused" written
+    /// beside it, and never shares a surface with a chart series.
+    static let moss = slots[4]
+    /// The dark green — the deepest step of the scale, `strong`'s opposite
+    /// number on the other hue.
+    static let pine = slots[5]
+    /// `admin`'s grey, and no group's. Outside `slots` on purpose: see there.
+    static let neutral = Color(light: 0x9C9A92, dark: 0x5E5D58)
     /// A fourth step below `strong`, held back for the fixed category scale —
     /// the ledger has eight categories and the ramp only has to separate them
     /// beside their own labels, never on its own.
     static let deep = Color(light: 0x27405F, dark: 0x2E5C8C)
 
     /// A series that has stopped — a quiet theme's sparkline, an untracked
-    /// stretch of the ribbon.
+    /// stretch of the ribbon. The most recessive tone here, and near enough to
+    /// a receded band (`StackedBars.fill`) that nothing which has to stay
+    /// *findable* may wear it: it is for marks that mean "nothing here", and
+    /// for `private`, which is hatched and so reads by texture either way.
     static let quiet = Color(light: 0xD6D4CD, dark: 0x3A3A37)
-    /// Everything past the last slot, and time with no group at all.
-    static let other = Color(light: 0x9C9A92, dark: 0x5E5D58)
+    /// The leftover bucket, and time with no group at all.
+    ///
+    /// Its own grey rather than `neutral`'s. These two were the same hex, and
+    /// since `neutral` is a slot the group scale hands out, a chart could draw
+    /// a real group and the "Other" pile in one colour — which it did: the
+    /// week's fourth task and its leftovers came out as two identical swatches
+    /// in the legend. Measured with the `dataviz` validator, this clears every
+    /// slot and the receded tone by ΔE ≥ 13.8 in both modes; `neutral` cleared
+    /// it by 0.
+    static let other = Color(light: 0xC6C4BB, dark: 0x97958C)
 
     // MARK: - Metrics
 
