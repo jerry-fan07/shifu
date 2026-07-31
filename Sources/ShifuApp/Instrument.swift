@@ -147,6 +147,16 @@ enum Instrument {
     /// column heads, axis ticks — never a sentence.
     static func eyebrow(_ size: CGFloat = 10) -> Font { mono(size, .regular) }
 
+    /// The face `sans` resolves to, as an `NSFont` — for the one thing that
+    /// has to measure a string before SwiftUI lays it out: a drop-down sizes
+    /// its own window (`DropdownMetrics`).
+    static func sansFont(_ size: CGFloat) -> NSFont {
+        guard let family = sansFamily, let font = NSFont(name: family, size: size) else {
+            return .systemFont(ofSize: size)
+        }
+        return font
+    }
+
     private static let sansFamily = installedFamily(
         ["IBM Plex Sans", "IBMPlexSans", "IBMPlexSans-Regular"])
     private static let monoFamily = installedFamily(

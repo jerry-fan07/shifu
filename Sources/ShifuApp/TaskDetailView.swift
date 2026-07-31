@@ -95,36 +95,30 @@ struct TaskContents: View {
     /// task's time mostly sits — picking one here files *all* of its blocks
     /// there, so the label always matches what was chosen.
     private var themeMenu: some View {
-        Menu {
-            Button("No theme") {
-                store.assignTask(taskID, toTheme: nil)
+        DropdownButton(
+            label: detail?.themeName ?? "No theme",
+            bordered: false,
+            font: Instrument.sans(13),
+            color: Instrument.ink,
+            entries: themeEntries)
+            // The rail's own indent, applied outside the control so the panel
+            // still hangs off the word rather than the whole row.
+            .padding(.horizontal, 22)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var themeEntries: [DropdownEntry] {
+        let current = detail?.themeName
+        return [DropdownEntry("No theme", isOn: current == nil) {
+            store.assignTask(taskID, toTheme: nil)
+            reload()
+        }] + store.themes.map { theme in
+            DropdownEntry(theme.name, isOn: theme.name == current) {
+                store.assignTask(taskID, toTheme: theme.key)
                 reload()
             }
-            ForEach(store.themes) { theme in
-                Button(theme.name) {
-                    store.assignTask(taskID, toTheme: theme.key)
-                    reload()
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Text(detail?.themeName ?? "No theme")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                    .lineLimit(1)
-                Text("⌄")
-                    .font(Instrument.sans(10))
-                    .foregroundStyle(Instrument.faint)
-                Spacer(minLength: 0)
-            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        // On the Menu itself: padding inside a borderless menu's label is
-        // dropped when AppKit re-lays the label out, so the row would sit
-        // flush left while every other rail row is indented.
-        .padding(.horizontal, 22)
-        .padding(.vertical, 5)
     }
 
     /// The manual route to a deck (§5.2), and the escape hatch from a
