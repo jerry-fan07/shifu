@@ -20,6 +20,7 @@ struct SourceList: View {
             case .newDeck: NewDeckContents()
             case .looseCards: LooseContents()
             case .merges: MergeContents()
+            case .note(let noteID): NoteContents(noteID: noteID)
             }
         }
         .frame(width: Instrument.railWidth)
@@ -29,7 +30,7 @@ struct SourceList: View {
 
 /// The default contents: the places, each with the count that says whether
 /// going there is worth it. Not a `RailColumn`: this is the one rail with a
-/// foot — Work Mode and the door to Settings, pinned under the places and
+/// foot — Focus Mode and the door to Settings, pinned under the places and
 /// above the capture line (design.md §7).
 private struct Places: View {
     @EnvironmentObject private var store: LedgerStore
@@ -70,7 +71,7 @@ private struct Places: View {
             }
             Spacer(minLength: 12)
 
-            WorkModeRailRow()
+            FocusModeRailRow()
             RailRow(
                 title: "Settings",
                 selected: router.place == .settings
@@ -101,21 +102,21 @@ private struct Places: View {
     }
 }
 
-/// Work Mode at the rail's foot — the one switch the window carries. The whole
+/// Focus Mode at the rail's foot — the one switch the window carries. The whole
 /// row is the target, like the menu bar's line; the switch is the state.
-private struct WorkModeRailRow: View {
+private struct FocusModeRailRow: View {
     @EnvironmentObject private var store: LedgerStore
 
     var body: some View {
         Button {
-            store.toggleWorkMode()
+            store.toggleFocusMode()
         } label: {
             HStack(spacing: 8) {
-                Text("Work Mode")
+                Text("Focus Mode")
                     .font(Instrument.sans(13))
                     .foregroundStyle(Instrument.railInk)
                 Spacer(minLength: 0)
-                ToggleSwitch(isOn: store.workModeOn) { store.toggleWorkMode() }
+                ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 5)
@@ -123,7 +124,7 @@ private struct WorkModeRailRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Work Mode")
+        .accessibilityLabel("Focus Mode")
     }
 }
 

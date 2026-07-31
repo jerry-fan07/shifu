@@ -78,6 +78,14 @@ enum Instrument {
     static let alert = Color(light: 0xA8551F, dark: 0xE0A06A)
     /// Past due. One step hotter than `alert`, and always beside a word.
     static let overdue = Color(light: 0x9C3D1E, dark: 0xE07A5F)
+    /// The rhythm mark: `alert` lifted a step, and its own token rather than a
+    /// lighter `alert` because the two are read against different bars. A mark
+    /// is a shape on a band and clears at 3:1 (this is 4.1); `alert` is also a
+    /// count and a caption, and lifting it this far would put every figure
+    /// drawn in it under AA's 4.5. The lift buys separation too — from
+    /// `overdue`, the palette's closest pair (ΔE 12 → 17), and in dark from
+    /// the warm chart slot the mark has to sit on without joining it (6 → 9).
+    static let beacon = Color(light: 0xB8632A, dark: 0xE8AC78)
 
     // MARK: - Data hues
 
@@ -153,6 +161,15 @@ enum Instrument {
     static func sansFont(_ size: CGFloat) -> NSFont {
         guard let family = sansFamily, let font = NSFont(name: family, size: size) else {
             return .systemFont(ofSize: size)
+        }
+        return font
+    }
+
+    /// And `mono`, for the other: `RibbonAxis` places its labels itself, so it
+    /// has to know how wide one is before SwiftUI draws it.
+    static func monoFont(_ size: CGFloat) -> NSFont {
+        guard let family = monoFamily, let font = NSFont(name: family, size: size) else {
+            return .monospacedSystemFont(ofSize: size, weight: .regular)
         }
         return font
     }

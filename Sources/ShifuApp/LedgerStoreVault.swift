@@ -13,8 +13,6 @@ extension LedgerStore {
         var cards: [Note] = []
         var due: [Note] = []
         var reviewsByDay: [Date: Int] = [:]
-        /// Everything the vault holds, cards or not — what the Notes row counts.
-        var total = 0
     }
 
     /// One vault walk feeding the review queue and the Cards screens.
@@ -23,7 +21,6 @@ extension LedgerStore {
     func vaultSnapshot() -> VaultSnapshot {
         var snapshot = VaultSnapshot()
         let notes = (try? vault.allNotes()) ?? []
-        snapshot.total = notes.count
         snapshot.cards = notes
             .filter { $0.state == .kept && $0.questionAnswer != nil }
             .sorted { ($0.srs?.due ?? .distantPast) < ($1.srs?.due ?? .distantPast) }
@@ -74,6 +71,21 @@ extension LedgerStore {
         return allCards.filter { card in
             guard let deck = card.deck else { return true }
             return !live.contains(deck)
+        }
+    }
+
+    /// The cards a forecast may count: the shelf, less whatever a paused deck
+    /// holds. A paused deck's cards are out of every queue and count (§5.2), so
+    /// they are not coming due — drawing them as load ahead would put a wall on
+    /// the chart that no amount of reviewing could clear. Same rule the shelf's
+    /// per-deck "due now" column follows, so the band and the rows can't
+    /// disagree.
+    var scheduledCards: [Note] {
+        let paused = Set(decks.filter(\.paused).map(\.key))
+        guard !paused.isEmpty else { return allCards }
+        return allCards.filter { card in
+            guard let deck = card.deck else { return true }
+            return !paused.contains(deck)
         }
     }
 

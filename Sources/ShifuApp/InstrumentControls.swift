@@ -163,7 +163,7 @@ struct FilterMenu<Option: Hashable>: View {
     }
 }
 
-/// The instrument's on/off switch — Work Mode at the rail's foot, in the menu
+/// The instrument's on/off switch — Focus Mode at the rail's foot, in the menu
 /// bar, and on the Settings page. Drawn to the register rather than borrowing
 /// the green system toggle: the track takes the accent when on, because a
 /// switch that is on is a state the instrument is in, not a choice it is

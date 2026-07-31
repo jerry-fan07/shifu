@@ -63,14 +63,14 @@ Order of work:
 
 ## Phase 3 — Brains (milestone M2)
 
-**Goal:** ambiguous time gets labeled; Work Mode exists; the digest arrives.
+**Goal:** ambiguous time gets labeled; Focus Mode exists; the digest arrives.
 
 1. **LLM abstraction** in `ShifuCore`: one protocol (`classify(block)`, `extract(block)`, `describe(pattern)`), three impls — Apple Foundation Models (if OS supports), MLX local model, Claude API (opt-in, analyzer-only). Runtime selection in settings; rules-only fallback when none available (§10). *(Outcome, revised 2026-07: Foundation Models shipped first and was then dropped — 4k combined window, weak labels, macOS 26+ only — along with the Claude impl; MLX was never built. `DeepSeekBackend` (`deepseek-v4-flash` default, any OpenAI-compatible endpoint via `deepseek.base_url`) is now the sole implementation, with rules-only fallback when no API key is set. See design.md §4.2/§13.2.)*
 2. **Ambiguous-block classification + topics** (§4.2, tier 2): batch prompt, JSON out, confidence-gated; low-confidence stays `unclassified` rather than guessing.
 3. **Daily digest**: markdown generated at 18:00 → `digests/`, local notification linking to dashboard. Content per §4.3.
-4. **Work Mode**: menu bar toggle; near-real-time rules-only classification in shifud; glow overlay window (click-through, `.screenSaver` level, 2 s breathe, ≥4 min spacing, 3 min grace). Log sessions for adherence stats.
+4. **Focus Mode**: menu bar toggle; near-real-time rules-only classification in shifud; glow overlay window (click-through, `.screenSaver` level, 2 s breathe, ≥4 min spacing, 3 min grace). Log sessions for adherence stats.
 
-**Verification:** spot-check 50 ambiguous blocks ≥85% agreement; glow demo feels gentle (subjective gate — iterate until it does); digest generated from a real day reads well; Work Mode with LLM backend disabled still functions.
+**Verification:** spot-check 50 ambiguous blocks ≥85% agreement; glow demo feels gentle (subjective gate — iterate until it does); digest generated from a real day reads well; Focus Mode with LLM backend disabled still functions.
 
 ---
 

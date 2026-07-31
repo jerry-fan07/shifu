@@ -3,7 +3,7 @@ import Testing
 
 @Suite struct SettingsCatalogTests {
     private let heartbeat = SettingsCatalog.heartbeatSeconds
-    private let sites = SettingsCatalog.workModeDistractingDomains
+    private let sites = SettingsCatalog.focusModeDistractingDomains
 
     // MARK: - Bounds
 
@@ -19,6 +19,40 @@ import Testing
     @Test func everyDefaultIsInsideItsOwnRange() {
         for setting in SettingsCatalog.ints {
             #expect(setting.range.contains(setting.defaultValue), "\(setting.key)")
+        }
+    }
+
+    /// The retention window is what design.md §8 promises out loud — "raw text
+    /// 14 days (configurable 1–90)" — so the promise is pinned to the setting
+    /// rather than left to a comment.
+    @Test func retentionMatchesThePublishedWindow() {
+        let retention = SettingsCatalog.textRetentionDays
+        #expect(retention.defaultValue == Retention.defaultDays)
+        #expect(retention.range == 1...90)
+        #expect(retention.display(1) == "1 day")
+        #expect(retention.display(14) == "14 days")
+    }
+
+    /// The Settings page is a rail of sections, so a section with no rows and
+    /// nothing hand-written under it would be a dead entry in the navigation.
+    /// Capture, Privacy and About carry hand-written rows (the ladder, the
+    /// exclusion lists, the disk facts); the rest must earn their place from
+    /// the catalog.
+    @Test func everySectionHasSomethingInIt() {
+        let handWritten: Set<SettingsSection> = [.capture, .privacy, .about]
+        for section in SettingsSection.allCases where !handWritten.contains(section) {
+            let populated = SettingsCatalog.ints.contains { $0.section == section }
+                || SettingsCatalog.choices.contains { $0.section == section }
+                || SettingsCatalog.texts.contains { $0.section == section }
+                || SettingsCatalog.domainLists.contains { $0.section == section }
+            #expect(populated, "\(section.rawValue)")
+        }
+    }
+
+    @Test func everySectionCarriesItsOwnCopy() {
+        for section in SettingsSection.allCases {
+            #expect(!section.summary.isEmpty, "\(section.rawValue)")
+            #expect(!section.promise.isEmpty, "\(section.rawValue)")
         }
     }
 
@@ -149,7 +183,7 @@ import Testing
         #expect(!DomainMatcher.matches("reddit.com", in: []))
     }
 
-    // MARK: - Work Mode off-task decision
+    // MARK: - Focus Mode off-task decision
 
     @Test func listedSiteIsDistractingIncludingSubdomains() {
         let listed: Set<String> = ["reddit.com"]

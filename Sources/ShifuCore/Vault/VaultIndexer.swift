@@ -166,13 +166,17 @@ public enum VaultIndexer {
     ) throws -> String? {
         guard let doc = FrontMatter.parse(text), let noteID = doc.fields["id"] else { return nil }
 
-        // Work notes carry `day:` instead of `captured:` (vault-features.md
-        // §2.1); local midnight of that day serves as the captured time so
-        // date filters and result dates work across kinds.
+        // Each kind dates itself differently (vault-features.md §2): knowledge
+        // notes carry `captured:`, work notes `day:` (local midnight of it
+        // serves), task overviews only `updated:` — which is the one that was
+        // missing, so every overview sorted and displayed as undated.
         let captured = doc.fields["captured"]
             .flatMap { Note.iso.date(from: $0) }
             .map { Int64($0.timeIntervalSince1970 * 1_000) }
             ?? doc.fields["day"].flatMap(dayMs)
+            ?? doc.fields["updated"]
+                .flatMap { Note.iso.date(from: $0) }
+                .map { Int64($0.timeIntervalSince1970 * 1_000) }
         // task_key resolves against the tasks table at index time, so a task
         // renamed or re-grouped later is picked up by the next reconcile
         // without rewriting files (vault-features.md §4).
@@ -182,17 +186,24 @@ public enum VaultIndexer {
                 db, sql: "SELECT id FROM tasks WHERE key = ?", arguments: [taskKey])
         }
 
+        let shape = Shape(of: doc)
         try db.execute(sql: """
             INSERT INTO vault_index
-                (note_id, path, kind, task_id, deck_key, captured, content_hash, mtime)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (note_id, path, kind, task_id, task_key, deck_key, captured,
+                 title, summary, duration_ms, words, sections, content_hash, mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
                 path = excluded.path, kind = excluded.kind, task_id = excluded.task_id,
-                deck_key = excluded.deck_key, captured = excluded.captured,
+                task_key = excluded.task_key, deck_key = excluded.deck_key,
+                captured = excluded.captured, title = excluded.title,
+                summary = excluded.summary, duration_ms = excluded.duration_ms,
+                words = excluded.words, sections = excluded.sections,
                 content_hash = excluded.content_hash, mtime = excluded.mtime
             """, arguments: [
-                noteID, relativePath, doc.rawKind, taskID, doc.fields["deck"],
-                captured, contentHash(text), mtime
+                noteID, relativePath, doc.rawKind, taskID, doc.fields["task_key"],
+                doc.fields["deck"], captured, title(of: doc), shape.summary,
+                doc.fields["duration_ms"].flatMap(Int64.init), shape.words, shape.sections,
+                contentHash(text), mtime
             ])
         let rowID = try Int64.fetchOne(
             db, sql: "SELECT id FROM vault_index WHERE note_id = ?", arguments: [noteID])
@@ -207,12 +218,23 @@ public enum VaultIndexer {
     /// Title + the body's first ~500 chars → unit vector (vault-features.md
     /// §4). No embedder (or a nil embedding) leaves the vector row absent —
     /// hybrid search silently degrades to bm25-only for that note.
+    ///
+    /// **Absent, not stale.** Two paths re-index without an embedder — the
+    /// write-through in `VaultStore.save` and the app's launch reconcile
+    /// (`LedgerStore.syncLibrary`) — and both refresh `mtime` and
+    /// `content_hash` as they go, so the analyzer's next pass short-circuits
+    /// and never revisits the note. A vector left behind would then describe
+    /// the text the note used to hold, for good. Dropping it hands the note to
+    /// `backfillVectors`, which is the path that owns embedding: bm25-only
+    /// until the next analyzer run, which is the documented degradation.
     static func embedVector(
         noteID: String, doc: FrontMatter.Document, db: Database, embedder: (any Embedder)?
     ) throws {
-        guard let embedder else { return }
-        let text = "\(title(of: doc)) \(doc.body.prefix(500))"
-        guard let vector = embedder.embed(text) else { return }
+        guard let vector = embedder?.embed("\(title(of: doc)) \(doc.body.prefix(500))") else {
+            try db.execute(sql: "DELETE FROM vault_vectors WHERE note_id = ?",
+                           arguments: [noteID])
+            return
+        }
         try db.execute(sql: """
             INSERT INTO vault_vectors (note_id, embedding) VALUES (?, ?)
             ON CONFLICT(note_id) DO UPDATE SET embedding = excluded.embedding
@@ -231,10 +253,55 @@ public enum VaultIndexer {
         }
     }
 
-    /// Searchable title: the topic for knowledge notes; first body line
-    /// (minus Markdown heading markers) otherwise.
+    /// What a body is *made of*, as three numbers the browse queries can sort
+    /// and filter on without opening the file (vault-features.md §4). The one
+    /// that earns its keep is `sections`: a work note with none of them is the
+    /// deterministic "where — what" line and nothing else, which is most of
+    /// them, and a library that ranks those beside compiled documents reads as
+    /// though it holds nothing.
+    struct Shape {
+        /// Body line 1 — for a work note the deterministic summary, for a card
+        /// the opening sentence. Trimmed to a display length here so the row
+        /// doesn't carry a whole paragraph it will never draw.
+        var summary: String
+        var words: Int
+        /// `## ` headings. The compiler's own sections (`Sessions`, `Notes`,
+        /// `Captured`) and an overview's four, so it counts the tiers a note
+        /// earned rather than its prose length.
+        var sections: Int
+
+        init(of doc: FrontMatter.Document) { self.init(body: doc.body) }
+
+        /// Body-only, so the v24 migration can backfill the columns from the
+        /// FTS copy of the body it already has instead of leaving the whole
+        /// library ungraded until the first reconcile finishes.
+        init(body: String) {
+            let lines = body.components(separatedBy: "\n")
+            // Headings are skipped, not stripped: an overview opens on
+            // "## Status", and a summary of "Status" says nothing at all.
+            let lead = lines.first {
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return !trimmed.isEmpty && !trimmed.hasPrefix("#")
+            } ?? ""
+            summary = String(lead.trimmingCharacters(in: .whitespaces).prefix(240))
+            words = body.split { $0 == " " || $0 == "\n" || $0 == "\t" }.count
+            sections = lines.count { $0.hasPrefix("## ") }
+        }
+    }
+
+    /// What the note is *called*: a knowledge note's topic, otherwise the task
+    /// it belongs to, otherwise the first body line.
+    ///
+    /// The task name is what makes the compiled kinds readable. A work note's
+    /// body opens on the deterministic source list, so titling it by line one
+    /// gave rows reading "claudefordesktop, app, ghostty — researchi…"; an
+    /// overview opens on `## Status`, so all eleven of them were called
+    /// "Status". Both are the same note *of* something, and its name is the
+    /// task's. The summary line still carries the "where — what", one line
+    /// down, where it reads as a subtitle instead of a heading.
     static func title(of doc: FrontMatter.Document) -> String {
         if let topic = doc.fields["topic"] { return topic }
+        if let task = doc.fields["task"], !task.isEmpty { return task }
         let firstLine = doc.body.split(separator: "\n").first.map(String.init) ?? ""
         return firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "# ").union(.whitespaces))
     }

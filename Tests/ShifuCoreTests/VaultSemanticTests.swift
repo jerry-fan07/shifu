@@ -69,6 +69,48 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(try vectorCount(database) == 0)
     }
 
+    /// An edit picked up by an embedder-less reconcile — the app's launch pass
+    /// (`LedgerStore.syncLibrary`), or write-through — must not leave the old
+    /// vector behind. That pass refreshes mtime and content hash, so the
+    /// analyzer's next reconcile short-circuits and never re-reads the file;
+    /// a surviving vector would describe the note's previous text for good,
+    /// and `backfillVectors` only fills vectors that are *missing*.
+    @Test func anEmbedderlessReindexDropsTheVectorItCannotRefresh() throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        let embedder = StubEmbedder(vectors: ["screenshot": [1, 0], "wal": [0, 1]])
+
+        let note = Note(topic: "screenshot capture", body: "One frame, no stream.")
+        let file = try vault.save(note)
+        try VaultIndexer.reconcile(root: vault.root, database: database, embedder: embedder)
+        #expect(try #require(try storedVector(note.id, database)) == [1, 0])
+
+        // The same note, rewritten in Obsidian to be about something else.
+        var edited = note
+        edited.topic = "wal journal"
+        edited.body = "Write-ahead journal notes."
+        try edited.serialize().write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: file.path)
+
+        // The app gets there first, without an embedder.
+        try VaultIndexer.reconcile(root: vault.root, database: database)
+        #expect(try vectorCount(database) == 0)
+
+        // So the analyzer's backfill still owns the note, and re-embeds it
+        // from the text it now holds rather than the text it used to.
+        try VaultIndexer.reconcile(root: vault.root, database: database, embedder: embedder)
+        #expect(try #require(try storedVector(note.id, database)) == [0, 1])
+    }
+
+    private func storedVector(_ noteID: String, _ database: ShifuDatabase) throws -> [Float]? {
+        try database.queue.read { db in
+            try Data.fetchOne(
+                db, sql: "SELECT embedding FROM vault_vectors WHERE note_id = ?",
+                arguments: [noteID])
+        }.map(EmbedMath.vector(from:))
+    }
+
     // MARK: - Hybrid search (§4)
 
     @Test func hybridFindsParaphraseThatBM25Misses() throws {

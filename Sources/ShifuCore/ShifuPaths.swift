@@ -17,8 +17,11 @@ public enum ShifuPaths {
     public static var logs: URL { home.appendingPathComponent("logs", isDirectory: true) }
     /// Control file: presence with a future unix-seconds expiry means capture is paused (§8).
     public static var pauseFile: URL { home.appendingPathComponent("pause_until") }
-    /// Control file: presence means Work Mode is on (§4.4).
-    public static var workModeFile: URL { home.appendingPathComponent("work_mode") }
+    /// Control file: presence means Focus Mode is on (§4.4).
+    public static var focusModeFile: URL { home.appendingPathComponent("focus_mode") }
+    /// What `focusModeFile` was called before Focus Mode was called that.
+    /// Read once at startup by `FocusModeFile.adoptLegacyName`, never written.
+    public static var legacyFocusModeFile: URL { home.appendingPathComponent("work_mode") }
 
     public static func ensureHomeExists() throws {
         try FileManager.default.createDirectory(

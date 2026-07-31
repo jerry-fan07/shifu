@@ -2,13 +2,13 @@ import Foundation
 import GRDB
 import ShifuCore
 
-/// Work Mode (design.md §4.4): a user-invoked focus contract. While active,
+/// Focus Mode (design.md §4.4): a user-invoked focus contract. While active,
 /// each capture is classified in near-real-time using the rules layer only —
 /// no LLM on the hot path. Off-task time past a grace period triggers the
 /// glow pulse, at most every `pulseSpacing`. Unknown categories are neutral,
 /// never nagged. Sessions are logged for adherence stats.
 @MainActor
-final class WorkModeController {
+final class FocusModeController {
     static let gracePeriod: TimeInterval = 1       // 1 s off-task before first glow
     static let pulseSpacing: TimeInterval = 10     // ≥10 s between glows
 
@@ -22,27 +22,27 @@ final class WorkModeController {
     private var offTaskSince: Date?
     private var lastPulseAt: Date = .distantPast
 
-    /// User-listed distracting sites (design.md §9). Work-Mode-only on purpose:
+    /// User-listed distracting sites (design.md §9). Focus-Mode-only on purpose:
     /// these never touch the `rules` table, so the ledger keeps its own
     /// categories — a site can be work normally and off-limits while focusing.
-    /// Reloaded each time Work Mode switches on; edits mid-session apply on the
+    /// Reloaded each time Focus Mode switches on; edits mid-session apply on the
     /// next toggle.
     private var distractingDomains: Set<String> = []
 
-    /// Work Mode is on when the control file exists. Tracked by identity rather
+    /// Focus Mode is on when the control file exists. Tracked by identity rather
     /// than existence so a fast off→on (a double-click, or
-    /// `shifu work off && shifu work on`) reads as a new session — see
+    /// `shifu focus off && shifu focus on`) reads as a new session — see
     /// `ControlFileToken`.
     var isActive: Bool { activeToken != nil }
 
     init(database: ShifuDatabase, classifier: RulesClassifier) {
         self.database = database
         self.classifier = classifier
-        // A previous daemon that exited while Work Mode was on left its session
+        // A previous daemon that exited while Focus Mode was on left its session
         // row open. Close it here — before anything can call `beginSession()`,
         // or the reconciliation would close the new row instead of the old one.
-        if let closed = try? WorkModeSessions.closeDangling(database: database), closed > 0 {
-            log("closed \(closed) work mode session(s) left open by a previous run")
+        if let closed = try? FocusModeSessions.closeDangling(database: database), closed > 0 {
+            log("closed \(closed) focus mode session(s) left open by a previous run")
         }
     }
 
@@ -65,7 +65,7 @@ final class WorkModeController {
     /// runs still ends the old session and starts a new one — with a freshly
     /// loaded site list — instead of looking like no change at all.
     private func evaluateToggle() {
-        let token = ControlFileToken(at: ShifuPaths.workModeFile)
+        let token = ControlFileToken(at: ShifuPaths.focusModeFile)
         guard token != activeToken else { return }
         let wasOn = activeToken != nil
         activeToken = token
@@ -76,12 +76,12 @@ final class WorkModeController {
     }
 
     private func beginSession() {
-        log("work mode ON")
+        log("focus mode ON")
         distractingDomains = Set(
-            Settings.value(SettingsCatalog.workModeDistractingDomains, database: database))
+            Settings.value(SettingsCatalog.focusModeDistractingDomains, database: database))
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         sessionRowID = try? database.queue.write { db in
-            try db.execute(sql: "INSERT INTO work_mode_sessions (started_at) VALUES (?)",
+            try db.execute(sql: "INSERT INTO focus_mode_sessions (started_at) VALUES (?)",
                            arguments: [now])
             return db.lastInsertedRowID
         }
@@ -90,12 +90,12 @@ final class WorkModeController {
     /// On a missed-off (fast toggle) the end time is "now" rather than the real
     /// off moment — we never observed it. Better than leaving the row open.
     private func endSession() {
-        log("work mode OFF")
+        log("focus mode OFF")
         overlay.dismiss()   // an in-flight nudge shouldn't outlive the contract
         if let rowID = sessionRowID {
             let now = Int64(Date().timeIntervalSince1970 * 1_000)
             try? database.queue.write { db in
-                try db.execute(sql: "UPDATE work_mode_sessions SET ended_at = ? WHERE id = ?",
+                try db.execute(sql: "UPDATE focus_mode_sessions SET ended_at = ? WHERE id = ?",
                                arguments: [now, rowID])
             }
         }
@@ -113,7 +113,7 @@ final class WorkModeController {
 
         let domain = Sessionizer.domain(of: url)
         // A user-listed distracting site is off-task whatever the rules layer
-        // thinks — that's the point of a Work-Mode-only list.
+        // thinks — that's the point of a Focus-Mode-only list.
         if let listed = DomainMatcher.distracting(
             domain: domain, excluded: excluded, listed: distractingDomains) {
             flagOffTask(reason: listed)
@@ -149,7 +149,7 @@ final class WorkModeController {
         // swallowing the nudge for a whole spacing window.
         if overlay.pulse() {
             lastPulseAt = Date()
-            log("work mode: off-task (\(reason)) — glow pulse")
+            log("focus mode: off-task (\(reason)) — glow pulse")
         }
     }
 }

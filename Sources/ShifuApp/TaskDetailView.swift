@@ -158,10 +158,10 @@ struct TaskContents: View {
 /// time was made of and what it left behind.
 struct TaskPage: View {
     @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
     let taskID: Int64
 
     @State private var detail: TaskStore.Detail?
-    @State private var reading: VaultSearch.Hit?
 
     var body: some View {
         Group {
@@ -175,7 +175,6 @@ struct TaskPage: View {
         }
         .onAppear(perform: reload)
         .onChange(of: taskID) { _, _ in reload() }
-        .sheet(item: $reading) { hit in NoteReaderView(hit: hit) }
     }
 
     private func reload() { detail = store.taskDetail(taskID) }
@@ -203,8 +202,8 @@ struct TaskPage: View {
                         .foregroundStyle(Instrument.ink)
                     Spacer(minLength: 0)
                     InlineLink("Latest work note") {
-                        reading = store.latestWorkNote(
-                            taskID: taskID, title: detail.task.name)
+                        guard let noteID = store.latestWorkNoteID(taskID: taskID) else { return }
+                        router.open(.note(noteID))
                     }
                 }
                 if let gist = detail.gist, !gist.isEmpty {
@@ -319,12 +318,7 @@ struct TaskPage: View {
 
     private func noteRow(_ note: TaskStore.NoteLink) -> some View {
         Button {
-            reading = VaultSearch.Hit(
-                noteID: note.noteID, path: note.path, kind: .knowledge,
-                title: note.title, snippet: "",
-                captured: note.captured.map {
-                    Date(timeIntervalSince1970: Double($0) / 1_000)
-                })
+            router.open(.note(note.noteID))
         } label: {
             HStack {
                 Text(note.title)

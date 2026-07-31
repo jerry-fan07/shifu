@@ -30,6 +30,9 @@ struct LedgerView: View {
     /// every store publish, and it used to re-run per hover crossing — the
     /// read alone was ~4 ms of every one of those passes on a dogfood week.
     @State private var previousTotal: Int64 = 0
+    /// What the week's nights are doing, fitted in `load()` beside the blocks
+    /// they came from. Week only: a single day has no run to read.
+    @State private var signals: [Rhythms.Signal] = []
 
     /// Theme and task lenses fold everything past the biggest few into
     /// "Other", so the table and the ribbon stay readable over a busy week.
@@ -57,7 +60,9 @@ struct LedgerView: View {
                             blocks: blocks, slices: slices, colors: colors,
                             window: window, lens: lens, isWeek: isWeek)
                     } else if isWeek {
-                        weekRibbons(colors: colors)
+                        WeekBand(
+                            blocks: weekBlocks, lens: lens, colors: colors,
+                            window: window, signals: signals)
                     } else {
                         dayRibbon(blocks: blocks, colors: colors, window: window)
                     }
@@ -71,8 +76,13 @@ struct LedgerView: View {
 
     private func load() {
         store.refresh()
-        if isWeek { weekBlocks = store.activities(sinceWeeksAgo: 1) }
         let window = range
+        if isWeek {
+            weekBlocks = store.activities(sinceWeeksAgo: 1)
+            signals = Rhythms.signals(weekBlocks, from: window.from, to: window.to)
+        } else {
+            signals = []
+        }
         let calendar = Calendar.current
         let shift = isWeek ? -7 : -1
         if let previousFrom = calendar.date(byAdding: .day, value: shift, to: window.from),
@@ -135,49 +145,22 @@ struct LedgerView: View {
 
     // MARK: - Ribbons
 
+    /// The day on one rail, midnight to midnight — `LedgerShapes.Clock.day`
+    /// rather than the day's own fitted hours, so the rail is the same clock
+    /// every day and a band's position along it is the hour it happened at.
     private func dayRibbon(
         blocks: [LedgerBuilder.LabeledActivity], colors: [String: Color],
         window: (from: Date, to: Date)
     ) -> some View {
-        let clock = LedgerShapes.clock(blocks, from: window.from, to: window.to)
-        let rail = clock.on(window.from)
+        let rail = LedgerShapes.Clock.day.on(window.from)
         return VStack(spacing: 0) {
             Ribbon(segments: LedgerShapes.ribbon(
                 blocks, lens: lens, colors: colors, from: rail.from, to: rail.to))
-            RibbonAxis(hours: LedgerShapes.ticks(clock))
+            RibbonAxis(ticks: LedgerShapes.ticks(.day))
         }
     }
 
-    /// One rail per day, on a shared clock: the week's shape is the *shift* of
-    /// the bands down the column, which separate day-charts never show.
-    private func weekRibbons(colors: [String: Color]) -> some View {
-        let calendar = Calendar.current
-        let window = range
-        let clock = LedgerShapes.clock(weekBlocks, from: window.from, to: window.to)
-        let today = calendar.startOfDay(for: Date())
-
-        return VStack(alignment: .leading, spacing: 5) {
-            ForEach(0..<7, id: \.self) { offset in
-                if let day = calendar.date(byAdding: .day, value: offset, to: window.from),
-                   day <= today {
-                    let rail = clock.on(day)
-                    HStack(spacing: 8) {
-                        Figure(
-                            day.formatted(.dateTime.weekday(.abbreviated)),
-                            size: 10.5,
-                            color: day == today ? Instrument.ink : Instrument.faint)
-                            .frame(width: 34, alignment: .leading)
-                        Ribbon(
-                            segments: LedgerShapes.ribbon(
-                                weekBlocks, lens: lens, colors: colors,
-                                from: rail.from, to: rail.to),
-                            height: 15, corner: 3)
-                    }
-                }
-            }
-            RibbonAxis(hours: LedgerShapes.ticks(clock), leading: 42)
-        }
-    }
+    // The week's rails, and the rhythm read off them, live in WeekRhythm.swift.
 
     // MARK: - Table
 
@@ -364,7 +347,7 @@ private struct TimelineChart: View {
     /// were, and an empty evening should look like an empty evening.
     private var hourSlots: [LedgerShapes.Slot] {
         let calendar = Calendar.current
-        let ticked = Set(LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)))
+        let ticked = Set(LedgerShapes.ticks(.day).map(\.hour))
         let midnight = calendar.startOfDay(for: window.from)
         return (0..<24).compactMap { hour in
             guard let from = calendar.date(byAdding: .hour, value: hour, to: midnight),

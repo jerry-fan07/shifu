@@ -15,7 +15,13 @@ import GRDB
 /// trigger a regeneration on every hourly run — at most one per task per day
 /// (the discipline `ThemeClusterer.refreshNarratives` uses).
 public enum TaskOverviewCompiler {
-    public static let responseTokens = 1_500
+    /// An overview is prose over up to `maxDayNotes` days, not a JSON verdict,
+    /// so it is the longest answer any stage asks for. 1,500 was never enough
+    /// — a real task cut off at 6,925 characters mid-sentence — and it went
+    /// unnoticed because the backend used to raise every call to 16k of
+    /// thinking headroom, and because a truncated reply was returned as if it
+    /// had succeeded rather than raised.
+    public static let responseTokens = 3_000
     public static let maxDayNotes = 30
     /// Tasks per run. The gate below means a steady state is a handful, but a
     /// first run over a mature vault would otherwise generate for everything

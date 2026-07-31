@@ -66,7 +66,7 @@ extension ShifuDatabase {
                 table.primaryKey("key", .text)
                 table.column("value", .text).notNull()
             }
-            // Work Mode sessions, for adherence stats (design.md §4.4).
+            // Focus Mode sessions, for adherence stats (design.md §4.4).
             try db.create(table: "work_mode_sessions") { table in
                 table.autoIncrementedPrimaryKey("id")
                 table.column("started_at", .integer).notNull()
@@ -469,6 +469,155 @@ extension ShifuDatabase {
             try db.alter(table: "activities") { table in
                 table.add(column: "card", .text)
                 table.add(column: "card_attempts", .integer).notNull().defaults(to: 0)
+            }
+        }
+
+        migrator.registerMigration("v24-vault-library") { db in
+            // The Notes place browses the vault now, it doesn't only search it
+            // (vault-features.md §4, §6). Browsing needs the facts a row is
+            // *displayed* with — its title, the task and day it came from, how
+            // long that day was, and how much substance the body actually
+            // carries — and reading those meant opening seven hundred files or
+            // joining FTS on every scroll.
+            //
+            // `words`/`sections` are what separate a compiled document from the
+            // one-line stub the compiler writes for a nine-second glance at a
+            // dashboard. Six hundred of the dogfood vault's six hundred and
+            // fifty work notes are that stub, and ranking them alongside real
+            // notes is what made the place read as empty.
+            //
+            // All six are derived from the file, so the index stays disposable
+            // (§4): reconcile refills them from the Markdown, and losing it
+            // still loses nothing.
+            guard try !db.columns(in: "vault_index").contains(where: { $0.name == "words" })
+            else { return }
+            try db.alter(table: "vault_index") { table in
+                table.add(column: "title", .text)
+                table.add(column: "task_key", .text)
+                table.add(column: "summary", .text)
+                table.add(column: "duration_ms", .integer)
+                table.add(column: "words", .integer).notNull().defaults(to: 0)
+                table.add(column: "sections", .integer).notNull().defaults(to: 0)
+            }
+            try db.create(index: "idx_vault_index_captured", on: "vault_index",
+                          columns: ["captured"])
+
+            // Existing rows carry none of it, and reconcile short-circuits on
+            // mtime and then on content hash. Zeroing both makes the next pass
+            // re-read every file exactly once and fill the columns in.
+            try db.execute(sql: "UPDATE vault_index SET mtime = 0, content_hash = 0")
+
+            // But that pass takes seconds over a real vault, and until it runs
+            // every row is untitled and graded as a trace — an upgrade whose
+            // first screen is seven hundred rows reading "Untitled". The FTS
+            // side already holds a copy of every title and body, so four of
+            // the six columns can be filled here, synchronously, from data the
+            // database is holding anyway. Reconcile then corrects the titles
+            // of the compiled kinds and fills the two columns only the file
+            // has (`task_key`, `duration_ms`).
+            for row in try Row.fetchAll(
+                db, sql: "SELECT rowid, title, body FROM vault_fts") {
+                let shape = VaultIndexer.Shape(body: row["body"] ?? "")
+                try db.execute(sql: """
+                    UPDATE vault_index SET title = ?, summary = ?, words = ?, sections = ?
+                    WHERE id = ?
+                    """, arguments: [
+                        row["title"], shape.summary, shape.words, shape.sections, row["rowid"]
+                    ])
+            }
+        }
+
+        migrator.registerMigration("v25-focus-mode-names") { db in
+            // "Work Mode" named the feature after the thing it is not: the glow
+            // fires on distraction, and the list below governs a nudge, not a
+            // ledger category. The rename is cosmetic everywhere except here,
+            // where the old name is written down — and a stored name left
+            // behind is how a rename becomes two vocabularies instead of one.
+            //
+            // Both statements move data the user owns: adherence history, and
+            // the sites they listed themselves. Neither is derived, so neither
+            // can be rebuilt if it is dropped instead of carried.
+            try db.rename(table: "work_mode_sessions", to: "focus_mode_sessions")
+            try db.execute(sql: """
+                UPDATE settings SET key = 'focusmode.distracting_domains'
+                WHERE key = 'workmode.distracting_domains'
+                """)
+        }
+
+        migrator.registerMigration("v26-system-shell-purge") { db in
+            // System shells (TaskGrouper.isSystemBundle) stop at the ledger's
+            // write boundary now — `LedgerBuilder.rebuild` drops their blocks
+            // before insert. Everything already on disk was written under the
+            // old rule, where nine read paths each had to remember to exclude
+            // them and four didn't, so leaving the rows would leave those four
+            // bugs alive on history alone: the dogfood DB held 629 such rows,
+            // 849 h of `loginwindow`, 145 theme-clustering attempts spent on
+            // lock screens, and 8.1 of "Shifu Development"'s 40.5 h.
+            //
+            // Deleting derived rows is safe in a way deleting captures would
+            // not be: `activities` is re-derived from `observations`, which
+            // this migration does not touch. `shifu-analyzer --rebuild` puts
+            // back anything a future edit to the denylist should have kept.
+            //
+            // Filtering in Swift rather than as a SQL predicate keeps
+            // `isSystemBundle` the single source of truth — a hand-copied
+            // `NOT LIKE`/`NOT IN` here is exactly the drift this change exists
+            // to end. Only the distinct bundles are read, so the scan is cheap
+            // whatever the ledger's size.
+            let doomedBundles = try String
+                .fetchAll(db, sql: "SELECT DISTINCT app_bundle FROM activities")
+                .filter(TaskGrouper.isSystemBundle)
+            guard !doomedBundles.isEmpty else { return }
+            let bundleMarks = databaseQuestionMarks(count: doomedBundles.count)
+            let bundleArguments = StatementArguments(doomedBundles)
+
+            // Days whose `task_logs` are about to be wrong. `TaskGrouper` only
+            // ever *set* `task_id`, so blocks filed under a real task before
+            // the grouper began skipping them kept that assignment — which is
+            // why the ledger showed "loginwindow" among a task's busiest
+            // sources. Their minutes are inside those days' totals, and the
+            // hourly rebuild only recomputes the last 48 h of logs, so the
+            // days behind that window would keep the deleted time forever.
+            // Read before the delete: afterwards there is nothing to ask.
+            let orphanedSpans = try Row.fetchAll(db, sql: """
+                SELECT started_at, ended_at FROM activities
+                WHERE task_id IS NOT NULL AND app_bundle IN (\(bundleMarks))
+                """, arguments: bundleArguments
+            ).map { (start: $0["started_at"] as Int64, end: $0["ended_at"] as Int64) }
+
+            try db.execute(
+                sql: "DELETE FROM activities WHERE app_bundle IN (\(bundleMarks))",
+                arguments: bundleArguments)
+
+            // The `app:` tasks those blocks minted, before the grouper's
+            // denylist existed. They are unreachable now — nothing can give
+            // them another block — but they still sit in the task list, and
+            // `TaskStore.prune` no longer carries the clause that took them.
+            // A rename still spares one: it is the user's row at that point,
+            // and `isDefaultName` is the same test prune uses.
+            let deadTasks = try Row
+                .fetchAll(db, sql: "SELECT id, key, name FROM tasks WHERE key LIKE 'app:%'")
+                .filter { row in
+                    let key: String = row["key"]
+                    return TaskGrouper.isSystemBundle(String(key.dropFirst(4)))
+                        && TaskGrouper.isDefaultName(row["name"], forKey: key)
+                }
+                .map { $0["id"] as Int64 }
+            if !deadTasks.isEmpty {
+                let taskMarks = databaseQuestionMarks(count: deadTasks.count)
+                let taskArguments = StatementArguments(deadTasks)
+                // `activities.task_id` carries no foreign key, so a plain
+                // DELETE would leave live blocks pointing at nothing.
+                try db.execute(
+                    sql: "UPDATE activities SET task_id = NULL WHERE task_id IN (\(taskMarks))",
+                    arguments: taskArguments)
+                // task_logs cascade with their task.
+                try db.execute(sql: "DELETE FROM tasks WHERE id IN (\(taskMarks))",
+                               arguments: taskArguments)
+            }
+
+            for day in TaskGrouper.affectedDays(of: orphanedSpans, calendar: .current) {
+                try TaskGrouper.rebuildLogs(db, dayStart: day.start, dayEnd: day.end)
             }
         }
 

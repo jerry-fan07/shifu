@@ -112,19 +112,43 @@ struct Ribbon: View {
 }
 
 /// The hours the ribbon spans, ticked under it.
+///
+/// Each label is centred on the instant it names. The obvious layout — an
+/// `HStack` of labels with `Spacer`s between them — is wrong for any rail whose
+/// ticks aren't a uniform division of it: a rail from 07:00 to 22:00 ticked
+/// every two hours runs 07, 09 … 21, 22, and the closing hour is one hour past
+/// its neighbour where every other gap is two. Spacing those nine by count puts
+/// 21 seven eighths along when the hour itself falls fourteen fifteenths along,
+/// an hour's drift off the band it names. An axis that disagrees with the
+/// bands above it is worse than no axis, because it is the thing you check
+/// them against.
+///
+/// The two end labels are the exception: they are held inside the rail so they
+/// cannot hang off the page. That costs half a label — ten minutes on a
+/// day-long rail — and only ever at the ends.
 struct RibbonAxis: View {
-    let hours: [Int]
+    let ticks: [LedgerShapes.AxisTick]
     var leading: CGFloat = 0
 
+    /// Measured rather than guessed: the clamp at either end is only honest
+    /// if the width it clamps by is the width that draws.
+    private static let label = ("00" as NSString)
+        .size(withAttributes: [.font: Instrument.monoFont(10)])
+
     var body: some View {
-        HStack {
-            ForEach(hours, id: \.self) { hour in
-                Text(String(format: "%02d", hour))
+        GeometryReader { proxy in
+            ForEach(ticks) { tick in
+                Text(tick.label)
                     .font(Instrument.mono(10))
                     .foregroundStyle(Instrument.ghost)
-                if hour != hours.last { Spacer(minLength: 0) }
+                    .position(
+                        x: min(
+                            max(proxy.size.width * tick.place, Self.label.width / 2),
+                            proxy.size.width - Self.label.width / 2),
+                        y: Self.label.height / 2)
             }
         }
+        .frame(height: Self.label.height)
         .padding(.leading, leading)
         .padding(.top, 5)
     }

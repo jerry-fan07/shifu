@@ -291,41 +291,36 @@ import Testing
         #expect(rows[1].themeName == nil)
     }
 
-    /// The Time page reads through here, and `TaskGrouper` will never file a
-    /// system shell under a task — so counting one here would chart hours no
-    /// lens can name and no Task log row accounts for. The dogfood ledger held a
-    /// 60-hour `loginwindow` block, which on the Time page buried a real day.
-    @Test func systemShellsAreNotCharted() throws {
+    /// The Time page and the rings both read through here, and neither carries
+    /// a system-shell clause any more — `rebuild` is the one place that rule
+    /// lives (`SystemBundleDenylistTests`). What they *do* have to keep is
+    /// agreeing with each other: a page and a ring that disagree make one
+    /// screen's day an hour longer than the other's. The dogfood ledger held a
+    /// 60-hour `loginwindow` block that buried a real day on the Time page.
+    @Test func theChartAndTheRingsCountTheSameHours() throws {
         let db = try ShifuDatabase.inMemory()
         try db.queue.write { sqlite in
             let seeded = [
                 Activity(startedAt: 0, endedAt: 60_000,
                          appBundle: "com.apple.dt.Xcode", category: .work),
-                Activity(startedAt: 60_000, endedAt: 3_660_000,
-                         appBundle: "com.apple.loginwindow", category: .work),
                 Activity(startedAt: 3_660_000, endedAt: 3_690_000,
-                         appBundle: "com.apple.dock", category: .admin),
-                // Both prefix families, plus a bundle whose case doesn't match
-                // the list — the denylist is compared lowercased.
-                Activity(startedAt: 3_690_000, endedAt: 3_720_000,
-                         appBundle: "com.shifu.app", category: .work),
-                Activity(startedAt: 3_720_000, endedAt: 3_750_000,
-                         appBundle: "unknown.4213", category: .work),
-                Activity(startedAt: 3_750_000, endedAt: 3_780_000,
-                         appBundle: "com.apple.LoginWindow", category: .work)
+                         appBundle: "com.mitchellh.ghostty", category: .admin)
             ]
             for var activity in seeded { try activity.insert(sqlite) }
         }
 
         let rows = try LedgerBuilder.labeledActivities(database: db, from: 0, to: 4_000_000)
-        #expect(rows.map(\.source) == ["Xcode"])
+        #expect(rows.map(\.source) == ["Xcode", "ghostty"])
 
-        // Today's rings, the menu bar and the digest read `totals`; it has to
-        // agree with the page, or one screen's day is an hour longer than the
-        // other's.
         let totals = try LedgerBuilder.totals(database: db, from: 0, to: 4_000_000)
+        var charted: [ShifuCore.Category: Int64] = [:]
+        for row in rows {
+            guard let category = ShifuCore.Category(rawValue: row.category) else { continue }
+            charted[category, default: 0] += row.durationMs
+        }
+        #expect(totals == charted)
         #expect(totals[.work] == 60_000)
-        #expect(totals[.admin] == nil)
+        #expect(totals[.admin] == 30_000)
     }
 }
 
@@ -347,5 +342,32 @@ import Testing
         #expect(rows[0].text == nil)
         #expect(rows[0].textSimhash == nil)
         #expect(rows[1].text == "fresh text")
+    }
+
+    /// The window is a setting now (design.md §8 promised "configurable
+    /// 1–90"), and the analyzer reads it on every run. This is that
+    /// composition: shortening it in Settings has to scrub rows the default
+    /// would have kept, or the dial is decoration.
+    @Test func storedWindowGovernsWhatIsScrubbed() throws {
+        let db = try ShifuDatabase.inMemory()
+        let now = Date(timeIntervalSince1970: 100 * 86_400)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try db.queue.write { sqlite in
+            var recent = Observation(startedAt: nowMs - 10 * 86_400_000, appBundle: "a",
+                                     captureKind: .ax, text: "ten days old", textSimhash: 1)
+            try recent.insert(sqlite)
+        }
+        let setting = SettingsCatalog.textRetentionDays
+
+        // The default keeps a ten-day-old row…
+        #expect(try Retention.scrubExpiredText(
+            database: db, olderThanDays: Settings.value(setting, database: db),
+            now: now) == 0)
+
+        // …and a shortened window doesn't.
+        try Settings.set(setting, to: 7, database: db)
+        #expect(try Retention.scrubExpiredText(
+            database: db, olderThanDays: Settings.value(setting, database: db),
+            now: now) == 1)
     }
 }

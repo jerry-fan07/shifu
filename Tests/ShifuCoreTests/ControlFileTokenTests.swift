@@ -23,18 +23,18 @@ import Testing
     @Test func sameFileKeepsTheSameToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
         try Data().write(to: file)
         #expect(ControlFileToken(at: file) == ControlFileToken(at: file))
     }
 
     /// The regression this type exists for: delete + recreate with no delay is
-    /// exactly what `shifu work off && shifu work on` does. `fileExists` reports
+    /// exactly what `shifu focus off && shifu focus on` does. `fileExists` reports
     /// true both before and after, so only the token distinguishes them.
     @Test func recreatedFileGetsADifferentToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
 
         try Data().write(to: file)
         let before = ControlFileToken(at: file)
@@ -53,7 +53,7 @@ import Testing
     @Test func deletingTheFileClearsTheToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
         try Data().write(to: file)
         #expect(ControlFileToken(at: file) != nil)
         try FileManager.default.removeItem(at: file)
