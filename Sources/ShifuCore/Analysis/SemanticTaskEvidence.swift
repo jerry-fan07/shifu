@@ -201,10 +201,7 @@ extension SemanticTaskGrouper {
     /// Unassigned, evidence-bearing blocks in the window, oldest first.
     /// Evidence means a topic, a window title, or captured text — a bare
     /// metadata block gives the model nothing beyond the app name, which the
-    /// mechanical key already encodes. System-shell blocks
-    /// (`TaskGrouper.isSystemBundle`) are excluded in SQL, not after: they can
-    /// never join a task, and left in they'd hold candidate slots and burn
-    /// tokens and attempts on lock screens and auth prompts.
+    /// mechanical key already encodes.
     ///
     /// Only *closed* blocks (a sessionizer gap between `ended_at` and `to`):
     /// a still-growing block's verdict is discarded on the next rebuild when
@@ -212,8 +209,7 @@ extension SemanticTaskGrouper {
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
-        let denied = TaskGrouper.notSystemBundleSQL()
-        return try database.queue.read { db in
+        try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, started_at, ended_at, app_bundle, domain, topic, card
                 FROM activities
@@ -221,14 +217,12 @@ extension SemanticTaskGrouper {
                   AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
                   AND ended_at - started_at >= ?
-                  AND \(denied.clause)
                   AND (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
                         SELECT 1 FROM observations o WHERE o.session_id = activities.id
                           AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
-                                 maxAttempts, minBlockMs]
-                    + StatementArguments(denied.arguments) + [limit])
+                                 maxAttempts, minBlockMs, limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let card: String? = row["card"]
