@@ -184,11 +184,18 @@ enum TimePalette {
     /// Fixed category hues, ranked the way the ledger ranks the categories:
     /// work takes the strongest step, the low-signal ones (admin, private,
     /// unclassified) stay recessive.
+    ///
+    /// `unclassified` wears `other` and not `quiet`, which is where it started:
+    /// `quiet` is a hair off a receded band in dark, so hovering "unclassified"
+    /// in the Timeline's legend lit a set of bands that rendered #3D3D3C
+    /// against neighbours rendering #3D3D3C — the one series the highlight
+    /// couldn't point at. Nothing collides: `other` is the leftover bucket's
+    /// grey, and this scale is closed, so it never draws one.
     private static let categoryColors: [String: Color] = [
         "work": Instrument.strong, "communication": Instrument.mid,
         "learning": Instrument.soft, "social": Instrument.deep,
         "entertainment": Instrument.warm, "admin": Instrument.neutral,
-        "private": Instrument.quiet, "unclassified": Instrument.quiet
+        "private": Instrument.quiet, "unclassified": Instrument.other
     ]
 
     /// Hue order for theme and task groups. Deliberately a *short* fixed list:

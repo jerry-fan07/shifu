@@ -115,10 +115,21 @@ enum Instrument {
     static let deep = Color(light: 0x27405F, dark: 0x2E5C8C)
 
     /// A series that has stopped — a quiet theme's sparkline, an untracked
-    /// stretch of the ribbon.
+    /// stretch of the ribbon. The most recessive tone here, and near enough to
+    /// a receded band (`StackedBars.fill`) that nothing which has to stay
+    /// *findable* may wear it: it is for marks that mean "nothing here", and
+    /// for `private`, which is hatched and so reads by texture either way.
     static let quiet = Color(light: 0xD6D4CD, dark: 0x3A3A37)
-    /// Everything past the last slot, and time with no group at all.
-    static let other = Color(light: 0x9C9A92, dark: 0x5E5D58)
+    /// The leftover bucket, and time with no group at all.
+    ///
+    /// Its own grey rather than `neutral`'s. These two were the same hex, and
+    /// since `neutral` is a slot the group scale hands out, a chart could draw
+    /// a real group and the "Other" pile in one colour — which it did: the
+    /// week's fourth task and its leftovers came out as two identical swatches
+    /// in the legend. Measured with the `dataviz` validator, this clears every
+    /// slot and the receded tone by ΔE ≥ 13.8 in both modes; `neutral` cleared
+    /// it by 0.
+    static let other = Color(light: 0xC6C4BB, dark: 0x97958C)
 
     // MARK: - Metrics
 

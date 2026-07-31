@@ -31,37 +31,44 @@ import Testing
         let now = Date()
         let window = (from: Calendar.current.startOfWeek(for: now), to: now)
 
-        // The Task lens: the busiest one, six groups deep, and the lens the
-        // recede has to work hardest for — its thin groups are the reason a
-        // legend row needs to be able to point at itself.
-        let slices = TimeBreakdown.slices(
-            blocks, lens: .task, from: window.from, to: window.to, limit: 6)
-        let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
-        let stacks = LedgerShapes.bars(
-            blocks, lens: .task, colors: colors, order: slices.map(\.name),
-            slots: daySlots(from: window.from))
+        // Both scales, because they are different palettes and only one of
+        // them is a ramp. Task hues come from a hash over `Instrument.slots`;
+        // Category hues are a fixed eight-name table that reaches for the
+        // greys the recede also lives among — so it is the Category lens, in
+        // dark, that says whether the recede clears every series or only the
+        // colourful ones.
+        for lens in [TimeLens.task, .category] {
+            let slices = TimeBreakdown.slices(
+                blocks, lens: lens, from: window.from, to: window.to,
+                limit: lens == .category ? nil : 6)
+            let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
+            let stacks = LedgerShapes.bars(
+                blocks, lens: lens, colors: colors, order: slices.map(\.name),
+                slots: daySlots(from: window.from))
 
-        // Nothing lit, then every series in turn — one shot each, because the
-        // question is whether a lit band is findable at a glance, and charts
-        // stacked in one PNG is not how anybody looks at one. Every series
-        // matters here, not a representative one: what the recede has to clear
-        // is whichever slot of the ramp the group happens to hold, and the
-        // pale steps have the least room to clear it by.
-        let lit: [String?] = [nil] + slices.map { $0.name }
-        for dark in [false, true] {
-            for (index, name) in lit.enumerated() {
-                shoot(
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(name ?? "— resting —")
-                            .font(Instrument.mono(10))
-                            .foregroundStyle(Instrument.ghost)
-                        StackedBars(stacks: stacks, highlight: name)
-                    }
-                    .padding(22)
-                    .background(Instrument.ground),
-                    to: directory.appendingPathComponent(
-                        "bars-\(index)\(dark ? "-dark" : "").png"),
-                    dark: dark)
+            // Nothing lit, then every series in turn — one shot each, because
+            // the question is whether a lit band is findable at a glance, and
+            // charts stacked in one PNG is not how anybody looks at one. Every
+            // series matters here, not a representative one: what the recede
+            // has to clear is whichever hue the group happens to hold, and the
+            // palest of them have the least room to clear it by.
+            let lit: [String?] = [nil] + slices.map { $0.name }
+            for dark in [false, true] {
+                for (index, name) in lit.enumerated() {
+                    shoot(
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(name ?? "— resting —")
+                                .font(Instrument.mono(10))
+                                .foregroundStyle(Instrument.ghost)
+                            StackedBars(stacks: stacks, highlight: name)
+                        }
+                        .padding(22)
+                        .background(Instrument.ground),
+                        to: directory.appendingPathComponent(
+                            "bars-\(lens.rawValue.lowercased())-\(index)"
+                                + "\(dark ? "-dark" : "").png"),
+                        dark: dark)
+                }
             }
         }
     }
