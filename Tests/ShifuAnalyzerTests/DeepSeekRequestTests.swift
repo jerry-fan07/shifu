@@ -85,3 +85,68 @@ import Testing
         }
     }
 }
+
+/// Stage attribution (v27). `llm_usage` records what a response cost; without
+/// a label it does not record what it bought, and per-stage cost has to be
+/// inferred by lining rows up against the order main.swift runs its stages.
+/// That inference has no chance against batching, retries, gated stages,
+/// fail-soft skips, or the second analyzer process `--build-deck` starts.
+@Suite struct DeepSeekStageLabelTests {
+    private func backend(_ database: ShifuDatabase) -> DeepSeekBackend {
+        DeepSeekBackend(
+            name: "deepseek-v4-flash", apiKey: "sk-test", model: "deepseek-v4-flash",
+            baseURL: DeepSeekBackend.defaultBaseURL, responseHeadroomTokens: 0,
+            thinks: false, database: database)
+    }
+
+    @Test func anUnlabelledBackendCarriesNoStage() throws {
+        #expect(backend(try ShifuDatabase.inMemory()).stage == nil)
+    }
+
+    @Test func labelingReturnsACopyThatKnowsItsStage() throws {
+        let plain = backend(try ShifuDatabase.inMemory())
+        let cards = plain.labeled("cards")
+        #expect(cards.stage == "cards")
+        // A copy, not a mutation: two stages share one configured backend, and
+        // the second must not inherit the first's label.
+        #expect(plain.stage == nil)
+        #expect(plain.labeled("themes").stage == "themes")
+    }
+
+    /// The label must change nothing about what is sent — it exists to
+    /// annotate the bill, not to alter the call.
+    @Test func labelingDoesNotDisturbTheRequest() throws {
+        let plain = backend(try ShifuDatabase.inMemory())
+        let labeled = plain.labeled("cards")
+        #expect(labeled.model == plain.model)
+        #expect(labeled.thinks == plain.thinks)
+        #expect(labeled.responseCap(prompt: "hi", maxTokens: 400)
+            == plain.responseCap(prompt: "hi", maxTokens: 400))
+        let plainBody = plain.requestBody(prompt: "hi", maxTokens: 400)
+        let labeledBody = labeled.requestBody(prompt: "hi", maxTokens: 400)
+        #expect(NSDictionary(dictionary: plainBody) == NSDictionary(dictionary: labeledBody))
+    }
+
+    /// The link that makes the column worth having: a labelled backend's
+    /// recorded row is attributable, and rolls up under its own stage.
+    @Test func aLabeledBackendsSpendRollsUpUnderItsStage() throws {
+        let database = try ShifuDatabase.inMemory()
+        let usage: [String: Any] = [
+            "prompt_tokens": 1_000, "completion_tokens": 200,
+            "prompt_tokens_details": ["cached_tokens": 400]
+        ]
+        let response: [String: Any] = ["model": "deepseek-v4-flash", "usage": usage]
+        for stage in ["cards", "cards", "themes"] {
+            let call = try #require(
+                LLMUsage.Call.parse(response: response, requested: "deepseek-v4-flash"))
+            LLMUsage.record(call, at: 500, stage: backend(database).labeled(stage).stage,
+                            database: database)
+        }
+
+        let byStage = try LLMUsage.totals(
+            from: 0, to: 1_000, byStage: true, database: database)
+        #expect(byStage.count == 2)
+        #expect(byStage.first { $0.stage == "cards" }?.calls == 2)
+        #expect(byStage.first { $0.stage == "themes" }?.calls == 1)
+    }
+}

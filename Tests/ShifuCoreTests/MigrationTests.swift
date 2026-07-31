@@ -125,6 +125,35 @@ import Testing
         }
     }
 
+    /// v27 adds attribution to spend that was already recorded. The rows that
+    /// exist are the baseline any before/after comparison is made against, so
+    /// the upgrade has to carry them intact *and* leave them honestly
+    /// unattributed — backfilling a placeholder would make the pre-column
+    /// history indistinguishable from a labelled stage, which is precisely
+    /// the confusion the column exists to end.
+    @Test func theStageColumnArrivesWithoutRewritingTheSpendAlreadyRecorded() throws {
+        let queue = try DatabaseQueue()
+        try ShifuDatabase.migrator.migrate(queue, upTo: "v26-system-shell-purge")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO llm_usage
+                    (at_ms, model, prompt_tokens, cached_prompt_tokens, completion_tokens)
+                VALUES (100, 'deepseek-v4-flash', 8201, 0, 16000)
+                """)
+        }
+
+        try ShifuDatabase.migrator.migrate(queue)
+
+        try queue.read { db in
+            let row = try #require(try Row.fetchOne(db, sql: "SELECT * FROM llm_usage"))
+            // The measurement survives the upgrade untouched...
+            #expect(row["prompt_tokens"] as Int == 8_201)
+            #expect(row["completion_tokens"] as Int == 16_000)
+            // ...and says "nobody recorded which stage", not "stage unknown".
+            #expect(row["stage"] as String? == nil)
+        }
+    }
+
     /// Uniqueness is what keeps dismissals dismissed and stops the queues
     /// piling up duplicates (ARCHITECTURE.md §4).
     @Test func theKeysThatMakeDismissalsStickAreUnique() throws {

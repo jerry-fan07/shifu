@@ -53,7 +53,8 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
     let deckVault = VaultStore(database: database)
     do {
         if let cards = try await DeckBuilder.build(
-            deckKey: deckKey, database: database, vault: deckVault, backend: deckBackend) {
+            deckKey: deckKey, database: database, vault: deckVault,
+            backend: deckBackend.labeled("deck-build")) {
             print("deck \(deckKey): \(cards) cards")
         } else {
             print("deck \(deckKey): already building elsewhere")
@@ -92,8 +93,8 @@ print("analyzed \(summary.observationsProcessed) observations → "
 // evidence; the reasoning model is reserved for the daily roster
 // reconciliation and the weekly radar, the judgment calls where its billed
 // chain-of-thought earns its price.
-let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: database)
-let reasoningBackend: (any LLMBackend)? =
+let backend: DeepSeekBackend? = try DeepSeekBackend.ifConfigured(database: database)
+let reasoningBackend: DeepSeekBackend? =
     try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
 
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
@@ -106,7 +107,7 @@ let reasoningBackend: (any LLMBackend)? =
 if let backend {
     do {
         let cardSummary = try await CardBuilder.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("cards"), from: from, to: nowMs)
         if cardSummary.built > 0 {
             print("cards (\(backend.name)): \(cardSummary.built) built, "
                 + "\(cardSummary.relabeled) ambiguous blocks relabeled")
@@ -127,7 +128,8 @@ if let backend {
 if let backend {
     do {
         let semSummary = try await SemanticTaskGrouper.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("semantic-tasks"),
+            from: from, to: nowMs)
         if semSummary.assigned > 0 {
             print("semantic tasks (\(backend.name)): \(semSummary.assigned) "
                 + "blocks assigned, \(semSummary.tasksCreated) tasks created")
@@ -163,13 +165,13 @@ do {
 if let backend {
     do {
         let themeSummary = try await ThemeClusterer.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("themes"), from: from, to: nowMs)
         if themeSummary.assigned > 0 || themeSummary.themesProposed > 0 {
             print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
         let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend)
+            database: database, backend: backend.labeled("theme-narratives"))
         if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")
@@ -215,7 +217,7 @@ if let reasoningBackend,
                     now: nowMs, database: database) {
     do {
         let reconciled = try await TaskReconciler.run(
-            database: database, backend: reasoningBackend)
+            database: database, backend: reasoningBackend.labeled("reconcile"))
         LLMStageGate.stamp("reconcile.last_ran", now: nowMs, database: database)
         if reconciled.mergesSuggested > 0 || reconciled.gistsFilled > 0 {
             print("reconcile (\(reasoningBackend.name)): "
@@ -235,7 +237,7 @@ if let backend {
     // query when there is nothing waiting.
     do {
         let built = try await DeckBuilder.drainPending(
-            database: database, vault: vault, backend: backend)
+            database: database, vault: vault, backend: backend.labeled("decks"))
         if built > 0 { print("decks: \(built) built") }
     } catch {
         print("deck build failed (retries next run): \(error)")
@@ -254,8 +256,8 @@ let openDayDue = LLMStageGate.due(
     now: nowMs, database: database)
 do {
     let workSummary = try await WorkNoteCompiler.run(
-        database: database, vault: vault, backend: backend, from: from, to: nowMs,
-        regenerateOpenDay: openDayDue)
+        database: database, vault: vault, backend: backend?.labeled("worknotes"),
+        from: from, to: nowMs, regenerateOpenDay: openDayDue)
     if openDayDue, backend != nil {
         LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
     }
@@ -274,7 +276,7 @@ do {
 if let backend {
     do {
         let overviewSummary = try await TaskOverviewCompiler.run(
-            database: database, vault: vault, backend: backend)
+            database: database, vault: vault, backend: backend.labeled("task-overviews"))
         if overviewSummary.written > 0 {
             print("task overviews: \(overviewSummary.written) compiled")
         }
@@ -324,7 +326,8 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
     if let reasoningBackend {
         do {
             let summary = try await Radar.describe(
-                database: database, backend: reasoningBackend, candidates: candidates)
+                database: database, backend: reasoningBackend.labeled("radar"),
+                candidates: candidates)
             if summary.accepted > 0 || summary.rejected > 0 {
                 print("radar (\(reasoningBackend.name)): \(summary.accepted) suggestions, "
                     + "\(summary.rejected) judged not worth it")
@@ -360,7 +363,8 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
     // unevaluated task simply waits for next week.
     if let backend {
         do {
-            let proposed = try await DeckSuggester.run(database: database, backend: backend)
+            let proposed = try await DeckSuggester.run(
+                database: database, backend: backend.labeled("deck-suggest"))
             if proposed > 0 { print("decks: \(proposed) deck suggestions") }
         } catch {
             print("deck suggester failed (retry next week): \(error)")

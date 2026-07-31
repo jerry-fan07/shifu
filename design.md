@@ -591,15 +591,24 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   prefix still ends at the instruction header — splitting them into their own
   section after the stable name/gist block is the fix. Alongside it, the
   grouping and clustering prompts append their output-format spec *after* the
-  block list, where it can never be cached. Both want the per-stage attribution
-  below first, so the payoff is measured rather than argued; note also that
-  input is only worth chasing once thinking mode is off the fast slot — with
+  block list, where it can never be cached. Measure both against the per-stage
+  attribution below before spending anything on them; note also that input is
+  only worth chasing once thinking mode is off the fast slot — with
   chain-of-thought billed as output, input was under a fifth of the bill.
-- **Per-stage attribution in `llm_usage` (§4.2)** — the table records
-  `at_ms, model, prompt/cached/completion tokens` but no stage, so "which
-  stage costs what" is inferred from call ordering. A `stage` column plus a
-  label threaded through `LLMBackend.complete` would settle it. Wanted before
-  any further prompt-shrinking work, not after.
+- **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
+  recorded what each response cost but never what it bought, so "which stage
+  is expensive?" could only be answered by lining rows up against the order
+  main.swift runs its stages — an inference that batching, truncation retries,
+  `LLMStageGate` skips, fail-soft throws, and the second process `--build-deck`
+  starts each break independently. `llm_usage.stage` is now stamped by the
+  backend handle each stage is handed (`DeepSeekBackend.labeled`), and
+  `shifu status` prints the split beneath the per-model lines. The label rides
+  on the handle rather than through `LLMBackend.complete` because Swift forbids
+  default arguments in protocol requirements: a `stage:` parameter could not
+  have been added compatibly, and all twenty-odd conformers would have taken an
+  argument only one implementation uses. Rows written before v27 stay NULL
+  rather than `'unknown'` — they are the baseline the first before/after
+  comparison is made against.
 - **Card-fed light-tier work notes and radar/deck evidence (§5.3)** — cards
   could stand in for raw screen-text in the light day-note prompt and the
   weekly evidence dossiers. After the open-day throttle those stages are

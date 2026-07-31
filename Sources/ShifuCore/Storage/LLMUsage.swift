@@ -69,47 +69,76 @@ public enum LLMUsage {
     /// Records a billed response. Bookkeeping must never take down the call it
     /// is describing, so failures are swallowed: the answer is already paid
     /// for and worth more than the row.
-    public static func record(_ call: Call, at unixMs: Int64, database: ShifuDatabase) {
+    ///
+    /// `stage` is the analyzer stage that bought the call (v27). It is the
+    /// caller's knowledge, not the provider's — nothing in the response says
+    /// which prompt it answered — which is why it is a parameter here rather
+    /// than a field on `Call`, whose job is to be a faithful read of what came
+    /// back. Nil is honest and means "unattributed", never a placeholder.
+    public static func record(
+        _ call: Call, at unixMs: Int64, stage: String? = nil, database: ShifuDatabase
+    ) {
         try? database.queue.write { db in
             try db.execute(sql: """
                 INSERT INTO llm_usage
-                    (at_ms, model, prompt_tokens, cached_prompt_tokens, completion_tokens)
-                VALUES (?, ?, ?, ?, ?)
+                    (at_ms, model, prompt_tokens, cached_prompt_tokens,
+                     completion_tokens, stage)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """, arguments: [
                     unixMs, call.model, call.promptTokens,
-                    call.cachedPromptTokens, call.completionTokens
+                    call.cachedPromptTokens, call.completionTokens, stage
                 ])
         }
     }
 
-    /// Tokens spent by one model over a window.
+    /// Tokens spent by one model over a window — and, when the rollup asked
+    /// for it, by one stage within that model.
     public struct Totals: Sendable, Equatable {
         public let model: String
+        /// Nil when the rollup grouped by model alone, and for rows written
+        /// before v27 added the column.
+        public let stage: String?
         public let calls: Int
         public let promptTokens: Int
         public let cachedPromptTokens: Int
         public let completionTokens: Int
+
+        public init(
+            model: String, stage: String? = nil, calls: Int, promptTokens: Int,
+            cachedPromptTokens: Int, completionTokens: Int
+        ) {
+            self.model = model
+            self.stage = stage
+            self.calls = calls
+            self.promptTokens = promptTokens
+            self.cachedPromptTokens = cachedPromptTokens
+            self.completionTokens = completionTokens
+        }
     }
 
-    /// Per-model totals in `[from, to)`, biggest spender first. Split by model
-    /// because that is the grain prices come at — the fast and reasoning slots
-    /// differ by an order of magnitude, so a combined token count says nothing
-    /// about cost.
+    /// Totals in `[from, to)`, biggest spender first.
+    ///
+    /// Always split by model, because that is the grain prices come at — the
+    /// fast and reasoning slots differ by an order of magnitude, so a combined
+    /// token count says nothing about cost. `byStage` adds the second
+    /// dimension rather than replacing the first: a rollup keyed on stage
+    /// alone could not be priced at all, since `LLMPriceBook` picks its rates
+    /// off the model name.
     public static func totals(
-        from: Int64, to: Int64, database: ShifuDatabase
+        from: Int64, to: Int64, byStage: Bool = false, database: ShifuDatabase
     ) throws -> [Totals] {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT model, COUNT(*) AS calls,
+                SELECT model, \(byStage ? "stage" : "NULL AS stage"), COUNT(*) AS calls,
                        SUM(prompt_tokens) AS prompt_tokens,
                        SUM(cached_prompt_tokens) AS cached_prompt_tokens,
                        SUM(completion_tokens) AS completion_tokens
                 FROM llm_usage WHERE at_ms >= ? AND at_ms < ?
-                GROUP BY model
+                GROUP BY model\(byStage ? ", stage" : "")
                 ORDER BY prompt_tokens + completion_tokens DESC
                 """, arguments: [from, to]).map { row in
                 Totals(
-                    model: row["model"], calls: row["calls"],
+                    model: row["model"], stage: row["stage"], calls: row["calls"],
                     promptTokens: row["prompt_tokens"],
                     cachedPromptTokens: row["cached_prompt_tokens"],
                     completionTokens: row["completion_tokens"])

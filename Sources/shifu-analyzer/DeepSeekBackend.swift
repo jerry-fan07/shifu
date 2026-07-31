@@ -42,6 +42,10 @@ struct DeepSeekBackend: LLMBackend {
     /// the codebase that ever sees a provider's `usage` object, so if it isn't
     /// written here the cost of a day's analysis is gone for good.
     let database: ShifuDatabase
+    /// Which analyzer stage this handle serves, stamped on every row it
+    /// records — see `labeled`. Nil means unattributed, which is what the
+    /// column meant for every row written before v27.
+    var stage: String?
 
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
     /// batches sane and works with any OpenAI-compatible endpoint the user
@@ -128,6 +132,21 @@ struct DeepSeekBackend: LLMBackend {
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
             responseHeadroomTokens: role.responseHeadroomTokens,
             thinks: role.thinks, database: database)
+    }
+
+    /// A copy of this backend that stamps `stage` on every row it records.
+    ///
+    /// The label rides on the handle rather than on each call because a stage
+    /// holds one backend for the whole of its run — and because the obvious
+    /// alternative, threading a `stage:` argument through
+    /// `LLMBackend.complete`, is worse twice over: Swift forbids default
+    /// arguments in protocol requirements, so it cannot be added compatibly,
+    /// and every one of the protocol's conformers would have to take a
+    /// parameter that only this one implementation has any use for.
+    func labeled(_ stage: String) -> DeepSeekBackend {
+        var copy = self
+        copy.stage = stage
+        return copy
     }
 
     /// The `max_tokens` one call asks for, clamped so prompt + response still
@@ -224,7 +243,8 @@ struct DeepSeekBackend: LLMBackend {
         // precisely the runs that cost the most.
         if let call = LLMUsage.Call.parse(response: json, requested: model) {
             LLMUsage.record(
-                call, at: Int64(Date().timeIntervalSince1970 * 1_000), database: database)
+                call, at: Int64(Date().timeIntervalSince1970 * 1_000),
+                stage: stage, database: database)
         }
         guard let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any] else {

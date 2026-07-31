@@ -150,6 +150,43 @@ func fencedBlock(_ text: String) -> String {
     return "\(fence)text\n\(text)\n\(fence)"
 }
 
+/// What today's analysis cost: per model, then per stage.
+///
+/// Per model because that is the grain prices come at — the two slots are an
+/// order of magnitude apart, so a combined token count would say nothing. Per
+/// stage because "which slot is expensive" is not the question anyone tuning
+/// the bill actually has; "which stage is expensive" is, and before v27 it
+/// could only be answered by lining rows up against the analyzer's source.
+///
+/// The dollar figures are estimates at the configured per-million rates
+/// (LLMPrices); the token counts beside them are the ground truth.
+func printLLMSpend(db: ShifuDatabase, since: Int64) throws {
+    let priceBook = LLMPriceBook.load(database: db)
+    let llmTotals = try LLMUsage.totals(from: since, to: Int64.max, database: db)
+    for spend in llmTotals {
+        let cached = spend.cachedPromptTokens > 0
+            ? " (\(formatTokens(spend.cachedPromptTokens)) cached)" : ""
+        print("llm today (\(spend.model)): \(spend.calls) call\(spend.calls == 1 ? "" : "s"), "
+            + "\(formatTokens(spend.promptTokens)) in\(cached), "
+            + "\(formatTokens(spend.completionTokens)) out"
+            + String(format: " ≈ $%.3f", priceBook.cost(of: spend)))
+    }
+    if llmTotals.count > 1 {
+        let total = llmTotals.reduce(0) { $0 + priceBook.cost(of: $1) }
+        print(String(format: "llm today total: ≈ $%.2f", total))
+    }
+    // Dearest first. Unattributed rows — anything written before the column
+    // existed, or by a call site that forgot to label itself — group under "?".
+    let byStage = try LLMUsage.totals(from: since, to: Int64.max, byStage: true, database: db)
+    guard byStage.count > 1 else { return }
+    for spend in byStage.sorted(by: { priceBook.cost(of: $0) > priceBook.cost(of: $1) }) {
+        print("  \(spend.stage ?? "?"): \(spend.calls) call\(spend.calls == 1 ? "" : "s"), "
+            + "\(formatTokens(spend.promptTokens)) in, "
+            + "\(formatTokens(spend.completionTokens)) out"
+            + String(format: " ≈ $%.3f", priceBook.cost(of: spend)))
+    }
+}
+
 func commandStatus() throws {
     if let expiry = PauseFile.expiry() {
         let formatter = DateFormatter()
@@ -177,24 +214,7 @@ func commandStatus() throws {
         let parts = counts.map { "\($0["n"] as Int64) \($0["capture_kind"] as String)" }
         print("today: \(parts.joined(separator: ", "))")
     }
-    // What today's analysis cost, per model — the two slots are priced an
-    // order of magnitude apart, so a combined token count would say nothing.
-    // The dollar figure is an estimate at the configured per-million rates
-    // (LLMPrices); the token counts beside it are the ground truth.
-    let priceBook = LLMPriceBook.load(database: db)
-    let llmTotals = try LLMUsage.totals(from: since, to: Int64.max, database: db)
-    for spend in llmTotals {
-        let cached = spend.cachedPromptTokens > 0
-            ? " (\(formatTokens(spend.cachedPromptTokens)) cached)" : ""
-        print("llm today (\(spend.model)): \(spend.calls) call\(spend.calls == 1 ? "" : "s"), "
-            + "\(formatTokens(spend.promptTokens)) in\(cached), "
-            + "\(formatTokens(spend.completionTokens)) out"
-            + String(format: " ≈ $%.3f", priceBook.cost(of: spend)))
-    }
-    if llmTotals.count > 1 {
-        let total = llmTotals.reduce(0) { $0 + priceBook.cost(of: $1) }
-        print(String(format: "llm today total: ≈ $%.2f", total))
-    }
+    try printLLMSpend(db: db, since: since)
 
     if let size = try? FileManager.default.attributesOfItem(atPath: ShifuPaths.database.path)[.size] as? Int64 {
         let encryption = ShifuDatabase.isEncrypted(at: ShifuPaths.database)

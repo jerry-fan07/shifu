@@ -621,6 +621,35 @@ extension ShifuDatabase {
             }
         }
 
+        migrator.registerMigration("v27-llm-usage-stage") { db in
+            // Which stage bought the call. `llm_usage` has recorded what every
+            // response cost since v22 but never what it was *for*, so "which
+            // stage is expensive?" could only be answered by lining rows up
+            // against the order main.swift runs its stages — and five things
+            // break that inference independently: a stage emits a different
+            // number of batched calls on a busy day than a quiet one, a
+            // truncation retry writes two rows for one logical call, gated
+            // stages (`LLMStageGate`) skip most passes, a fail-soft stage that
+            // throws writes no row at all and shifts everything after it, and
+            // `--build-deck` is a whole second analyzer process whose rows
+            // interleave with the hourly run's.
+            //
+            // Nullable, and deliberately not backfilled: NULL means "written
+            // before attribution existed", which is a different fact from a
+            // labelled path that recorded nothing. Stamping the existing rows
+            // 'unknown' would poison exactly the before/after comparison the
+            // column exists to make.
+            //
+            // Number-and-name per v22's reasoning: parallel workspaces mint
+            // migrations concurrently, and a bare "v27" that two branches both
+            // claim leaves the loser's silently skipped on a dogfood DB.
+            guard try !db.columns(in: "llm_usage").contains(where: { $0.name == "stage" })
+            else { return }
+            try db.alter(table: "llm_usage") { table in
+                table.add(column: "stage", .text)
+            }
+        }
+
         return migrator
     }
 }
