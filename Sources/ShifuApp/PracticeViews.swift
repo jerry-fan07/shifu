@@ -89,8 +89,12 @@ struct DueView: View {
 
 // MARK: - Decks
 
-/// The shelf as a list: one row per deck, the offers waiting above it, the
-/// strays at the end. Opening a row *is* the expansion — a deck's cards live
+/// The shelf as a list: the load ahead over it, one row per deck, the offers
+/// waiting above those, the strays at the end. The forecast band belongs here
+/// rather than on Due because it is a fact about the *shelf* — what everything
+/// kept is going to cost over the next four weeks, and how much of that bill is
+/// already late — where Due is only ever about the next sitting.
+/// Opening a row *is* the expansion — a deck's cards live
 /// on its own page (`DeckPage`), because a deck built for the long haul runs
 /// to hundreds of cards and a list that inlines them stops being a list. The
 /// old Inbox folds in as the Suggested band, an offer being nothing more
@@ -100,7 +104,8 @@ struct DecksView: View {
     @EnvironmentObject private var router: Router
 
     var body: some View {
-        VStack(spacing: 0) {
+        let forecast = ReviewForecast.build(cards: store.scheduledCards)
+        return VStack(spacing: 0) {
             HeroHead(
                 figure: "\(store.decks.count)",
                 caption: store.decks.count == 1 ? "deck kept" : "decks kept"
@@ -110,6 +115,9 @@ struct DecksView: View {
                     .foregroundStyle(Instrument.muted)
             } trailing: {
                 newDeckControl
+            }
+            if forecast.hasSchedule {
+                Band { ReviewForecastView(forecast: forecast) }
             }
             PageBody {
                 if store.decks.isEmpty, store.deckSuggestions.isEmpty,
@@ -233,20 +241,32 @@ struct DecksView: View {
 
     /// One row per deck — its state at a glance, its cards behind the click.
     /// The strays close the list.
+    ///
+    /// The band above is the shelf's total; these are the same question asked
+    /// per deck, which is the only way to answer the one the total can't:
+    /// *which* deck is burying you. Every row's spark is scaled to one shared
+    /// ceiling, so their heights can be compared down the column.
     @ViewBuilder private var shelf: some View {
         let groups = deckGroups
         let loose = store.looseCards
+        let looseForecast = ReviewForecast.build(cards: loose, span: ShelfMeasures.sparkDays)
         if !groups.isEmpty || !loose.isEmpty {
+            let ceiling = max(
+                loose.isEmpty ? 0 : looseForecast.peak,
+                groups.filter { $0.drawsSpark }.map { $0.forecast.peak }.max() ?? 0)
             ColumnHead {
                 Text("Deck").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Cards").frame(width: 84, alignment: .trailing)
-                Text("Due now").frame(width: 92, alignment: .trailing)
+                Text("Cards").frame(width: 56, alignment: .trailing)
+                Text("Behind").frame(width: 62, alignment: .trailing)
+                Text("Due now").frame(width: 70, alignment: .trailing)
+                Text("Next \(ShelfMeasures.sparkDays) days")
+                    .frame(width: ShelfMeasures.sparkColumn, alignment: .trailing)
             }
             ForEach(groups) { group in
-                deckRow(group)
+                deckRow(group, ceiling: ceiling)
             }
             if !loose.isEmpty {
-                looseRow(loose)
+                looseRow(loose, forecast: looseForecast, ceiling: ceiling)
             }
         }
     }
@@ -254,55 +274,49 @@ struct DecksView: View {
     private struct DeckGroup: Identifiable {
         let deck: DeckStore.Deck
         let cards: [Note]
+        let forecast: ReviewForecast
         var id: String { deck.key }
+
+        /// A paused deck's cards are out of every queue *and count* (§5.2), and
+        /// a deck still building has nothing settled to forecast — both would
+        /// otherwise draw a week of work that is not coming.
+        var drawsSpark: Bool { deck.status == .ready && !deck.paused }
     }
 
     /// Cards under the deck that minted them, newest deck first — the order
-    /// `DeckStore.decks` already returns.
+    /// `DeckStore.decks` already returns. The forecasts are built here, once
+    /// per body pass, rather than per row.
     private var deckGroups: [DeckGroup] {
         let byDeck = Dictionary(
             grouping: store.allCards.filter { $0.deck != nil },
             by: { $0.deck ?? "" })
-        return store.decks.map { DeckGroup(deck: $0, cards: byDeck[$0.key] ?? []) }
+        return store.decks.map { deck in
+            let cards = byDeck[deck.key] ?? []
+            return DeckGroup(
+                deck: deck, cards: cards,
+                forecast: ReviewForecast.build(cards: cards, span: ShelfMeasures.sparkDays))
+        }
     }
 
-    @ViewBuilder private func deckRow(_ group: DeckGroup) -> some View {
+    @ViewBuilder private func deckRow(_ group: DeckGroup, ceiling: Int) -> some View {
         let due = store.dueNotes.filter { $0.deck == group.deck.key }.count
         Button { router.open(.deck(group.deck.id)) } label: {
             HStack(spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    // The deck's name carries the row the way a theme's does:
-                    // one size up from the table's figures, in semibold.
-                    Text(group.deck.title)
-                        .font(Instrument.sans(13.5, .semibold))
-                        .foregroundStyle(Instrument.ink)
-                        .lineLimit(1)
+                ShelfName(
+                    title: group.deck.title,
                     // A deck minted from the task page wears the task's own
                     // name, and "X from X" says nothing.
-                    if group.deck.title != group.deck.taskName {
-                        Figure("from \(group.deck.taskName)", size: 10.5,
-                               color: Instrument.faint)
-                            .lineLimit(1)
-                    }
-                    if group.deck.paused {
-                        Tag("Paused")
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Figure("\(group.cards.count)", color: Instrument.muted)
-                    .frame(width: 84, alignment: .trailing)
-                if group.deck.status == .ready {
-                    // A paused deck's due count is honestly zero (the gate
+                    detail: group.deck.title == group.deck.taskName
+                        ? nil : "from \(group.deck.taskName)",
+                    unstarted: group.forecast.unstarted,
+                    paused: group.deck.paused,
+                    building: group.deck.status != .ready)
+                ShelfMeasures(
+                    cards: group.cards.count, dueNow: due,
+                    // A paused deck's counts are honestly nothing (the gate
                     // holds its cards back), and the tag already says why.
-                    Figure("\(due)", color: due > 0 ? Instrument.accentText : Instrument.muted)
-                        .frame(width: 92, alignment: .trailing)
-                } else {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Figure("building", color: Instrument.muted)
-                    }
-                    .frame(width: 92, alignment: .trailing)
-                }
+                    forecast: group.drawsSpark ? group.forecast : nil,
+                    ceiling: ceiling)
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
@@ -311,29 +325,140 @@ struct DecksView: View {
         Rule()
     }
 
-    @ViewBuilder private func looseRow(_ loose: [Note]) -> some View {
+    @ViewBuilder private func looseRow(
+        _ loose: [Note], forecast: ReviewForecast, ceiling: Int
+    ) -> some View {
         let due = Set(store.dueNotes.map(\.id))
         Button { router.open(.looseCards) } label: {
             HStack(spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Text("Loose cards")
-                        .font(Instrument.sans(13.5, .semibold))
-                        .foregroundStyle(Instrument.ink)
-                    Figure("outside any deck", size: 10.5, color: Instrument.faint)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Figure("\(loose.count)", color: Instrument.muted)
-                    .frame(width: 84, alignment: .trailing)
-                let dueCount = loose.filter { due.contains($0.id) }.count
-                Figure("\(dueCount)",
-                       color: dueCount > 0 ? Instrument.accentText : Instrument.muted)
-                    .frame(width: 92, alignment: .trailing)
+                ShelfName(
+                    title: "Loose cards", detail: "outside any deck",
+                    unstarted: forecast.unstarted, paused: false)
+                ShelfMeasures(
+                    cards: loose.count,
+                    dueNow: loose.filter { due.contains($0.id) }.count,
+                    forecast: forecast, ceiling: ceiling)
             }
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         Rule()
+    }
+}
+
+// MARK: - The shelf's cells
+
+/// What a shelf row is called, over what it was made from. Two lines rather
+/// than one: with four measures to the right of it there is no room to run the
+/// source task inline, and at the window's minimum width the name was the
+/// thing that got truncated.
+private struct ShelfName: View {
+    let title: String
+    /// Where the cards came from — the source task, or "outside any deck".
+    let detail: String?
+    /// Cards never reviewed. Named here because they are deliberately absent
+    /// from the spark (`ReviewForecast.unstarted`), and a deck whose hundred
+    /// cards all sit in that pool would otherwise draw an empty week with no
+    /// account of where they went.
+    let unstarted: Int
+    let paused: Bool
+    /// A deck still filling in. The spinner rides beside the name rather than
+    /// in a measure column (design.md §5.2 only asks that it be on the row):
+    /// while a deck builds, every measure to the right of it is "—", and the
+    /// state belongs where the eye lands first — next to what it is a state of.
+    var building = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                // The deck's name carries the row the way a theme's does: one
+                // size up from the table's figures, in semibold.
+                Text(title)
+                    .font(Instrument.sans(13.5, .semibold))
+                    .foregroundStyle(Instrument.ink)
+                    .lineLimit(1)
+                if building {
+                    ProgressView().controlSize(.small)
+                    Figure("building", size: 11, color: Instrument.faint)
+                } else if paused {
+                    Tag("Paused")
+                }
+            }
+            if !line.isEmpty {
+                Figure(line, size: 10.5, color: Instrument.faint).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var line: String {
+        var parts: [String] = []
+        if let detail { parts.append(detail) }
+        if unstarted > 0 { parts.append("\(unstarted) never started") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// The four measures every shelf row ends with, so the deck rows and the loose
+/// row can't drift apart: how many cards, how far behind, how many the next
+/// sitting holds, and the week ahead.
+///
+/// `behind` and `dueNow` are deliberately both here and deliberately different:
+/// the first is the debt (reviews whose day has passed), the second is the
+/// session `ReviewGate` would actually hand you, new-card ration included.
+private struct ShelfMeasures: View {
+    let cards: Int
+    let dueNow: Int
+    /// Nil for a deck with no week to draw — paused, or still building. It also
+    /// blanks the two urgency figures, since neither means anything about a
+    /// deck no queue is drawing from.
+    let forecast: ReviewForecast?
+    let ceiling: Int
+
+    /// How far ahead a row looks. Shorter than the band's four weeks on
+    /// purpose: a table cell has room for a week, and a row's question is
+    /// "what is about to land" where the band's is "what shape is the month".
+    static let sparkDays = 7
+    /// Wide enough for the marks and for the head over them. Trailing-aligned
+    /// like every figure column, which also buys the air that keeps the marks
+    /// from reading as an extension of the due-now count beside them.
+    static let sparkColumn: CGFloat = 100
+
+    /// Its own stack at the row's spacing, so the cells line up under the
+    /// column heads exactly as if they had been written inline.
+    var body: some View {
+        HStack(spacing: 14) {
+            Figure("\(cards)", color: Instrument.muted)
+                .frame(width: 56, alignment: .trailing)
+            Figure(figure(behind), color: color(behind, when: Instrument.overdue))
+                .frame(width: 62, alignment: .trailing)
+            Figure(figure(dueNow), color: color(dueNow, when: Instrument.accentText))
+                .frame(width: 70, alignment: .trailing)
+            spark.frame(width: Self.sparkColumn, alignment: .trailing)
+        }
+    }
+
+    private var behind: Int { forecast?.backlog ?? 0 }
+
+    /// A deck nothing is scheduling has no count to report — a zero would read
+    /// as "caught up", which is a different claim from "not playing".
+    private func figure(_ count: Int) -> String {
+        forecast == nil ? "—" : "\(count)"
+    }
+
+    /// A figure only wears its status colour when it *is* one. The dash a
+    /// sidelined deck shows is not an urgent nothing.
+    private func color(_ count: Int, when hot: Color) -> Color {
+        forecast != nil && count > 0 ? hot : Instrument.muted
+    }
+
+    @ViewBuilder private var spark: some View {
+        if let forecast {
+            ForecastSpark(forecast: forecast, ceiling: ceiling)
+        } else {
+            Color.clear.frame(height: 1)
+        }
     }
 }
 
