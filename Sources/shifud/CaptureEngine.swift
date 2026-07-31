@@ -163,7 +163,26 @@ final class CaptureEngine {
     }
 
     private func captureViaOCR(target: OCRTarget) {
-        guard !ocrInFlight else { return }
+        // The rung is serialized — one screenshot + Vision pass at a time, or a
+        // burst of triggers would run several OCRs concurrently and blow the
+        // daemon's CPU budget (§3.4). Serializing the *screenshot* is not a
+        // reason to drop the *trigger*, though: degrade to the metadata/AX rung
+        // with what the ladder already read, exactly as a failed, empty or
+        // unavailable OCR does. §10 specifies this case ("fast app-switch
+        // storms … intermediate switches recorded as metadata only"); returning
+        // here recorded nothing at all.
+        //
+        // What made it worth fixing is *when* it fires. A collision needs a
+        // second rung-3 trigger inside one OCR pass (~300 ms measured), so it
+        // clusters exactly where triggers come fastest — title churn at the
+        // 500 ms debounce — which is the user moving between things. Dropping
+        // the trigger lost the row *and* the `onCapture` behind it, so Focus
+        // Mode went blind for that sample precisely when it had most to judge.
+        guard !ocrInFlight else {
+            recordMetaOrAX(bundle: target.bundle, title: target.title, url: target.url,
+                           timestamp: target.timestamp, axText: target.axFallbackText)
+            return
+        }
         ocrInFlight = true
         ocrTask = Task { @MainActor [weak self] in
             guard let self else { return }
