@@ -552,11 +552,25 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
   would spread them, but the closed-block gate plus the cap already bound the
   waste to two extra calls per stubborn block; not worth a timestamp column.
-- **Cross-run prompt-cache alignment as its own effort (§4.2)** — rosters now
-  render in stable key order, which is the free win. Going further (quantizing
-  roster stats, freezing block rendering across attempts) chases input-token
-  discounts on prompts that card evidence already made small; revisit only if
-  `llm_usage` shows cache misses dominating a real bill.
+- **Cross-run prompt-cache alignment as its own effort (§4.2)** — the ordering
+  wins are taken: rosters render in stable key order, `CardBuilder.ongoingTopics`
+  in slug order, and the task-overview prompt puts the overview it is revising
+  *after* the day notes rather than ahead of them (it is rewritten every pass,
+  so anything behind it was a guaranteed miss). What is left is the part that
+  costs something to keep: the roster's per-task counters (`2.4h over 3d · last
+  2d ago`) move hourly and sit inline with the names, so the byte-identical
+  prefix still ends at the instruction header — splitting them into their own
+  section after the stable name/gist block is the fix. Alongside it, the
+  grouping and clustering prompts append their output-format spec *after* the
+  block list, where it can never be cached. Both want the per-stage attribution
+  below first, so the payoff is measured rather than argued; note also that
+  input is only worth chasing once thinking mode is off the fast slot — with
+  chain-of-thought billed as output, input was under a fifth of the bill.
+- **Per-stage attribution in `llm_usage` (§4.2)** — the table records
+  `at_ms, model, prompt/cached/completion tokens` but no stage, so "which
+  stage costs what" is inferred from call ordering. A `stage` column plus a
+  label threaded through `LLMBackend.complete` would settle it. Wanted before
+  any further prompt-shrinking work, not after.
 - **Card-fed light-tier work notes and radar/deck evidence (§5.3)** — cards
   could stand in for raw screen-text in the light day-note prompt and the
   weekly evidence dossiers. After the open-day throttle those stages are

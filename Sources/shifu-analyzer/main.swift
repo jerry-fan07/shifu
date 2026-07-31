@@ -94,8 +94,10 @@ let reasoningBackend: (any LLMBackend)? =
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
 // the same card relabels blocks the rules tier marked ambiguous. Every later
-// stage renders cards instead of re-sampling raw text, so this is the one
-// place OCR text meets a prompt on the hourly path.
+// *grouping* stage renders cards instead of re-sampling raw text, so this is
+// where OCR text meets a prompt on the hourly path — with one exception the
+// ledger stages don't own: WorkNoteCompiler still samples `observations.text`
+// directly for its day narratives (design.md §12).
 if let backend {
     do {
         let cardSummary = try await CardBuilder.run(

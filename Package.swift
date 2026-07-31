@@ -59,6 +59,10 @@ let package = Package(
             dependencies: ["shifud"]
         ),
         .testTarget(
+            name: "ShifuAnalyzerTests",
+            dependencies: ["shifu-analyzer"]
+        ),
+        .testTarget(
             name: "ShifuCLITests",
             dependencies: ["shifu-cli"]
         ),

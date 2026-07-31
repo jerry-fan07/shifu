@@ -76,9 +76,11 @@ public enum CardBuilder {
     public static let maxAttempts = 3
     /// Candidates per run; the rest wait for the next pass.
     public static let batchLimit = 40
-    /// Raw-text budget per block — the one place raw OCR still reaches a
-    /// prompt hourly, so it is the amount one card is worth, not what the
-    /// window can hold.
+    /// Raw-text budget per block. This is the amount one card is worth, not
+    /// what the window can hold: the grouping and clustering stages downstream
+    /// read the card instead of re-sampling, so these are the only OCR bytes
+    /// they will ever cost. (`WorkNoteCompiler` still samples raw text of its
+    /// own — see design.md §12.)
     public static let textSampleChars = 700
     public static let responseTokenReserve = 3_000
     /// Topic anchors shown so a block that continues existing work repeats
@@ -184,9 +186,18 @@ public enum CardBuilder {
         }
     }
 
-    /// Distinct topics the recent ledger already carries (newest first,
-    /// deduped by slug) — the wording that must recur for a block to land in
-    /// an existing task rather than mint a new one.
+    /// Distinct topics the recent ledger already carries, deduped by slug —
+    /// the wording that must recur for a block to land in an existing task
+    /// rather than mint a new one.
+    ///
+    /// Recency picks *which* topics make the cut and which spelling of a
+    /// repeated one wins; the returned order is by slug. These lines sit
+    /// between the prompt's static header and its block list, so rendering
+    /// them newest-first would reshuffle the header as ordinary work lands and
+    /// cost the context-cache prefix for everything after it — the same
+    /// mistake `SemanticTaskGrouper.activeRoster` was fixed to avoid, in the
+    /// same prompt. Nothing is lost by sorting: the model is told to repeat a
+    /// topic that fits, not to prefer the first one listed.
     public static func ongoingTopics(
         database: ShifuDatabase, before: Int64, limit: Int = maxOngoingTopics
     ) throws -> [String] {
@@ -206,7 +217,7 @@ public enum CardBuilder {
             topics.append(topic)
             if topics.count == limit { break }
         }
-        return topics
+        return topics.sorted { TaskGrouper.slug($0) < TaskGrouper.slug($1) }
     }
 
     /// Parses the model's JSON array (tolerating surrounding prose/fences).
