@@ -213,11 +213,28 @@ enum LedgerShapes {
         }
     }
 
-    /// The hours to tick under a rail: at most `limit`, evenly spaced, always
-    /// including the first.
-    static func ticks(_ clock: Clock, limit: Int = 8) -> [Int] {
+    /// One hour ticked under a rail: the hour it names, and where along the
+    /// rail that hour falls, 0…1.
+    ///
+    /// The place is the whole point. Ticks are evenly *spaced in hours*, which
+    /// is not the same as evenly spaced across the rail unless the last one
+    /// happens to land on the end — a 24-hour clock ticked every 3 hours stops
+    /// at 21:00, seven eighths along. An axis that lays its labels out by count
+    /// rather than by position puts "09" under the ribbon's 08:00.
+    struct AxisTick: Identifiable, Equatable {
+        let hour: Int
+        let place: Double
+
+        var id: Int { hour }
+    }
+
+    /// The hours to tick under a rail: at most `limit`, every `step` hours,
+    /// always including the first.
+    static func ticks(_ clock: Clock, limit: Int = 8) -> [AxisTick] {
         let step = max(1, Int((Double(clock.span) / Double(limit)).rounded(.up)))
-        return stride(from: 0, to: clock.span, by: step).map { (clock.startHour + $0) % 24 }
+        return stride(from: 0, to: clock.span, by: step).map {
+            AxisTick(hour: (clock.startHour + $0) % 24, place: Double($0) / Double(clock.span))
+        }
     }
 
     /// Weekly totals per group over the trailing `weeks` calendar weeks,

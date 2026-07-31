@@ -29,6 +29,14 @@ public enum Rhythms {
     /// rule serve both the person who turns in at 23:30 and the person who
     /// turns in at 02:30 — no per-day bucketing, no cutoff to tune per user.
     static let deadOfNightHour = 4
+    /// And the shortest stretch of screen that can end a night or begin one.
+    /// Waking the machine at 09:06, watching a build for three minutes and
+    /// going back to bed is not the morning — but it *is* a tracked run, and
+    /// the sessionizer's two-minute fold leaves it standing alone. Left in, it
+    /// takes the daybreak an hour earlier than the day started and plants the
+    /// mark on a stretch of rail the ribbon draws as empty, which is the one
+    /// thing a mark drawn on the evidence must never do.
+    static let runFloorMs: Int64 = 10 * 60_000
 
     /// Minutes past midnight, with everything before noon pushed onto the
     /// previous evening's clock — so 23:50 reads as 1430 and 00:10 as 1450,
@@ -123,12 +131,16 @@ public enum Rhythms {
         }
     }
 
-    /// The window's tracked stretches, clipped to it and folded together.
+    /// The window's tracked stretches, clipped to it, folded together, and
+    /// stripped of the ones too short to bound a night.
+    ///
     /// Blocks in a real ledger abut, touch, and — after a bad rebuild — overlap
     /// outright, so this merges by span rather than trusting them to be
     /// disjoint. The fold tolerance is the sessionizer's own gap threshold: a
     /// shorter break than that did not split a block, so it must not open a
-    /// night here either.
+    /// night here either. What survives the fold and is still under
+    /// `runFloorMs` was a genuinely isolated few minutes at the screen, and the
+    /// quiet is allowed to close straight over it.
     private static func tracked(
         _ activities: [LedgerBuilder.LabeledActivity], from: Date, to: Date
     ) -> [(from: Date, to: Date)] {
@@ -150,10 +162,12 @@ public enum Rhythms {
                 runs.append(span)
             }
         }
-        return runs.map {
-            (Date(timeIntervalSince1970: Double($0.start) / 1_000),
-             Date(timeIntervalSince1970: Double($0.end) / 1_000))
-        }
+        return runs
+            .filter { $0.end - $0.start >= runFloorMs }
+            .map {
+                (Date(timeIntervalSince1970: Double($0.start) / 1_000),
+                 Date(timeIntervalSince1970: Double($0.end) / 1_000))
+            }
     }
 
     private static func isNight(from: Date, to: Date, calendar: Calendar) -> Bool {

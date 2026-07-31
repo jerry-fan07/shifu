@@ -87,7 +87,7 @@ struct RailMark: Identifiable {
 /// The drawn half: rails, marks, axis, and the rhythm lines under them.
 private struct WeekRails: View {
     let rails: [DayRail]
-    let ticks: [Int]
+    let ticks: [LedgerShapes.AxisTick]
     let signals: [Rhythms.Signal]
     /// The rhythm line the pointer is on. Its marks stay lit and the rest
     /// step back, so the sentence and the dots it is about are one thing —
@@ -111,7 +111,7 @@ private struct WeekRails: View {
                         .overlay { RhythmMarks(marks: rail.marks, focus: focus) }
                 }
             }
-            RibbonAxis(hours: ticks, leading: Self.gutter + Self.air)
+            RibbonAxis(ticks: ticks, leading: Self.gutter + Self.air)
             if !signals.isEmpty {
                 RhythmLines(signals: signals, focus: $focus)
                     .padding(.leading, Self.gutter + Self.air)
@@ -140,13 +140,32 @@ private struct RhythmMarks: View {
     }
 }
 
-/// The mark itself: a soft bloom, a ring, and a centre.
+/// The mark itself: one bead of light — a solid core and the halo falling off
+/// it.
+///
+/// It was a ring with a dot in the middle, which is a *target*: three concentric
+/// edges, and the eye goes to the outermost one, so the mark read as wider than
+/// the instant it names and its true centre was the emptiest part of it. A
+/// filled core has one edge and its middle is its brightest point, which is
+/// where the instant is.
+///
+/// One shape, not a stack of them: a single circle whose fill goes solid at the
+/// middle and falls to nothing at the rim. Layering a core over a blurred disc
+/// gets close, but the disc's own edge always shows faintly through the haze and
+/// the mark is back to having two of them.
+///
+/// The falloff is steep on purpose. Run out gently to the rim and the ball and
+/// its glow blend into one soft blob the size of the whole gradient; dropped to
+/// almost nothing by two thirds of the radius, the ball keeps its edge and the
+/// glow reads as light coming off it. That also keeps the mark well inside the
+/// 5pt air between rails — a halo wide enough to reach the row above reads as a
+/// smudge on the wrong day.
 ///
 /// Warm, and the only warm thing in the band. Every other hue on a rail is a
-/// series — a category, a theme, a task — and this is not one; `alert` is the
-/// instrument's token for a figure that wants looking at, which is exactly
-/// what a mark is. It is also the one hue that separates from all five chart
-/// slots at once, so a mark reads whatever band it lands on.
+/// series — a category, a theme, a task — and this is not one; `beacon` is a
+/// lift of the instrument's token for a figure that wants looking at, which is
+/// exactly what a mark is. It is also the one hue that separates from all five
+/// chart slots at once, so a mark reads whatever band it lands on.
 ///
 /// Static, and deliberately: design.md §7's bargain for an app you leave open
 /// all day is that nothing ticks on its own. A mark announces itself by being
@@ -156,21 +175,22 @@ private struct RhythmMark: View {
     var dimmed = false
 
     var body: some View {
-        ZStack {
-            // Kept inside the 5pt air between rails: a bloom wide enough to
-            // reach the row above reads as a smudge on the wrong day.
-            Circle()
-                .fill(Instrument.alert.opacity(0.34))
-                .frame(width: size * 1.6, height: size * 1.6)
-                .blur(radius: size * 0.42)
-            Circle()
-                .strokeBorder(Instrument.alert, lineWidth: 1.4)
-                .frame(width: size, height: size)
-            Circle()
-                .fill(Instrument.alert)
-                .frame(width: size * 0.25, height: size * 0.25)
-        }
-        .opacity(dimmed ? 0.22 : 1)
+        Circle()
+            .fill(RadialGradient(
+                stops: [
+                    // Solid to a little under half the radius — that disc is
+                    // the ball, and its edge is the only edge in the mark. Past
+                    // it the stops are close together and never hold a level,
+                    // because any stretch that does reads as a second rim.
+                    .init(color: Instrument.beacon, location: 0.42),
+                    .init(color: Instrument.beacon.opacity(0.34), location: 0.52),
+                    .init(color: Instrument.beacon.opacity(0.11), location: 0.64),
+                    .init(color: Instrument.beacon.opacity(0.02), location: 0.80),
+                    .init(color: Instrument.beacon.opacity(0), location: 1)
+                ],
+                center: .center, startRadius: 0, endRadius: size * 0.8))
+            .frame(width: size * 1.6, height: size * 1.6)
+            .opacity(dimmed ? 0.22 : 1)
     }
 }
 
