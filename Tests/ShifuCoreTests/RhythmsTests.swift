@@ -96,6 +96,26 @@ import Testing
         #expect(nights[0].settled == nil)
     }
 
+    /// Wednesday 29 July, off the dogfood ledger: quiet from 02:36, three and a
+    /// half minutes of Conductor at 09:06, quiet again, then the day properly
+    /// at 10:11. The blip is its own run — the sessionizer folds two-minute
+    /// gaps, not fifty-minute ones — so it took the daybreak mark an hour
+    /// early and put it on a stretch the ribbon draws as empty, since three
+    /// minutes cannot fill a column either. A mark has to land on a band.
+    @Test func aFewMinutesAwakeInTheNightIsNotTheMorning() {
+        let blip = Self.at(9, 6, day: 1)
+        let nights = Self.nights(
+            [Self.block(from: Self.at(9), to: Self.at(26, 36)),
+             Self.block(from: blip, to: blip.addingTimeInterval(210)),
+             Self.block(from: Self.at(10, 11, day: 1), to: Self.at(18, day: 1))],
+            to: Self.at(18, day: 1))
+
+        // Still one night, closed over the blip rather than cut in two by it.
+        #expect(nights.count == 2)
+        #expect(nights[1].settled?.at == Self.at(2, 36, day: 1))
+        #expect(nights[1].stirred?.at == Self.at(10, 11, day: 1))
+    }
+
     /// The dogfood ledger holds rows spanning forty hours — a rebuild artefact
     /// the schema cannot rule out. A block that swallows the window leaves no
     /// quiet, and no quiet has to mean no claim rather than a wrong one.

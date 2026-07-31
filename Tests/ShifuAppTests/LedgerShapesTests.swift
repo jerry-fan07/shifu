@@ -76,8 +76,31 @@ import Testing
     @Test func ticksStartAtTheRailsFirstHourAndNeverExceedTheLimit() {
         let ticks = LedgerShapes.ticks(
             LedgerShapes.Clock(startHour: 7, endHour: 22), limit: 8)
-        #expect(ticks.first == 7)
+        #expect(ticks.first?.hour == 7)
         #expect(ticks.count <= 8)
+    }
+
+    /// The bug the axis carried for its whole life: eight ticks over a day stop
+    /// at 21:00, and laying them out by count rather than by place slid every
+    /// label right of the band it names — an hour by mid-morning, nearly three
+    /// by the end. A tick's place is the fraction of the rail its hour is at,
+    /// full stop.
+    @Test func aTicksPlaceIsWhereItsHourFallsNotWhereItsIndexDoes() {
+        let ticks = LedgerShapes.ticks(
+            LedgerShapes.Clock(startHour: 0, endHour: 24), limit: 8)
+        #expect(ticks.map(\.hour) == [0, 3, 6, 9, 12, 15, 18, 21])
+        for tick in ticks { #expect(tick.place == Double(tick.hour) / 24) }
+        // And the last one stops short of the rail's end, because 21:00 does.
+        #expect(ticks.last?.place == 0.875)
+    }
+
+    /// A rail that doesn't start at midnight is placed from its own first hour,
+    /// and a tick that wraps past midnight keeps its true place.
+    @Test func placesAreMeasuredFromTheRailsOwnStart() {
+        let ticks = LedgerShapes.ticks(
+            LedgerShapes.Clock(startHour: 20, endHour: 28), limit: 4)
+        #expect(ticks.map(\.hour) == [20, 22, 0, 2])
+        #expect(ticks.map(\.place) == [0, 0.25, 0.5, 0.75])
     }
 }
 

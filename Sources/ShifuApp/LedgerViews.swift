@@ -154,7 +154,7 @@ struct LedgerView: View {
         return VStack(spacing: 0) {
             Ribbon(segments: LedgerShapes.ribbon(
                 blocks, lens: lens, colors: colors, from: rail.from, to: rail.to))
-            RibbonAxis(hours: LedgerShapes.ticks(clock))
+            RibbonAxis(ticks: LedgerShapes.ticks(clock))
         }
     }
 
@@ -345,7 +345,8 @@ private struct TimelineChart: View {
     /// were, and an empty evening should look like an empty evening.
     private var hourSlots: [LedgerShapes.Slot] {
         let calendar = Calendar.current
-        let ticked = Set(LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)))
+        let ticked = Set(
+            LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)).map(\.hour))
         let midnight = calendar.startOfDay(for: window.from)
         return (0..<24).compactMap { hour in
             guard let from = calendar.date(byAdding: .hour, value: hour, to: midnight),
