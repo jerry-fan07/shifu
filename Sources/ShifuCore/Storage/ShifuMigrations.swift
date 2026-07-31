@@ -1,12 +1,6 @@
 import Foundation
 import GRDB
 
-// swiftlint:disable file_length
-// The one file in the project that is *supposed* to grow without bound:
-// migrations are append-only and chronological, so nobody reads it top to
-// bottom and splitting it would only make the next author guess which half to
-// append to. Every other length limit still applies.
-
 /// The schema, one registered migration per version. Split from
 /// ShifuDatabase.swift for length only — migrations are append-only, so
 /// this file grows every schema change while the connection logic does not.
@@ -417,62 +411,12 @@ extension ShifuDatabase {
             // the clusterer minted and the user never wanted can just go.
         }
 
-        migrator.registerMigration("v18") { db in
-            // User-requested flashcard decks (design.md §5.2).
-            //
-            // Numbered v18 while v17 (above) was still on another branch:
-            // GRDB keys `grdb_migrations` on the identifier string, so two
-            // branches claiming one number is not a conflict it can detect —
-            // it is a *silent skip*, surfacing later as "no such table: decks"
-            // at query time rather than at open. Pick the next number from
-            // what has actually run, not from what is in this file. Automatic
-            // extraction no longer writes cards at all — a deck is the only
-            // way one is born, and the request *is* the confirmation, so deck
-            // cards skip the inbox and land kept.
-            //
-            // `key` is derived from the task key, never the title: the task
-            // key is already unique, whereas two tasks can easily earn the
-            // same title slug, and ON CONFLICT DO NOTHING would then swallow
-            // the second create silently. No `card_count` column either — the
-            // user prunes cards during review, so a stored count starts
-            // drifting the moment the feature is used as designed; the count
-            // is always derived from `vault_index`.
-            try db.create(table: "decks") { table in
-                table.autoIncrementedPrimaryKey("id")
-                table.column("key", .text).notNull().unique()       // "deck:<slug>"
-                table.column("task_key", .text).notNull().unique()  // one deck per task
-                table.column("title", .text).notNull()
-                table.column("status", .text).notNull().defaults(to: "pending")
-                table.column("status_at", .integer).notNull()
-                table.column("created_at", .integer).notNull()
-                table.column("built_at", .integer)
-            }
-            // Deck proposals from the weekly suggester. Keyed on `task_key`,
-            // not `task_id`, because a dismissal here is *permanent*:
-            // TaskPrune and TaskMerging both `DELETE FROM tasks` and SQLite
-            // reuses rowids, so an id-keyed forever-row would eventually
-            // suppress an unrelated future task. Keys are the codebase's
-            // stable identity (it is why `vault_index` resolves key → id at
-            // index time), and per-key suppression is semantically right: a
-            // re-minted key is the same intent.
-            try db.create(table: "deck_suggestions") { table in
-                table.autoIncrementedPrimaryKey("id")
-                table.column("task_key", .text).notNull().unique()
-                table.column("title", .text)                 // nil on 'declined'
-                table.column("sample_cards", .text)          // JSON; nil on 'declined'
-                table.column("status", .text).notNull().defaults(to: "new")
-                table.column("created_at", .integer).notNull()
-            }
-            // Which deck a card belongs to — rebuildable from the note's
-            // `deck:` frontmatter like every other column here.
-            try db.alter(table: "vault_index") { table in
-                table.add(column: "deck_key", .text)
-            }
-            try db.create(index: "idx_vault_index_deck", on: "vault_index",
-                          columns: ["deck_key"])
-        }
+        // v18 onward — the deck era — lives in ShifuMigrationsDecks.swift,
+        // split for file length only. Order is registration order, so the
+        // call sits exactly where v18 does in the sequence.
+        registerDeckMigrations(into: &migrator)
 
-        migrator.registerMigration("v19-llm-usage") { db in
+        migrator.registerMigration("v22-llm-usage") { db in
             // What the analyzer's LLM calls cost, in tokens (LLMUsage.swift).
             // The provider bills tokens and reports them in every response;
             // read once and thrown away, they leave "what did today cost"
@@ -480,15 +424,23 @@ extension ShifuDatabase {
             //
             // The identifier carries a name, unlike v1–v18, because the bare
             // number is the trap v18's comment describes and it has already
-            // sprung: this machine's dogfood database has a "v19" (plus v20,
-            // v21) applied from branches that never landed here, so a bare
-            // "v19" would be silently skipped. Number-and-name from here on —
-            // the number places it in the sequence, the name makes a collision
-            // between two branches impossible.
+            // sprung: the dogfood database had a "v19" (plus v20, v21) applied
+            // from branches that hadn't landed yet, so a bare "v19" would have
+            // been silently skipped. Number-and-name from here on — the number
+            // places it in the sequence, the name makes a collision between
+            // two branches impossible.
+            //
+            // Those branches have since landed as v19–v21, so this is v22: the
+            // name kept the collision from being silent, and renumbering is
+            // what keeps the sequence honest. The guard below is the cost of
+            // that rename — GRDB keys `grdb_migrations` on the whole string, so
+            // to a database that already ran "v19-llm-usage" this reads as a
+            // brand-new migration and would fail on the table it built itself.
             //
             // One row per response, not a per-day counter: a daily row needs a
             // local-midnight key, and those strand duplicates when the machine
             // changes time zone (the `task_logs` bug).
+            guard try !db.tableExists("llm_usage") else { return }
             try db.create(table: "llm_usage") { table in
                 table.autoIncrementedPrimaryKey("id")
                 table.column("at_ms", .integer).notNull()
@@ -502,7 +454,7 @@ extension ShifuDatabase {
             try db.create(index: "idx_llm_usage_at", on: "llm_usage", columns: ["at_ms"])
         }
 
-        migrator.registerMigration("v20-block-cards") { db in
+        migrator.registerMigration("v23-block-cards") { db in
             // The block card (CardBuilder): one fast-model pass distills each
             // closed block into compact structured JSON — category, topic,
             // entities, gist — and every later LLM stage renders the card
@@ -510,7 +462,10 @@ extension ShifuDatabase {
             // column rather than per-field columns because cards are only
             // ever rendered, never filtered by SQL; like `signature` (v8) it
             // is durable derived text that outlives raw-text retention.
-            // Number-and-name, for the reason v19 spells out.
+            // Number-and-name, and renumbered from "v20-block-cards", both for
+            // the reasons v22 spells out — including its guard.
+            guard try !db.columns(in: "activities").contains(where: { $0.name == "card" })
+            else { return }
             try db.alter(table: "activities") { table in
                 table.add(column: "card", .text)
                 table.add(column: "card_attempts", .integer).notNull().defaults(to: 0)

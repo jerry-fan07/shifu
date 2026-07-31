@@ -16,8 +16,9 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var choices: [String: String] = [:]
     @Published private(set) var texts: [String: String] = [:]
     @Published private(set) var lastError: String?
-    /// Today's estimated LLM spend, ready to render ("LLM spend today ≈ $0.04").
-    /// Nil when nothing was billed today or analysis is off.
+    /// Today's estimated LLM spend as its figure alone ("≈ $0.043") — the row
+    /// carries the label, like every other reading on the page. Nil when
+    /// nothing was billed today or analysis is off.
     @Published private(set) var llmSpendToday: String?
 
     private var database: ShifuDatabase?
@@ -51,8 +52,7 @@ final class SettingsStore: ObservableObject {
                 Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1_000)
             let spent = LLMPriceBook.load(database: database)
                 .cost(from: dayStart, to: Int64.max, database: database)
-            llmSpendToday = spent > 0
-                ? String(format: "LLM spend today ≈ $%.3f", spent) : nil
+            llmSpendToday = spent > 0 ? String(format: "≈ $%.3f", spent) : nil
             lastError = nil
         } catch {
             lastError = "\(error)"

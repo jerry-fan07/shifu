@@ -60,6 +60,43 @@ import Testing
         #expect(decks[0].cardCount == 0)
     }
 
+    /// The New deck page's whole form lands on the row: instructions and the
+    /// review settings chosen before the deck exists, with blank instructions
+    /// stored as NULL rather than "".
+    @Test func createCarriesInstructionsAndSettings() throws {
+        let (database, _) = try scratch()
+        try seedTask(database, key: "sem:rust-book", name: "Rust book")
+        try seedTask(database, key: "sem:plain", name: "Plain")
+
+        let deckKey = try #require(try DeckStore.create(
+            title: "Ownership", taskKey: "sem:rust-book",
+            instructions: "  Only the ownership rules, skip the tooling.  ",
+            cardRange: DeckStore.CardRange(lower: 3, upper: 5),
+            newPerDay: nil, paused: true, database: database))
+        let deck = try #require(try DeckStore.deck(taskKey: "sem:rust-book",
+                                                   database: database))
+        #expect(deck.instructions == "Only the ownership rules, skip the tooling.")
+        #expect(deck.cardRange == DeckStore.CardRange(lower: 3, upper: 5))
+        #expect(deck.newPerDay == nil)
+        #expect(deck.paused == true)
+
+        // The brief and range ride the claim — a drain retry in another
+        // process must still build the deck the user described.
+        let claim = try #require(try DeckStore.claimForBuild(key: deckKey,
+                                                             database: database))
+        #expect(claim.instructions == "Only the ownership rules, skip the tooling.")
+        #expect(claim.cardRange == DeckStore.CardRange(lower: 3, upper: 5))
+
+        // The defaults are what the task page and suggestion accept get.
+        try DeckStore.create(title: "Plain", taskKey: "sem:plain", database: database)
+        let plain = try #require(try DeckStore.deck(taskKey: "sem:plain",
+                                                    database: database))
+        #expect(plain.instructions == nil)
+        #expect(plain.cardRange == nil)
+        #expect(plain.newPerDay == DeckStore.defaultNewPerDay)
+        #expect(plain.paused == false)
+    }
+
     /// The JOIN, not a delete, is what hides a deck whose task went away —
     /// the cards stay in the vault and keep serving the All queue.
     @Test func deckForAPrunedTaskDropsOutOfTheListButKeepsItsRow() throws {
@@ -132,6 +169,80 @@ import Testing
         #expect(try DeckStore.openSuggestionCount(database: database) == 0)
         #expect(try DeckStore.spokenForTaskKeys(database: database)
             .contains("sem:admin-chores"))
+    }
+
+    // MARK: - Management (§5.2)
+
+    @Test func renameTouchesTheTitleAndNothingElse() throws {
+        let (database, vault) = try scratch()
+        try seedTask(database, key: "sem:fsrs-tuning", name: "FSRS tuning")
+        let pending = try suggestion(database, taskKey: "sem:fsrs-tuning",
+                                     samples: [sample("stability")])
+        let deckKey = try #require(
+            try DeckStore.accept(pending, database: database, vault: vault))
+
+        try DeckStore.rename(key: deckKey, to: "  Sharper title  ", database: database)
+        let deck = try #require(try DeckStore.decks(database: database).first)
+        #expect(deck.title == "Sharper title")
+        // Cards carry the key, not the title, so they don't move.
+        #expect(try vault.deckNotes(deckKey: deckKey).count == 1)
+
+        // A blank rename is refused rather than blanking the shelf.
+        try DeckStore.rename(key: deckKey, to: "   ", database: database)
+        #expect(try DeckStore.decks(database: database).first?.title == "Sharper title")
+    }
+
+    @Test func reviewSettingsDefaultAndPersist() throws {
+        let (database, _) = try scratch()
+        try seedTask(database, key: "sem:fsrs-tuning", name: "FSRS tuning")
+        let deckKey = try #require(try DeckStore.create(
+            title: "FSRS internals", taskKey: "sem:fsrs-tuning", database: database))
+
+        var deck = try #require(try DeckStore.decks(database: database).first)
+        #expect(deck.paused == false)
+        #expect(deck.newPerDay == DeckStore.defaultNewPerDay)
+
+        try DeckStore.setPaused(key: deckKey, true, database: database)
+        try DeckStore.setNewPerDay(key: deckKey, nil, database: database)
+        deck = try #require(try DeckStore.decks(database: database).first)
+        #expect(deck.paused == true)
+        #expect(deck.newPerDay == nil)
+    }
+
+    @Test func deleteTakesTheCardsBarsTheSuggesterAndKeepsTheLog() throws {
+        let (database, vault) = try scratch()
+        try seedTask(database, key: "sem:fsrs-tuning", name: "FSRS tuning")
+        let pending = try suggestion(database, taskKey: "sem:fsrs-tuning",
+                                     samples: [sample("stability"), sample("difficulty")])
+        let deckKey = try #require(
+            try DeckStore.accept(pending, database: database, vault: vault))
+        let graded = try #require(try vault.deckNotes(deckKey: deckKey).first)
+        try vault.review(graded, grade: .good)
+        // A bystander outside the deck must survive the purge.
+        try vault.save(Note(topic: "loose", state: .kept, body: "kept before decks"))
+        let deck = try #require(try DeckStore.decks(database: database).first)
+
+        try DeckStore.delete(deck, database: database, vault: vault)
+
+        // The deck and its cards go together — files and index rows both.
+        #expect(try DeckStore.decks(database: database).isEmpty)
+        #expect(try vault.deckNotes(deckKey: deckKey).isEmpty)
+        #expect(try DeckStore.cardCount(deckKey: deckKey, database: database) == 0)
+        #expect(try vault.allNotes().map(\.topic) == ["loose"])
+        // The review log is history, not holdings.
+        let logged = try database.queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM srs_reviews")
+        }
+        #expect(logged == 1)
+        // The suggester is barred; the accepted row now reads dismissed.
+        #expect(try DeckStore.spokenForTaskKeys(database: database)
+            .contains("sem:fsrs-tuning"))
+        let status = try database.queue.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT status FROM deck_suggestions WHERE task_key = 'sem:fsrs-tuning'
+                """)
+        }
+        #expect(status == "dismissed")
     }
 
     // MARK: - Build lifecycle

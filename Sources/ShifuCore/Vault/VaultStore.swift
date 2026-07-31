@@ -57,12 +57,17 @@ public struct VaultStore: Sendable {
         return notes.sorted { $0.captured > $1.captured }
     }
 
-    /// Kept notes with a Q/A pair whose SRS due date has arrived (§5.2).
+    /// Kept notes with a Q/A pair whose SRS due date has arrived (§5.2),
+    /// after each deck's review settings have had their say (`ReviewGate`).
     public func due(asOf date: Date = Date()) throws -> [Note] {
-        try allNotes().filter { note in
+        let raw = try allNotes().filter { note in
             note.state == .kept && note.questionAnswer != nil
                 && (note.srs.map { $0.due <= date } ?? true)
         }
+        guard let database else { return raw }
+        return ReviewGate.schedulable(
+            raw, decks: try DeckStore.decks(database: database),
+            introducedToday: try ReviewGate.introducedToday(database: database, now: date))
     }
 
     // MARK: - Work notes (vault-features.md §2.1)

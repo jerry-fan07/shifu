@@ -118,13 +118,20 @@ import Testing
     }
 
     @Test func durationReadsAsHoursAndMinutes() {
-        #expect(TimeBreakdown.duration(0) == "0m")
-        #expect(TimeBreakdown.duration(59_000) == "0m")
         #expect(TimeBreakdown.duration(3_540_000) == "59m")
         #expect(TimeBreakdown.duration(3_600_000) == "1h 0m")
         #expect(TimeBreakdown.duration(15_120_000) == "4h 12m")
+    }
+
+    /// A real block list is full of forty-second visits, and rounding them all
+    /// to "0m" turns the Timeline's whole duration column into zeroes.
+    @Test func subMinuteSpansReadInSeconds() {
+        #expect(TimeBreakdown.duration(0) == "0s")
+        #expect(TimeBreakdown.duration(45_000) == "45s")
+        #expect(TimeBreakdown.duration(59_000) == "59s")
+        #expect(TimeBreakdown.duration(60_000) == "1m")
         // A negative span is a clock going backwards, not four billion hours.
-        #expect(TimeBreakdown.duration(-5_000) == "0m")
+        #expect(TimeBreakdown.duration(-5_000) == "0s")
     }
 }
 
