@@ -290,7 +290,7 @@ import Testing
         #expect(try harness.observations()[0].url == nil)
     }
 
-    // MARK: - Work Mode's hook
+    // MARK: - Focus Mode's hook
 
     @Test func onCaptureReportsBundleURLAndExclusion() async throws {
         let harness = try harness(bundles: ["com.private.app"])

@@ -21,7 +21,7 @@ final class LedgerStore: ObservableObject {
     /// nearly seven hundred documents.
     @Published private(set) var vaultCensus = VaultLibrary.Census()
     @Published private(set) var pausedUntil: Date?
-    @Published private(set) var workModeOn = false
+    @Published private(set) var focusModeOn = false
     @Published private(set) var dueNotes: [Note] = []
     /// Every kept, reviewable card (Q/A present), most urgent first.
     @Published private(set) var allCards: [Note] = []
@@ -162,7 +162,7 @@ final class LedgerStore: ObservableObject {
 
     func refresh() {
         pausedUntil = PauseFile.expiry()
-        workModeOn = WorkModeFile.isOn()
+        focusModeOn = FocusModeFile.isOn()
         refreshVaultNotes()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {

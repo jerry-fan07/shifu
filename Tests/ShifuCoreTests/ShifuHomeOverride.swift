@@ -11,7 +11,7 @@ import Foundation
 ///
 /// Every test that moves the variable goes through here, so they take turns and
 /// each one puts back whatever it found. Prefer *not* needing this at all —
-/// `PauseFile`, `WorkModeFile` and `VaultStore(root:)` all take an explicit
+/// `PauseFile`, `FocusModeFile` and `VaultStore(root:)` all take an explicit
 /// directory precisely so a test can stay off the environment.
 enum ShifuHomeOverride {
     private static let lock = NSLock()

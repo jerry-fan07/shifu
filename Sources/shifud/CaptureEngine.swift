@@ -69,7 +69,7 @@ final class CaptureEngine {
 
     private(set) var lastCaptureAt: Date = .distantPast
 
-    /// Fired after each recorded capture (bundle, url, excluded) — Work Mode
+    /// Fired after each recorded capture (bundle, url, excluded) — Focus Mode
     /// listens here for its rules-only near-real-time classification (§4.4).
     var onCapture: ((String, String?, Bool) -> Void)?
 

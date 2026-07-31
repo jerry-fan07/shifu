@@ -2,8 +2,8 @@ import Foundation
 import GRDB
 
 /// Maintenance for `work_mode_sessions` (design.md §4.4).
-public enum WorkModeSessions {
-    /// Closes sessions left open by a daemon that exited while Work Mode was on
+public enum FocusModeSessions {
+    /// Closes sessions left open by a daemon that exited while Focus Mode was on
     /// — a crash, a restart, a logout. Those rows keep `ended_at` NULL forever,
     /// so any future duration sum either skips them or treats them as running
     /// until now; both distort adherence stats far more than the millisecond
@@ -17,7 +17,7 @@ public enum WorkModeSessions {
     /// it was ever active.
     ///
     /// Must run before this process opens a session of its own, or it would
-    /// immediately close the new row — `WorkModeController.init` calls it.
+    /// immediately close the new row — `FocusModeController.init` calls it.
     ///
     /// - Returns: how many rows were closed.
     @discardableResult

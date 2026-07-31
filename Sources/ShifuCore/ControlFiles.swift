@@ -65,12 +65,12 @@ public enum PauseFile {
     }
 }
 
-/// The Work Mode control file (design.md §4.4). Presence alone is the state;
+/// The Focus Mode control file (design.md §4.4). Presence alone is the state;
 /// contents are ignored, which is why the daemon watches *identity*
 /// (`ControlFileToken`) rather than mtime — see that type for why.
-public enum WorkModeFile {
+public enum FocusModeFile {
     static func file(in home: URL?) -> URL {
-        home.map { $0.appendingPathComponent("work_mode") } ?? ShifuPaths.workModeFile
+        home.map { $0.appendingPathComponent("work_mode") } ?? ShifuPaths.focusModeFile
     }
 
     public static func isOn(home: URL? = nil) -> Bool {

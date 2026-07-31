@@ -124,7 +124,7 @@ import Testing
     }
 }
 
-@Suite struct WorkModeFileTests {
+@Suite struct FocusModeFileTests {
     private func scratch() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shifu-workmode-\(UUID().uuidString)")
@@ -134,24 +134,24 @@ import Testing
 
     @Test func presenceAloneIsTheState() throws {
         let home = try scratch()
-        #expect(!WorkModeFile.isOn(home: home))
-        try WorkModeFile.turnOn(home: home)
-        #expect(WorkModeFile.isOn(home: home))
-        WorkModeFile.turnOff(home: home)
-        #expect(!WorkModeFile.isOn(home: home))
+        #expect(!FocusModeFile.isOn(home: home))
+        try FocusModeFile.turnOn(home: home)
+        #expect(FocusModeFile.isOn(home: home))
+        FocusModeFile.turnOff(home: home)
+        #expect(!FocusModeFile.isOn(home: home))
     }
 
     @Test func turningOnTwiceLeavesItOn() throws {
         let home = try scratch()
-        try WorkModeFile.turnOn(home: home)
-        try WorkModeFile.turnOn(home: home)
-        #expect(WorkModeFile.isOn(home: home))
+        try FocusModeFile.turnOn(home: home)
+        try FocusModeFile.turnOn(home: home)
+        #expect(FocusModeFile.isOn(home: home))
     }
 
     @Test func turningOffWhenAlreadyOffIsHarmless() throws {
         let home = try scratch()
-        WorkModeFile.turnOff(home: home)
-        #expect(!WorkModeFile.isOn(home: home))
+        FocusModeFile.turnOff(home: home)
+        #expect(!FocusModeFile.isOn(home: home))
     }
 
     /// The daemon watches *identity*, not existence, so a fast off→on has to
@@ -159,14 +159,14 @@ import Testing
     /// no change at all.
     @Test func aFastOffOnCyclePresentsANewToken() throws {
         let home = try scratch()
-        let file = WorkModeFile.file(in: home)
+        let file = FocusModeFile.file(in: home)
 
-        try WorkModeFile.turnOn(home: home)
+        try FocusModeFile.turnOn(home: home)
         let first = try #require(ControlFileToken(at: file))
-        WorkModeFile.turnOff(home: home)
+        FocusModeFile.turnOff(home: home)
         #expect(ControlFileToken(at: file) == nil)
 
-        try WorkModeFile.turnOn(home: home)
+        try FocusModeFile.turnOn(home: home)
         let second = try #require(ControlFileToken(at: file))
         #expect(first != second)
     }
@@ -184,7 +184,7 @@ import Testing
             #expect(ShifuPaths.home.path == scratch)
             #expect(ShifuPaths.database.path == scratch + "/shifu.db")
             for path in [ShifuPaths.database, ShifuPaths.vault, ShifuPaths.digests,
-                         ShifuPaths.logs, ShifuPaths.pauseFile, ShifuPaths.workModeFile] {
+                         ShifuPaths.logs, ShifuPaths.pauseFile, ShifuPaths.focusModeFile] {
                 #expect(path.deletingLastPathComponent().path == scratch)
             }
         }

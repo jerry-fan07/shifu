@@ -198,7 +198,7 @@ struct TextSettingRow: View {
     }
 }
 
-/// "Type a domain, press Add" — worn by Work Mode's site list and by Privacy's
+/// "Type a domain, press Add" — worn by Focus Mode's site list and by Privacy's
 /// excluded domains, which write to different tables through the same gesture.
 ///
 /// `isValid` is the same normalization the store will apply, so the control can
@@ -254,7 +254,7 @@ struct DomainListRow: View {
 }
 
 /// A list of stored values under the row that adds to them, each with the way
-/// to take it back out. Shared by the Work Mode site list and the Privacy
+/// to take it back out. Shared by the Focus Mode site list and the Privacy
 /// exclusions, which are the same gesture over three different tables — and by
 /// the built-in lists, which pass no `remove` and so render as the same rows
 /// without the link. That is the point: a built-in exclusion should look

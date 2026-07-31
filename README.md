@@ -63,10 +63,10 @@ During development, `swift run ShifuApp` runs it unbundled.
 
 ```
 shifu log [days]        today's observation trace
-shifu status            pause state, work mode, today's counts
+shifu status            pause state, focus mode, today's counts
 shifu pause 1h          pause capture (tears down observers, doesn't just gate)
 shifu resume
-shifu work on|off       Work Mode: glow-pulse nudges when off-task
+shifu focus on|off      Focus Mode: glow-pulse nudges when off-task
 shifu review            spaced-repetition session over due notes
 shifu forget last 2h    delete a time range (raw + derived)
 shifu forget app <id>   purge one app's data

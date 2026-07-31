@@ -66,7 +66,7 @@ extension ShifuDatabase {
                 table.primaryKey("key", .text)
                 table.column("value", .text).notNull()
             }
-            // Work Mode sessions, for adherence stats (design.md §4.4).
+            // Focus Mode sessions, for adherence stats (design.md §4.4).
             try db.create(table: "work_mode_sessions") { table in
                 table.autoIncrementedPrimaryKey("id")
                 table.column("started_at", .integer).notNull()

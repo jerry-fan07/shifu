@@ -70,7 +70,7 @@ final class GlowOverlay: NSObject {
     /// `.screenSaver` level with `.transient`, which — verified empirically on
     /// this machine — does NOT hide them behind the window picker, so a pulse
     /// would paint the amber vignette + text straight over the Mission Control
-    /// UI (§4.4). The false return lets `WorkModeController` leave
+    /// UI (§4.4). The false return lets `FocusModeController` leave
     /// `lastPulseAt` untouched, so the next off-task capture (a heartbeat away)
     /// retries the nudge instead of losing it for a whole `pulseSpacing`.
     func pulse() -> Bool {
@@ -78,7 +78,7 @@ final class GlowOverlay: NSObject {
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return false }    // all displays gone: skip, don't latch
         guard !Self.missionControlActive() else {
-            log("work mode: glow pulse skipped — Mission Control active")
+            log("focus mode: glow pulse skipped — Mission Control active")
             return false
         }
         isPulsing = true
@@ -122,7 +122,7 @@ final class GlowOverlay: NSObject {
                            by: Self.missionControlCheckInterval) {
             schedule(after: tick) { overlay in
                 guard overlay.isPulsing, Self.missionControlActive() else { return }
-                log("work mode: glow pulse dismissed — Mission Control appeared")
+                log("focus mode: glow pulse dismissed — Mission Control appeared")
                 overlay.teardown()
             }
         }
@@ -155,7 +155,7 @@ final class GlowOverlay: NSObject {
     }
 
     /// Dismisses an in-flight pulse immediately; no-op when idle. Called when
-    /// Work Mode switches off — a nudge shouldn't outlive the contract.
+    /// Focus Mode switches off — a nudge shouldn't outlive the contract.
     func dismiss() {
         teardown()
     }

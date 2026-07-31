@@ -256,7 +256,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The Notes place and the note page | [`ShifuApp/NotesView.swift`](Sources/ShifuApp/NotesView.swift), [`ShifuApp/NotePage.swift`](Sources/ShifuApp/NotePage.swift) |
 | Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
-| Work Mode nudge behavior | [`shifud/WorkModeController.swift`](Sources/shifud/WorkModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
+| Focus Mode nudge behavior | [`shifud/FocusModeController.swift`](Sources/shifud/FocusModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
 | A user-tunable setting (key, default, bounds, UI copy) | [`Storage/SettingsCatalog.swift`](Sources/ShifuCore/Storage/SettingsCatalog.swift) — see §7 |
 | The Settings place (a page in the main window, not a separate window) | [`ShifuApp/SettingsView.swift`](Sources/ShifuApp/SettingsView.swift), [`ShifuApp/SettingsStore.swift`](Sources/ShifuApp/SettingsStore.swift) — usually you do **not** need to touch these |
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
@@ -461,7 +461,7 @@ about which calls never happen, and only a recording fake can assert that.
 | File | Format | Written by | Watched by |
 |---|---|---|---|
 | `~/Shifu/pause_until` | unix **seconds** expiry, as ASCII digits | `shifu pause`, `LedgerStore.pause` | `PauseController` |
-| `~/Shifu/work_mode` | presence alone; contents ignored | `shifu work on`, `LedgerStore.toggleWorkMode` | `WorkModeController` |
+| `~/Shifu/work_mode` | presence alone; contents ignored | `shifu focus on`, `LedgerStore.toggleFocusMode` | `FocusModeController` |
 
 Both watchers are a `DispatchSource` on the **home directory** (not the file),
 so creation and deletion both register. An expiry in the past reads as "not

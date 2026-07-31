@@ -29,7 +29,7 @@ import Testing
     }
 
     /// The regression this type exists for: delete + recreate with no delay is
-    /// exactly what `shifu work off && shifu work on` does. `fileExists` reports
+    /// exactly what `shifu focus off && shifu focus on` does. `fileExists` reports
     /// true both before and after, so only the token distinguishes them.
     @Test func recreatedFileGetsADifferentToken() throws {
         let dir = try scratchDirectory()
