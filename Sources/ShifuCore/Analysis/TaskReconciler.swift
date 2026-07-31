@@ -64,9 +64,10 @@ public enum TaskReconciler {
             "",
             "Only pair tasks you are confident are the same effort (confidence 0-1).",
             "Only write gists for tasks shown without one; one concrete sentence each.",
-            "Either list may be empty. Respond with ONLY JSON:",
+            "Either list may be empty. Replace <…> with your own words.",
+            "Respond with ONLY JSON:",
             #"{"merges": [{"a": "t1", "b": "t3", "confidence": 0.9}],"#,
-            #" "gists": [{"task": "t2", "gist": "Comparing fares and picking dates."}]}"#
+            #" "gists": [{"task": "t2", "gist": "<…>"}]}"#
         ])
         return lines.joined(separator: "\n")
     }
@@ -89,7 +90,8 @@ public enum TaskReconciler {
         for item in object["gists"] as? [[String: Any]] ?? [] {
             guard let handle = item["task"] as? String,
                   let gist = (item["gist"] as? String)?
-                      .trimmingCharacters(in: .whitespacesAndNewlines), !gist.isEmpty
+                      .trimmingCharacters(in: .whitespacesAndNewlines), !gist.isEmpty,
+                  !TaskGrouper.isPlaceholder(gist)
             else { continue }
             verdict.gists[handle] = String(gist.prefix(200))
         }

@@ -90,6 +90,36 @@ private struct TaskRowSnapshot: Sendable {
         #expect(verdict.newTasks == [.init(handle: "n1", title: "Booking flights", gist: "Fares.")])
     }
 
+    /// The prompt's JSON example is a fill-in slot, not an answer. A model
+    /// that echoes it must mint nothing: the first `sem:` task this project
+    /// ever created was the old example's title *and* gist, verbatim, over
+    /// unrelated evidence. An empty roster is the worst case, so this is a
+    /// first-run bug — see `TaskGrouper.isPlaceholder`.
+    @Test func echoedPromptPlaceholderMintsNothing() {
+        let verdict = SemanticTaskGrouper.parse("""
+        {"assignments": [{"id": 7, "task": "n1", "confidence": 0.99}],
+         "new_tasks": [{"handle": "n1", "title": "<…>", "gist": "<…>"}]}
+        """)
+        // The slot survives parsing as a title (parse only drops blanks)…
+        #expect(verdict.newTasks == [.init(handle: "n1", title: "<…>", gist: nil)])
+        // …but slugs to nothing, so resolve mints no task and the confident
+        // assignment pointing at it is dropped with it.
+        let resolved = SemanticTaskGrouper.resolve(verdict, batch: [7], roster: [])
+        #expect(resolved.newTaskByKey.isEmpty)
+        #expect(resolved.assignmentsByKey.isEmpty)
+    }
+
+    /// Whatever the placeholder is, it must never survive `slug` — that is
+    /// the property the guard above rests on.
+    @Test func promptPlaceholdersAreUnsluggable() {
+        let prompt = SemanticTaskGrouper.prompt(roster: [], blocks: [])
+        #expect(prompt.contains(#""title": "<…>""#))
+        #expect(TaskGrouper.isPlaceholder("<…>"))
+        // And no prompt example is a usable task name any more.
+        #expect(!prompt.contains("Booking flights for the SF trip"))
+        #expect(!prompt.contains("Comparing fares and picking travel dates"))
+    }
+
     @Test func parseToleratesGarbage() {
         #expect(SemanticTaskGrouper.parse("no json here") == .init(assignments: [], newTasks: []))
         #expect(SemanticTaskGrouper.parse("{}") == .init(assignments: [], newTasks: []))

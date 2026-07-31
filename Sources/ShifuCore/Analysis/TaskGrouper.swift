@@ -124,6 +124,21 @@ public enum TaskGrouper {
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 
+    /// True when the model echoed a prompt's `<…>` fill-in slot instead of
+    /// answering. Every placeholder in our prompts is punctuation only, so it
+    /// slugs to nothing — the same test `SemanticTaskGrouper.resolve` already
+    /// applies to titles, named here so gists can share it. Gists need it:
+    /// they bottom out in no key, so an echoed slot would reach the DB.
+    ///
+    /// The prompts used to carry a plausible *answer* in that slot instead
+    /// ("Booking flights for the SF trip" / "Comparing fares and picking
+    /// travel dates.") and the first task the model ever minted was that
+    /// example, verbatim, over unrelated evidence. An empty roster is the
+    /// worst case — a new install has to mint every task, with nothing but
+    /// the prompt to imitate — and a bad mint is a roster entry every later
+    /// batch is invited to reuse.
+    public static func isPlaceholder(_ text: String) -> Bool { slug(text).isEmpty }
+
     /// One log line: where the time went, then what it was about.
     /// "Xcode, github.com — debugging capture daemon; reading GRDB docs"
     static func summaryLine(sources: [String], topics: [String]) -> String {

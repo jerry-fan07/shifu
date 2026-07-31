@@ -29,9 +29,8 @@ extension SemanticTaskGrouper {
 
         var lines: [String] = [
             "Group screen-time blocks into the user's high-level tasks — the goal being",
-            "pursued, phrased as the user would (\"Applying to YC Startup School",
-            "afterparties\", \"Booking flights and planning travel\") — never an app or",
-            "website name.",
+            "pursued, phrased as the user would (\"Studying for the certification exam\",",
+            "\"Booking flights and planning travel\") — never an app or website name.",
             "",
             detail == .full
                 ? "Existing tasks — reuse one whenever a block continues it "
@@ -70,10 +69,9 @@ extension SemanticTaskGrouper {
             "A new task needs a specific goal-level title (3-8 words) and a one-sentence gist.",
             "Omit blocks that fit no task (idle browsing, one-off glances).",
             "Confidence is 0-1; use low confidence when the evidence is thin.",
-            "Respond with ONLY JSON:",
+            "Respond with ONLY JSON, replacing each <…> with your own words:",
             #"{"assignments": [{"id": 12, "task": "t1", "confidence": 0.9}],"#,
-            #" "new_tasks": [{"handle": "n1", "title": "Booking flights for the SF trip","#,
-            #"   "gist": "Comparing fares and picking travel dates."}]}"#
+            #" "new_tasks": [{"handle": "n1", "title": "<…>", "gist": "<…>"}]}"#
         ])
         return lines.joined(separator: "\n")
     }
