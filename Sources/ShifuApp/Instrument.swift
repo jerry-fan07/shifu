@@ -93,7 +93,7 @@ enum Instrument {
     // MARK: - Data hues
 
     /// The slots a chart may hand to a *group*: the accent stepped three ways,
-    /// the one warm hue, then two steps of a sage green. **Every one of them is
+    /// the one warm hue, then two steps of green. **Every one of them is
     /// a hue.** Grey is not a series colour — it belongs to the three things
     /// that are not groups (`other`, `unclassified`, `admin`), and a theme or
     /// task landing in one was the scale saying "this is filler" about real
@@ -108,16 +108,17 @@ enum Instrument {
     /// every group of a full lens have its own and none of them be grey.
     ///
     /// Green is a real departure from the one-accent rule, so it is held to the
-    /// muted register the rest of the scale keeps — sage, not emerald — and it
-    /// was measured rather than eyeballed. Against every other colour a single
-    /// chart can draw, plus the tone a band recedes to on hover, the whole set
-    /// clears ΔE 14.7 in light and 14.2 in dark.
+    /// muted register the rest of the scale keeps — moss and pine, not emerald
+    /// — and it was measured rather than eyeballed. Against every other colour
+    /// a single chart can draw, plus the tone a band recedes to on hover, the
+    /// whole set clears ΔE 14.7 in light and 17.2 in dark, and neither green is
+    /// the pair that binds.
     ///
-    /// `sage`'s dark step carries more chroma than its light one on purpose.
-    /// The first cut mirrored the light step's saturation and rendered
-    /// #DAE3CF on the dark ground — clear of grey by the numbers, but on a
-    /// real week it was the biggest band on the chart reading as off-white.
-    /// A pale green still has to be legibly *green*.
+    /// `pine` lifts slightly in dark (#496237 → #536F3E) rather than darkening
+    /// further, which is the same move `strong` makes. Below about this step a
+    /// dark hue stops being a dark hue on a near-black ground and starts being
+    /// a hole: the tone a receded band takes is #3D3D3C, and a series has to
+    /// stay clear of *that* to be findable when the legend holds it up.
     ///
     /// Deliberately still short: a seventh group takes a slot again rather than
     /// minting another hue, and hue is never the only cue — every series here
@@ -128,7 +129,7 @@ enum Instrument {
         Color(light: 0xB9CADB, dark: 0xA8C6E6),   // soft
         Color(light: 0xC98A3F, dark: 0xD09A5C),   // warm
         Color(light: 0x7C9669, dark: 0xA5BD93),   // moss
-        Color(light: 0xA4C28E, dark: 0xC2E4AA)    // sage
+        Color(light: 0x496237, dark: 0x536F3E)    // pine
     ]
 
     static let strong = slots[0]
@@ -140,8 +141,9 @@ enum Instrument {
     /// `live` is only ever a `StatusDot` with "Watching" or "Paused" written
     /// beside it, and never shares a surface with a chart series.
     static let moss = slots[4]
-    /// The light green — the palest step of the scale after `soft`.
-    static let sage = slots[5]
+    /// The dark green — the deepest step of the scale, `strong`'s opposite
+    /// number on the other hue.
+    static let pine = slots[5]
     /// `admin`'s grey, and no group's. Outside `slots` on purpose: see there.
     static let neutral = Color(light: 0x9C9A92, dark: 0x5E5D58)
     /// A fourth step below `strong`, held back for the fixed category scale —
