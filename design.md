@@ -684,7 +684,20 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 - ~~**Bundled MLX local model** (deferred from Phase 3)~~ — mooted 2026-07:
   the on-device tier was dropped altogether (§4.2) and DeepSeek is the only
   LLM backend. On-device analysis returns only if a local model ever matches
-  cloud quality at ledger-scale batch sizes.
+  cloud quality at ledger-scale batch sizes. **Measured 2026-07-31 (base
+  M4/24 GB, llama.cpp, 16k window, thinking off): that condition is now
+  arguably met.** Qwen3.5-9B (Q4, 5.7 GB weights, 6.1 GB server RSS) ran the
+  full pipeline end to end — 48h catch-up in 18.8 min, 89% (32/36) card
+  category agreement with a same-state DeepSeek run, grouping spread over
+  sensible tasks, minted titles at the intent-level bar. Qwen3.5-4B is
+  feasibility-fine (31.8 min, ~3.5 GB — inside an 8 GB Mac) but its grouping
+  verdicts destabilize on 60-block batches; capping batches at 24 blocks
+  (§5.3, measured) brings its replay stability to parity with the 9B. The
+  reopening path: the §4.2 local profile ships the power-user shape today
+  (llama-server); a native MLX backend in shifu-analyzer is the release
+  shape, gated on the user's blind dogfood week (title quality — the one
+  axis agreement numbers don't settle) and on re-measuring prefill under
+  MLX before any code.
 - Signed + notarized DMG packaging (needs Developer ID certs; `install-daemon.sh`
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
@@ -837,7 +850,7 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 ## 13. Open Questions
 
 1. Should the heartbeat interval adapt to category (e.g., 30 s during `work` for finer ledger resolution, 5 min during `entertainment`)?
-2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2).
+2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2). *Reopened 2026-07-31 with different candidates and a measured go (§12): Qwen3.5-9B at a 16k window matches DeepSeek on cards (89%) and groups plausibly on Apple Silicon ≥16 GB; the 4B serves 8 GB Macs under the 24-block grouping cap. Model choice by `hw.memsize`; Intel stays rules-only/BYO-key. Final ship gate is the user's blind week on task-title quality.*
 3. Is glow-pulse enough for Focus Mode, or is an optional hard mode (block-list with confirm-to-continue) worth its complexity and adversarial feel?
 4. Vault dedupe: how aggressively should near-duplicate knowledge candidates merge across days (same fact re-encountered is itself an SRS signal)?
 5. Should `excluded` time still count toward the ledger as an opaque "private" category (better totals) or vanish entirely (better deniability)? Default proposal: opaque category, toggleable.

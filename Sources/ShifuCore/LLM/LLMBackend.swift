@@ -5,6 +5,14 @@ import Foundation
 /// rules-only fallback when no API key is configured. The on-device tiers
 /// (Apple Foundation Models, bundled MLX) were dropped in 2026-07 — too weak,
 /// 4k window, macOS 26+ only. Tests supply in-memory fakes.
+///
+/// That verdict was re-measured 2026-07-31 against current local models and
+/// no longer holds wholesale (design.md §12): Qwen3.5-9B behind the §4.2
+/// local profile (16k window, thinking off, llama-server) matched DeepSeek
+/// on card categories 32/36 and grouped plausibly at ledger scale on a base
+/// M4. A future MLX backend belongs in shifu-analyzer as another conformer
+/// of this protocol — never in ShifuCore, or its weights-loading and
+/// download machinery would ride into shifud.
 public protocol LLMBackend: Sendable {
     var name: String { get }
     /// Total context window (prompt + response) in tokens. Batched prompts
