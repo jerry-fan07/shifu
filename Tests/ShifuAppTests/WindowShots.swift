@@ -57,6 +57,11 @@ import Testing
                 place, as: "\(place.rawValue)-week", dark: place == .timeline,
                 store: store, into: directory)
         }
+        // The week Breakdown twice: it is the only place that draws rhythm
+        // marks, and they are the one thing in the band whose hue is not a
+        // series — so it is the one thing whose light and dark steps have to
+        // be checked against real rails rather than reasoned about.
+        shoot(.breakdown, as: "breakdown-week-dark", dark: true, store: store, into: directory)
 
         // The pages that only exist behind a row, so the source list has
         // something to become.

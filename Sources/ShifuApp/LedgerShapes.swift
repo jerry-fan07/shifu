@@ -140,6 +140,20 @@ enum LedgerShapes {
             id: segments.count, weight: 1, fill: fill, caption: caption))
     }
 
+    /// Where an instant falls across one rail, 0…1 — nil for one outside it.
+    ///
+    /// Takes the rail's own bounds rather than the clock's hours, so a mark
+    /// laid over a ribbon lands on exactly the arithmetic that drew the bands
+    /// under it. That is also what makes it right on the two days a year when
+    /// elapsed hours and wall-clock hours disagree.
+    static func position(of instant: Date, on rail: (from: Date, to: Date)) -> Double? {
+        let span = rail.to.timeIntervalSince(rail.from)
+        guard span > 0 else { return nil }
+        let place = instant.timeIntervalSince(rail.from) / span
+        guard place >= 0, place <= 1 else { return nil }
+        return place
+    }
+
     /// One column's stretch of clock, with the axis label it wears — empty
     /// for hours that go unticked.
     struct Slot {
