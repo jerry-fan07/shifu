@@ -3,7 +3,7 @@ import Testing
 
 @Suite struct SettingsCatalogTests {
     private let heartbeat = SettingsCatalog.heartbeatSeconds
-    private let sites = SettingsCatalog.workModeDistractingDomains
+    private let sites = SettingsCatalog.focusModeDistractingDomains
 
     // MARK: - Bounds
 
@@ -183,7 +183,7 @@ import Testing
         #expect(!DomainMatcher.matches("reddit.com", in: []))
     }
 
-    // MARK: - Work Mode off-task decision
+    // MARK: - Focus Mode off-task decision
 
     @Test func listedSiteIsDistractingIncludingSubdomains() {
         let listed: Set<String> = ["reddit.com"]

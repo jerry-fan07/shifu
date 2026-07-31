@@ -25,7 +25,7 @@ public enum SettingsSection: String, CaseIterable, Sendable {
     case capture = "Capture"
     case analysis = "Analysis"
     case privacy = "Privacy"
-    case workMode = "Work Mode"
+    case focusMode = "Focus Mode"
     case about = "About"
 
     /// The one line under the section's title: what the dials below it govern.
@@ -41,7 +41,7 @@ public enum SettingsSection: String, CaseIterable, Sendable {
             return "What Shifu refuses to look at. Exclusions are enforced in the "
                 + "daemon before capture, so excluded content never reaches the "
                 + "database at all."
-        case .workMode:
+        case .focusMode:
             return "A gentle glow when a distracting site holds the screen — "
                 + "a nudge, not a block."
         case .about:
@@ -63,7 +63,7 @@ public enum SettingsSection: String, CaseIterable, Sendable {
         case .privacy:
             return "Exclusions apply to capture, not just display — excluded text "
                 + "is never written."
-        case .workMode:
+        case .focusMode:
             return "The glow only. Nothing listed here changes how your time is "
                 + "classified."
         case .about:
@@ -252,11 +252,11 @@ public enum SettingsCatalog {
         defaultValue: Retention.defaultDays, range: 1...90, step: 1, unit: .days
     )
 
-    public static let workModeDistractingDomains = DomainListSetting(
-        key: "workmode.distracting_domains", section: .workMode,
+    public static let focusModeDistractingDomains = DomainListSetting(
+        key: "focusmode.distracting_domains", section: .focusMode,
         title: "Distracting sites",
-        help: "Visiting these during Work Mode triggers the glow. Your ledger "
-            + "categories are unchanged. Takes effect the next time Work Mode turns on.",
+        help: "Visiting these during Focus Mode triggers the glow. Your ledger "
+            + "categories are unchanged. Takes effect the next time Focus Mode turns on.",
         placeholder: "reddit.com"
     )
 
@@ -345,7 +345,7 @@ public enum SettingsCatalog {
     public static let ints: [IntSetting] = [
         heartbeatSeconds, analysisIntervalSeconds, textRetentionDays
     ]
-    public static let domainLists: [DomainListSetting] = [workModeDistractingDomains]
+    public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,
@@ -366,12 +366,12 @@ public enum DomainMatcher {
         return false
     }
 
-    /// Work Mode's off-task decision for one capture (design.md §4.4): returns
+    /// Focus Mode's off-task decision for one capture (design.md §4.4): returns
     /// the listed domain that matched, or nil when this capture isn't off-task.
     ///
     /// Excluded captures are opaque private time and are never nagged (§13.5) —
     /// that guard is the whole reason this lives here rather than inline in
-    /// `WorkModeController`: `shifud` has no test target, and whether a private
+    /// `FocusModeController`: `shifud` has no test target, and whether a private
     /// window can trigger a nudge is exactly the kind of thing a test should pin.
     public static func distracting(
         domain: String?, excluded: Bool, listed: Set<String>

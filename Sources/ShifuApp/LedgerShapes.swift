@@ -20,6 +20,17 @@ enum LedgerShapes {
 
         var span: Int { max(1, endHour - startHour) }
 
+        /// Midnight to midnight — the clock a single day's rail is drawn on.
+        ///
+        /// Fixed rather than fitted, for the reason the Timeline's columns are:
+        /// where a band sits *is* where in the day you were, and an empty
+        /// evening should look like an empty evening. A rail cut to the hours
+        /// that happened to have blocks in them reads as a full day at a
+        /// glance and isn't one — the same 9-to-5 draws edge to edge on a
+        /// working day and half that wide on a day that also had a late
+        /// night — and its axis ends wherever the last block did.
+        static let day = Clock(startHour: 0, endHour: 24)
+
         /// This clock placed on one particular day.
         func on(_ day: Date, calendar: Calendar = .current) -> (from: Date, to: Date) {
             let midnight = calendar.startOfDay(for: day)
@@ -31,8 +42,13 @@ enum LedgerShapes {
 
     /// The hours worth drawing: the earliest hour any block starts to the last
     /// hour any block ends, over the blocks *inside* `from...to`. An eight-hour
-    /// day then fills the rail instead of sitting in the middle of a
-    /// twenty-four-hour one. Empty windows fall back to a working day.
+    /// week then fills the rails instead of sitting in the middle of
+    /// twenty-four-hour ones. Empty windows fall back to a working day.
+    ///
+    /// For the week band, where seven rails share one clock and the point is
+    /// the *shift* of the bands down the column: fitting it is what makes that
+    /// shift visible. A single day is drawn on `Clock.day` instead — see there
+    /// for why the two disagree on purpose.
     static func clock(
         _ activities: [LedgerBuilder.LabeledActivity], from: Date, to: Date,
         calendar: Calendar = .current
@@ -225,16 +241,35 @@ enum LedgerShapes {
         let hour: Int
         let place: Double
 
-        var id: Int { hour }
+        /// Two digits, so the run of them is a column of the same width: the
+        /// closing tick of a midnight-to-midnight rail is "24", the end of the
+        /// day rather than the start of it.
+        var label: String { String(format: "%02d", hour) }
+
+        /// The place, not the hour: a rail can name the same hour twice — 00 at
+        /// its start and 00 the following midnight — and identity by hour would
+        /// collapse the two into one label.
+        var id: Double { place }
     }
 
-    /// The hours to tick under a rail: at most `limit`, every `step` hours,
-    /// always including the first.
+    /// The hours to tick under a rail: at most `limit` evenly spaced, every
+    /// `step` hours from the first, plus the hour the rail closes on.
+    ///
+    /// The closing hour is ticked separately because the stride can't reach it:
+    /// eight ticks over a day land every three hours and stop at 21:00, leaving
+    /// the rail's last three hours — an evening — under an unnamed edge. The
+    /// rail *ends* somewhere, and the axis is the thing you read that off.
     static func ticks(_ clock: Clock, limit: Int = 8) -> [AxisTick] {
         let step = max(1, Int((Double(clock.span) / Double(limit)).rounded(.up)))
-        return stride(from: 0, to: clock.span, by: step).map {
+        var ticks = stride(from: 0, to: clock.span, by: step).map {
             AxisTick(hour: (clock.startHour + $0) % 24, place: Double($0) / Double(clock.span))
         }
+        // Wrapped into 1…24 rather than 0…23: a rail closing at midnight closes
+        // on the 24th hour, and labelling that end "00" would read as the
+        // morning it isn't. A rail closing at 04:00 the next day still says 04.
+        ticks.append(
+            AxisTick(hour: (clock.startHour + clock.span - 1) % 24 + 1, place: 1))
+        return ticks
     }
 
     /// Weekly totals per group over the trailing `weeks` calendar weeks,

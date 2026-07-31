@@ -184,7 +184,7 @@ private enum Fixture {
     // hand-built an `app:com.apple.loginwindow` task to prove it — a real
     // dogfood row, minted before the grouper barred the bundle and accruing
     // time daily since. That state is unreachable now: `LedgerBuilder` writes
-    // no shell block, and `v25-system-shell-purge` deleted the rows and the
+    // no shell block, and `v26-system-shell-purge` deleted the rows and the
     // tasks they had minted.
 
     @Test func alternationBecomesATaskSignalNotItsOwnSuggestion() throws {

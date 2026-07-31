@@ -99,7 +99,7 @@ import Testing
     /// exempt from the staleness rule because the lock screen accrued time
     /// daily and so was never stale enough to take. That clause is gone: no
     /// such task can be minted (`LedgerBuilder` writes the blocks no more) and
-    /// `v25-system-shell-purge` took the ones on disk. What must not have
+    /// `v26-system-shell-purge` took the ones on disk. What must not have
     /// changed is the rest — a busy, recent, app-keyed task is still nobody's
     /// debris, whatever its bundle looks like.
     @Test func leavesBusyRecentAppKeyedTasksAlone() throws {

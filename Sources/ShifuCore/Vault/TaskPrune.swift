@@ -20,7 +20,7 @@ extension TaskStore {
     /// from the staleness rule — they accrued time daily, so they were never
     /// stale enough to take. They cannot exist any more: `LedgerBuilder`
     /// writes no block for a system shell, so nothing mints the key, and the
-    /// `v25-system-shell-purge` migration deleted the ones already on disk.
+    /// `v26-system-shell-purge` migration deleted the ones already on disk.
     private static func candidates(
         database: ShifuDatabase, now: Date
     ) throws -> [PruneCandidate] {

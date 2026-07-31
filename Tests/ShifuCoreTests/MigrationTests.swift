@@ -70,7 +70,7 @@ import Testing
             "observations", "activities", "tasks", "task_logs", "themes",
             "theme_proposals", "theme_proposal_blocks", "theme_suggestions",
             "rules", "exclusions", "settings", "suggestions", "srs_reviews",
-            "work_mode_sessions", "task_merge_suggestions",
+            "focus_mode_sessions", "task_merge_suggestions",
             "vault_index", "vault_fts", "vault_vectors"
         ]
         let database = try ShifuDatabase.inMemory()
@@ -79,6 +79,49 @@ import Testing
                 let exists = try db.tableExists(table)
                 #expect(exists, "\(table) is missing")
             }
+        }
+    }
+
+    /// v25 renamed Focus Mode's two stored names. Both hold data the user
+    /// owns and nothing derives — adherence history, and a list they typed
+    /// themselves — so the upgrade has to carry them, not start them over.
+    /// A fresh database says nothing about that; only an upgrade from a
+    /// database that already has rows under the old names does.
+    @Test func theFocusModeRenameCarriesSessionsAndTheSiteListOver() throws {
+        let queue = try DatabaseQueue()
+        try ShifuDatabase.migrator.migrate(queue, upTo: "v24-vault-library")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO work_mode_sessions (started_at, ended_at) VALUES (100, 200)
+                """)
+            try db.execute(sql: """
+                INSERT INTO work_mode_sessions (started_at) VALUES (300)
+                """)
+            try db.execute(sql: """
+                INSERT INTO settings (key, value)
+                VALUES ('workmode.distracting_domains', 'reddit.com,news.test')
+                """)
+        }
+
+        try ShifuDatabase.migrator.migrate(queue)
+
+        try queue.read { db in
+            let sessions = try Row.fetchAll(
+                db, sql: "SELECT started_at, ended_at FROM focus_mode_sessions ORDER BY started_at")
+            #expect(sessions.count == 2)
+            #expect(sessions.map { $0["started_at"] as Int64? } == [100, 300])
+            // The open session is still open — a rename must not close it.
+            #expect(sessions[1]["ended_at"] as Int64? == nil)
+
+            let sites = try String.fetchOne(
+                db, sql: "SELECT value FROM settings WHERE key = 'focusmode.distracting_domains'")
+            #expect(sites == "reddit.com,news.test")
+
+            // And the old names are gone rather than left as a second copy.
+            #expect(try !db.tableExists("work_mode_sessions"))
+            let stale = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM settings WHERE key LIKE 'workmode.%'")
+            #expect(stale == 0)
         }
     }
 
@@ -198,7 +241,7 @@ import Testing
         }
     }
 
-    /// v25 purges the system-shell rows written under the old rule, where the
+    /// v26 purges the system-shell rows written under the old rule, where the
     /// denylist was enforced by each reader rather than at the write boundary.
     /// Leaving them would leave the four readers that forgot the clause still
     /// wrong on history — which in the dogfood DB was 849 h of `loginwindow`
@@ -251,7 +294,7 @@ import Testing
 
     // MARK: - Helpers
 
-    /// A ledger as the pre-v25 pipeline left one: shell blocks alongside real
+    /// A ledger as the pre-v26 pipeline left one: shell blocks alongside real
     /// work, an `app:` task the shell minted, a task holding a shell block it
     /// could never let go of (`TaskGrouper` only ever *set* `task_id`), and a
     /// day log compiled from all of it.

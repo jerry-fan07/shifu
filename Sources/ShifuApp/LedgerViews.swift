@@ -145,16 +145,18 @@ struct LedgerView: View {
 
     // MARK: - Ribbons
 
+    /// The day on one rail, midnight to midnight — `LedgerShapes.Clock.day`
+    /// rather than the day's own fitted hours, so the rail is the same clock
+    /// every day and a band's position along it is the hour it happened at.
     private func dayRibbon(
         blocks: [LedgerBuilder.LabeledActivity], colors: [String: Color],
         window: (from: Date, to: Date)
     ) -> some View {
-        let clock = LedgerShapes.clock(blocks, from: window.from, to: window.to)
-        let rail = clock.on(window.from)
+        let rail = LedgerShapes.Clock.day.on(window.from)
         return VStack(spacing: 0) {
             Ribbon(segments: LedgerShapes.ribbon(
                 blocks, lens: lens, colors: colors, from: rail.from, to: rail.to))
-            RibbonAxis(ticks: LedgerShapes.ticks(clock))
+            RibbonAxis(ticks: LedgerShapes.ticks(.day))
         }
     }
 
@@ -345,8 +347,7 @@ private struct TimelineChart: View {
     /// were, and an empty evening should look like an empty evening.
     private var hourSlots: [LedgerShapes.Slot] {
         let calendar = Calendar.current
-        let ticked = Set(
-            LedgerShapes.ticks(LedgerShapes.Clock(startHour: 0, endHour: 24)).map(\.hour))
+        let ticked = Set(LedgerShapes.ticks(.day).map(\.hour))
         let midnight = calendar.startOfDay(for: window.from)
         return (0..<24).compactMap { hour in
             guard let from = calendar.date(byAdding: .hour, value: hour, to: midnight),

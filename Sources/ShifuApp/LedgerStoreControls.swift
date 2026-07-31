@@ -1,7 +1,7 @@
 import Foundation
 import ShifuCore
 
-/// The control-file actions (design.md §8): pause and Work Mode are the
+/// The control-file actions (design.md §8): pause and Focus Mode are the
 /// same two files the CLI and the daemon read, so the app toggles them by
 /// writing the file, never by messaging the daemon. Split out of
 /// LedgerStore.swift for length only.
@@ -23,11 +23,11 @@ extension LedgerStore {
         refresh()
     }
 
-    func toggleWorkMode() {
-        if workModeOn {
-            WorkModeFile.turnOff()
+    func toggleFocusMode() {
+        if focusModeOn {
+            FocusModeFile.turnOff()
         } else {
-            try? WorkModeFile.turnOn()
+            try? FocusModeFile.turnOn()
         }
         refresh()
     }

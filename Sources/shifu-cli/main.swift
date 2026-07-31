@@ -14,7 +14,7 @@ usage: shifu <command>
   status         daemon pause state, today's counts and LLM token spend
   pause [dur]    pause capture: 30m, 1h (default), 2h, tomorrow
   resume         resume capture
-  work on|off    toggle Work Mode (focus contract with glow nudges)
+  focus on|off   toggle Focus Mode (focus contract with glow nudges)
   review         spaced-repetition session over due vault notes
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
@@ -159,8 +159,8 @@ func commandStatus() throws {
         print("capture: active (if shifud is running)")
     }
 
-    if WorkModeFile.isOn() {
-        print("work mode: ON")
+    if FocusModeFile.isOn() {
+        print("focus mode: ON")
     }
 
     let db = try openDatabase()
@@ -434,16 +434,16 @@ func commandEncrypt() throws {
 }
 
 let args = CommandLine.arguments.dropFirst()
-func commandWork(_ toggle: String?) throws {
+func commandFocus(_ toggle: String?) throws {
     switch toggle {
     case "on":
-        try WorkModeFile.turnOn()
-        print("work mode on")
+        try FocusModeFile.turnOn()
+        print("focus mode on")
     case "off":
-        WorkModeFile.turnOff()
-        print("work mode off")
+        FocusModeFile.turnOff()
+        print("focus mode off")
     default:
-        print("work mode: \(WorkModeFile.isOn() ? "ON" : "off")")
+        print("focus mode: \(FocusModeFile.isOn() ? "ON" : "off")")
     }
 }
 
@@ -471,7 +471,9 @@ func run() throws {
         "forget": { try commandForget(Array(args.dropFirst())) },
         "vault": { try commandVault(Array(args.dropFirst())) },
         "encrypt": commandEncrypt,
-        "work": { try commandWork(args.dropFirst().first) },
+        "focus": { try commandFocus(args.dropFirst().first) },
+        // `work` was this command's name before Focus Mode was called that.
+        "work": { try commandFocus(args.dropFirst().first) },
         "--version": { print("shifu \(Shifu.version)") }
     ]
     guard let name = args.first, let command = commands[name] else {

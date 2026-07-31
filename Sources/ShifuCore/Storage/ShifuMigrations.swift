@@ -66,7 +66,7 @@ extension ShifuDatabase {
                 table.primaryKey("key", .text)
                 table.column("value", .text).notNull()
             }
-            // Work Mode sessions, for adherence stats (design.md §4.4).
+            // Focus Mode sessions, for adherence stats (design.md §4.4).
             try db.create(table: "work_mode_sessions") { table in
                 table.autoIncrementedPrimaryKey("id")
                 table.column("started_at", .integer).notNull()
@@ -527,7 +527,24 @@ extension ShifuDatabase {
             }
         }
 
-        migrator.registerMigration("v25-system-shell-purge") { db in
+        migrator.registerMigration("v25-focus-mode-names") { db in
+            // "Work Mode" named the feature after the thing it is not: the glow
+            // fires on distraction, and the list below governs a nudge, not a
+            // ledger category. The rename is cosmetic everywhere except here,
+            // where the old name is written down — and a stored name left
+            // behind is how a rename becomes two vocabularies instead of one.
+            //
+            // Both statements move data the user owns: adherence history, and
+            // the sites they listed themselves. Neither is derived, so neither
+            // can be rebuilt if it is dropped instead of carried.
+            try db.rename(table: "work_mode_sessions", to: "focus_mode_sessions")
+            try db.execute(sql: """
+                UPDATE settings SET key = 'focusmode.distracting_domains'
+                WHERE key = 'workmode.distracting_domains'
+                """)
+        }
+
+        migrator.registerMigration("v26-system-shell-purge") { db in
             // System shells (TaskGrouper.isSystemBundle) stop at the ledger's
             // write boundary now — `LedgerBuilder.rebuild` drops their blocks
             // before insert. Everything already on disk was written under the

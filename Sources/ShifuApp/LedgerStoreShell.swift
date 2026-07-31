@@ -35,7 +35,7 @@ extension LedgerStore {
         if let until = pausedUntil, until > Date() {
             return "Paused until \(until.formatted(.dateTime.hour().minute()))"
         }
-        return workModeOn ? "Work Mode on · local only" : "Capture on · local only"
+        return focusModeOn ? "Focus Mode on · local only" : "Capture on · local only"
     }
 
     /// The menu bar's second line: what shape the day has, and what most of it
