@@ -304,7 +304,13 @@ extension CardBuilder {
             let response = try await backend.complete(
                 prompt: prompt(for: batch, ongoingTopics: anchors),
                 maxTokens: responseTokenReserve)
-            let verdicts = parseVerdicts(response)
+            // Dropped here, not just inside `apply`: a card for an id we didn't
+            // ask about is stored nowhere, so letting its topic anchor later
+            // batches would invite them to repeat wording that describes no
+            // block at all — and topic wording is what `TaskGrouper.key` slugs
+            // into a task key.
+            let batchIDs = Set(batch.map(\.id))
+            let verdicts = parseVerdicts(response).filter { batchIDs.contains($0.id) }
             let outcome = try apply(verdicts, batch: batch, database: database)
             summary.built += outcome.built
             summary.relabeled += outcome.relabeled

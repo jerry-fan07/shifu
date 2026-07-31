@@ -290,3 +290,65 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         #expect(samples.map(\.id) == [closedID])
     }
 }
+
+/// Answers each batch with cards for the ids it was actually shown, plus one
+/// card for an id that was never in any batch — a model inventing an id.
+private final class PhantomIDBackend: LLMBackend, @unchecked Sendable {
+    static let phantomTopic = "phantom topic never stored"
+    static let phantomID: Int64 = 999_999
+
+    let name = "phantom"
+    let contextWindowTokens: Int
+    private let lock = NSLock()
+    private(set) var prompts: [String] = []
+
+    init(contextWindowTokens: Int) { self.contextWindowTokens = contextWindowTokens }
+
+    func complete(prompt: String, maxTokens: Int) async throws -> String {
+        lock.withLock { prompts.append(prompt) }
+        let ids = prompt.split(separator: "\n").compactMap { line in
+            line.hasPrefix("id=") ? Int64(line.dropFirst(3).prefix(while: \.isNumber)) : nil
+        }
+        var objects = ids.map {
+            #"{"id": \#($0), "cat": "learning", "conf": 0.9, "topic": "a real topic", "#
+                + #""entities": [], "gist": "reading the thing"}"#
+        }
+        objects.append(
+            #"{"id": \#(Self.phantomID), "cat": "work", "conf": 0.9, "#
+                + #""topic": "\#(Self.phantomTopic)", "entities": [], "gist": "invented"}"#)
+        return "[\(objects.joined(separator: ","))]"
+    }
+}
+
+// Extension keeps the suite's type body inside the lint budget.
+extension CardBuilderTests {
+    /// A card whose id wasn't in the batch is already kept out of the database
+    /// by `apply`. It must stay out of the *anchor* list too: anchors are shown
+    /// to later batches as wording to repeat verbatim, and topic wording is
+    /// what `TaskGrouper.key` slugs into a task key — so an invented topic that
+    /// catches on becomes a task named after a block that never existed.
+    @Test func aCardForABlockOutsideTheBatchNeverAnchorsLaterBatches() async throws {
+        let db = try ShifuDatabase.inMemory()
+        for index in 0..<10 {
+            try seedBlock(db, startedAt: Int64(index) * 1_000_000, bundle: "com.app.\(index)",
+                          domain: nil,
+                          text: String(repeating: "dense ocr text ", count: 40))
+        }
+        let backend = PhantomIDBackend(contextWindowTokens: 4_000)
+        let summary = try await CardBuilder.run(
+            database: db, backend: backend, from: 0, to: 100_000_000)
+
+        // Sanity: the window is small enough that there *are* later batches.
+        #expect(backend.prompts.count > 1)
+        #expect(summary.built == 10)
+        for prompt in backend.prompts.dropFirst() {
+            #expect(!prompt.contains("- \(PhantomIDBackend.phantomTopic)"))
+        }
+        let stored = try await db.queue.read { sqlite in
+            try Int.fetchOne(sqlite, sql: """
+                SELECT COUNT(*) FROM activities WHERE card LIKE ?
+                """, arguments: ["%\(PhantomIDBackend.phantomTopic)%"])
+        }
+        #expect(stored == 0)
+    }
+}

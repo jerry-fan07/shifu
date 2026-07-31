@@ -307,3 +307,107 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(backend.calls == 0)
     }
 }
+
+// Extension keeps the suite's type body inside the lint budget.
+extension ThemeClustererTests {
+    /// Emptying a task's theme burns `theme_attempts` precisely so automation
+    /// can't re-file what the user cleared (`TaskStore.assignTheme`). The
+    /// clusterer honours that in `pendingSamples`; inheritance is the second
+    /// writer of `theme_key` and has to honour it too.
+    ///
+    /// The clear is what makes this reachable: it zeroes the task's themed
+    /// time, so the first block themed afterwards is 100% dominant on its own.
+    @Test func inheritanceLeavesBlocksTheUserClearedAlone() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES ('thm:dev', 'Dev', 0, 5)
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (id, key, name, created_at, last_active_at)
+                VALUES (1, 'sem:shifu', 'Shifu work', 0, 5)
+                """)
+            for start in [Int64(0), 3_600_000, 7_200_000] {
+                try sqlite.execute(sql: """
+                    INSERT INTO activities
+                        (started_at, ended_at, app_bundle, category, task_id, theme_key, source)
+                    VALUES (?, ?, 'com.apple.dt.Xcode', 'work', 1, 'thm:dev', 'rules')
+                    """, arguments: [start, start + 1_800_000])
+            }
+        }
+        try TaskStore.assignTheme(taskID: 1, themeKey: nil, database: db)
+        // The user keeps working; the clusterer files one fresh block, which is
+        // now the task's entire themed history.
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, theme_key, source)
+                VALUES (10800000, 11400000, 'com.apple.dt.Xcode', 'work', 1, 'thm:dev', 'rules')
+                """)
+        }
+
+        #expect(try ThemeClusterer.inheritFromTasks(
+            database: db, from: 0, to: 100_000_000) == 0)
+        let stillCleared = try db.queue.read { sqlite in
+            try Int.fetchOne(sqlite, sql: """
+                SELECT COUNT(*) FROM activities
+                WHERE task_id = 1 AND theme_key IS NULL AND theme_attempts = ?
+                """, arguments: [ThemeClusterer.maxAttempts])
+        }
+        #expect(stillCleared == 3)
+    }
+
+    /// Adopting blocks makes a theme more recently active — the rule both
+    /// other writers of `theme_key` already follow (`ThemeClusterer.apply`,
+    /// `TaskStore.assignTheme`). Without it a theme sustained purely by
+    /// inheritance — the settled case inheritance exists to serve — sinks in
+    /// the Themes list and eventually falls out of the roster and the
+    /// narrative refresh, both of which cut on `last_active_at`.
+    @Test func inheritanceAdvancesTheThemesRecency() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES ('thm:dev', 'Dev', 0, 5)
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (id, key, name, created_at, last_active_at)
+                VALUES (1, 'sem:shifu', 'Shifu work', 0, 5)
+                """)
+            // Settled task: fully themed, so it is dominant outright.
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, theme_key, source)
+                VALUES (0, 3600000, 'com.apple.dt.Xcode', 'work', 1, 'thm:dev', 'rules')
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, source)
+                VALUES (86400000, 90000000, 'com.apple.dt.Xcode', 'work', 1, 'rules')
+                """)
+        }
+        #expect(try ThemeClusterer.inheritFromTasks(
+            database: db, from: 0, to: 100_000_000) == 1)
+        #expect(try lastActive(db) == 90_000_000)
+
+        // …and only ever forwards: an older block adopted later can't drag the
+        // theme's recency back down.
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, source)
+                VALUES (40000000, 50000000, 'com.apple.dt.Xcode', 'work', 1, 'rules')
+                """)
+        }
+        #expect(try ThemeClusterer.inheritFromTasks(
+            database: db, from: 0, to: 100_000_000) == 1)
+        #expect(try lastActive(db) == 90_000_000)
+    }
+
+    private func lastActive(_ db: ShifuDatabase) throws -> Int64? {
+        try db.queue.read { sqlite in
+            try Int64.fetchOne(sqlite, sql: "SELECT last_active_at FROM themes")
+        }
+    }
+}
