@@ -180,9 +180,14 @@ enum TimeBreakdown {
 }
 
 /// Chart colors for every Ledger view, so a group wears the same color in the
-/// ribbon, the table's meter, and the week's rows. All hues come from
-/// `Instrument.slots` — the accent stepped, one neutral, one warm, two greens —
-/// and nowhere else: the scale is short on purpose (design.md §7).
+/// ribbon, the table's meter, and the week's rows. Group hues come from
+/// `Instrument.slots` — the accent stepped, one warm, two greens — and nowhere
+/// else: the scale is short on purpose (design.md §7).
+///
+/// Grey is not among them. It is reserved for the three things that are not
+/// groups — the "Other" pile, `unclassified`, and `admin` — so a grey band
+/// always means "this is not work anyone named", and a theme or task never
+/// gets told it is filler by the colour it happens to hash into.
 ///
 /// Hue is never the only cue here: every series is named in the row beside its
 /// swatch, and the ribbon carries its group in the tooltip. That is what buys
@@ -205,13 +210,14 @@ enum TimePalette {
         "private": Instrument.quiet, "unclassified": Instrument.other
     ]
 
-    /// Hue order for theme and task groups. Still a *short* fixed list — an
-    /// eighth group takes a slot again rather than minting a hue, and anything
+    /// Hue order for theme and task groups. Still a *short* fixed list — a
+    /// seventh group takes a slot again rather than minting a hue, and anything
     /// past the lens's limit folds into "Other" — but no longer shorter than
     /// the limit it serves: at five slots against a `TimeBreakdown.maxGroups`
     /// of six, the sixth group had nowhere to go and always duplicated one of
-    /// the five. Seven slots is what makes "two groups on screen together never
-    /// share one" true rather than aspirational.
+    /// the five. Six hues for six groups is what makes "two groups on screen
+    /// together never share one" true rather than aspirational, and it is exact
+    /// — raising `maxGroups` means adding a hue in the same commit.
     static let groupHues: [Color] = Instrument.slots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.

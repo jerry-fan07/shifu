@@ -245,6 +245,41 @@ import Testing
         }
     }
 
+    /// Grey means "not a group": the "Other" pile, `unclassified`, `admin`.
+    /// Nothing a theme or task can hash into may be one — a real week's work
+    /// wearing the filler colour is the scale making a claim about it that
+    /// isn't true. `neutral` used to sit in `Instrument.slots`, so one group in
+    /// six got exactly that: a dogfood week painted "Shifu Development", the
+    /// biggest thing on the chart, in the same grey family as its leftovers.
+    ///
+    /// `private` is the one grey outside the list, and it never reads as one:
+    /// it draws hatched (`Hatch`), so what carries it is texture.
+    @MainActor @Test func noHueAGroupCanTakeIsAGrey() {
+        for dark in [false, true] {
+            let mode = dark ? "dark" : "light"
+            for (index, hue) in TimePalette.groupHues.enumerated() {
+                let chroma = Int(Self.chroma(hue, dark: dark))
+                #expect(chroma >= Self.hued, "group slot \(index) in \(mode): chroma \(chroma)")
+            }
+            for (name, grey) in [("other", TimePalette.otherColor),
+                                 ("admin", Instrument.neutral)] {
+                let chroma = Int(Self.chroma(grey, dark: dark))
+                #expect(chroma < Self.hued, "\(name) in \(mode) is not grey: chroma \(chroma)")
+            }
+        }
+    }
+
+    /// How far a colour's channels spread — 0 is a perfect grey. The palette
+    /// splits cleanly on this: its greys sit at 6–11 and its faintest actual
+    /// hue, `soft`, at 34, so the line between them is not a fine judgement.
+    static let hued = 20
+
+    @MainActor static func chroma(_ color: Color, dark: Bool) -> Double {
+        let resolved = resolve(color, dark: dark)
+        let channels = [resolved.redComponent, resolved.greenComponent, resolved.blueComponent]
+        return Double((channels.max() ?? 0) - (channels.min() ?? 0)) * 255
+    }
+
     /// The floor a lit band has to clear to be *found*: the tone its receded
     /// neighbours take while the legend holds one group up
     /// (`StackedBars.fill`). `unclassified` used to wear `quiet` and missed
