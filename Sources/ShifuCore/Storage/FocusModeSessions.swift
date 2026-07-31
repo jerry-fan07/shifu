@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// Maintenance for `work_mode_sessions` (design.md §4.4).
+/// Maintenance for `focus_mode_sessions` (design.md §4.4).
 public enum FocusModeSessions {
     /// Closes sessions left open by a daemon that exited while Focus Mode was on
     /// — a crash, a restart, a logout. Those rows keep `ended_at` NULL forever,
@@ -24,7 +24,7 @@ public enum FocusModeSessions {
     public static func closeDangling(database: ShifuDatabase) throws -> Int {
         try database.queue.write { db in
             let dangling = try Row.fetchAll(db, sql: """
-                SELECT id, started_at FROM work_mode_sessions
+                SELECT id, started_at FROM focus_mode_sessions
                 WHERE ended_at IS NULL ORDER BY started_at
                 """)
             for row in dangling {
@@ -33,7 +33,7 @@ public enum FocusModeSessions {
                 // Never let an old dangling row swallow a later session's
                 // activity: stop at the next session's start.
                 let nextStart = try Int64.fetchOne(
-                    db, sql: "SELECT MIN(started_at) FROM work_mode_sessions WHERE started_at > ?",
+                    db, sql: "SELECT MIN(started_at) FROM focus_mode_sessions WHERE started_at > ?",
                     arguments: [startedAt]
                 ) ?? Int64.max
                 let lastActivity = try Int64.fetchOne(
@@ -42,7 +42,7 @@ public enum FocusModeSessions {
                     arguments: [startedAt, nextStart]
                 )
                 try db.execute(
-                    sql: "UPDATE work_mode_sessions SET ended_at = ? WHERE id = ?",
+                    sql: "UPDATE focus_mode_sessions SET ended_at = ? WHERE id = ?",
                     arguments: [lastActivity ?? startedAt, rowID]
                 )
             }

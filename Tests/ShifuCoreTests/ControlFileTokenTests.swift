@@ -23,7 +23,7 @@ import Testing
     @Test func sameFileKeepsTheSameToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
         try Data().write(to: file)
         #expect(ControlFileToken(at: file) == ControlFileToken(at: file))
     }
@@ -34,7 +34,7 @@ import Testing
     @Test func recreatedFileGetsADifferentToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
 
         try Data().write(to: file)
         let before = ControlFileToken(at: file)
@@ -53,7 +53,7 @@ import Testing
     @Test func deletingTheFileClearsTheToken() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("work_mode")
+        let file = dir.appendingPathComponent("focus_mode")
         try Data().write(to: file)
         #expect(ControlFileToken(at: file) != nil)
         try FileManager.default.removeItem(at: file)

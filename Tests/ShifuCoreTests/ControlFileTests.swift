@@ -127,7 +127,7 @@ import Testing
 @Suite struct FocusModeFileTests {
     private func scratch() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("shifu-workmode-\(UUID().uuidString)")
+            .appendingPathComponent("shifu-focusmode-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -169,6 +169,70 @@ import Testing
         try FocusModeFile.turnOn(home: home)
         let second = try #require(ControlFileToken(at: file))
         #expect(first != second)
+    }
+
+    // MARK: - Adopting the pre-rename name
+
+    /// Upgrading with Focus Mode left on. The state has to survive under the
+    /// new name — and survive as the *same* token, because the daemon compares
+    /// identity: a token change across a restart would read as the user having
+    /// ended a session and begun another, and log an adherence row saying so.
+    @Test func aLegacyFileIsAdoptedWithoutLookingLikeANewSession() throws {
+        let home = try scratch()
+        let legacy = FocusModeFile.legacyFile(in: home)
+        try Data().write(to: legacy)
+        let before = try #require(ControlFileToken(at: legacy))
+
+        FocusModeFile.adoptLegacyName(home: home)
+
+        #expect(FocusModeFile.isOn(home: home))
+        #expect(!FileManager.default.fileExists(atPath: legacy.path))
+        let after = try #require(ControlFileToken(at: FocusModeFile.file(in: home)))
+        #expect(after == before)
+    }
+
+    /// The adoption is on every entry point, so no upgraded binary can read
+    /// the old state as "off" merely by being the first one to run.
+    @Test func everyEntryPointSeesALegacyFile() throws {
+        for act in [{ (home: URL) in #expect(FocusModeFile.isOn(home: home)) },
+                    { (home: URL) in
+                        FocusModeFile.turnOff(home: home)
+                        #expect(!FocusModeFile.isOn(home: home))
+                    }] {
+            let home = try scratch()
+            try Data().write(to: FocusModeFile.legacyFile(in: home))
+            act(home)
+            #expect(!FileManager.default.fileExists(
+                atPath: FocusModeFile.legacyFile(in: home).path))
+        }
+    }
+
+    /// A mixed pair of binaries — an old daemon still toggling `work_mode`
+    /// under a new app writing `focus_mode`. The new name is the live state,
+    /// so the stale file loses rather than resurrecting an old toggle.
+    @Test func theNewNameWinsWhenBothExist() throws {
+        let home = try scratch()
+        try FocusModeFile.turnOn(home: home)
+        let live = try #require(ControlFileToken(at: FocusModeFile.file(in: home)))
+        try Data().write(to: FocusModeFile.legacyFile(in: home))
+
+        FocusModeFile.adoptLegacyName(home: home)
+
+        #expect(FocusModeFile.isOn(home: home))
+        #expect(!FileManager.default.fileExists(
+            atPath: FocusModeFile.legacyFile(in: home).path))
+        #expect(ControlFileToken(at: FocusModeFile.file(in: home)) == live)
+    }
+
+    @Test func adoptingWithNothingToAdoptLeavesTheStateAlone() throws {
+        let home = try scratch()
+        FocusModeFile.adoptLegacyName(home: home)
+        #expect(!FocusModeFile.isOn(home: home))
+
+        try FocusModeFile.turnOn(home: home)
+        let token = try #require(ControlFileToken(at: FocusModeFile.file(in: home)))
+        FocusModeFile.adoptLegacyName(home: home)
+        #expect(ControlFileToken(at: FocusModeFile.file(in: home)) == token)
     }
 }
 

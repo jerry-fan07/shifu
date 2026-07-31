@@ -22,7 +22,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 XPC, no message bus. The processes coordinate through shared state on disk:
 
 - `~/Shifu/shifu.db` — one SQLite file, WAL mode, `synchronous = NORMAL`.
-- `~/Shifu/pause_until` and `~/Shifu/work_mode` — two control files the daemon
+- `~/Shifu/pause_until` and `~/Shifu/focus_mode` — two control files the daemon
   watches with a `DispatchSource` on the directory.
 
 That is why `shifu pause` works with the daemon running as a separate process
@@ -362,7 +362,7 @@ choices into these.
 `freq:<domain>`; v16 adds `setup_minutes` and `teach`, and `suggestion IS NULL`
 means "mined but not yet judged", which `Radar.active` hides),
 **`srs_reviews`** (review log
-for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
+for later FSRS fitting), **`focus_mode_sessions`**, **`task_merge_suggestions`**
 (unique ordered pair — keeps dismissals dismissed),
 **`theme_suggestions`** (v13, unique `task_id`; replaced the v9
 `project_suggestions`, dropped in v14).
@@ -421,7 +421,7 @@ screen is blank.
   logs/         daemon logs
   bin/          installed binaries (shifud, shifu-analyzer, shifu)
   pause_until   control file
-  work_mode     control file
+  focus_mode    control file
 ```
 
 All paths resolve through [`ShifuPaths`](Sources/ShifuCore/ShifuPaths.swift),
@@ -461,11 +461,17 @@ about which calls never happen, and only a recording fake can assert that.
 | File | Format | Written by | Watched by |
 |---|---|---|---|
 | `~/Shifu/pause_until` | unix **seconds** expiry, as ASCII digits | `shifu pause`, `LedgerStore.pause` | `PauseController` |
-| `~/Shifu/work_mode` | presence alone; contents ignored | `shifu focus on`, `LedgerStore.toggleFocusMode` | `FocusModeController` |
+| `~/Shifu/focus_mode` | presence alone; contents ignored | `shifu focus on`, `LedgerStore.toggleFocusMode` | `FocusModeController` |
 
 Both watchers are a `DispatchSource` on the **home directory** (not the file),
 so creation and deletion both register. An expiry in the past reads as "not
 paused", so a stale file can never wedge capture off.
+
+`focus_mode` was called `work_mode` before v25. Every entry point calls
+`FocusModeFile.adoptLegacyName` before it reads, so it does not matter which
+binary runs first after an upgrade; the file is **moved**, not recreated, so a
+session that is on across the upgrade keeps its `ControlFileToken` and is not
+logged as one session ending and another beginning.
 
 > Note: the `pause_until` parse is currently implemented three times — in
 > `shifu-cli/main.swift`, `shifud/PauseController.swift`, and

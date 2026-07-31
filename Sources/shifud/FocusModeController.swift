@@ -81,7 +81,7 @@ final class FocusModeController {
             Settings.value(SettingsCatalog.focusModeDistractingDomains, database: database))
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         sessionRowID = try? database.queue.write { db in
-            try db.execute(sql: "INSERT INTO work_mode_sessions (started_at) VALUES (?)",
+            try db.execute(sql: "INSERT INTO focus_mode_sessions (started_at) VALUES (?)",
                            arguments: [now])
             return db.lastInsertedRowID
         }
@@ -95,7 +95,7 @@ final class FocusModeController {
         if let rowID = sessionRowID {
             let now = Int64(Date().timeIntervalSince1970 * 1_000)
             try? database.queue.write { db in
-                try db.execute(sql: "UPDATE work_mode_sessions SET ended_at = ? WHERE id = ?",
+                try db.execute(sql: "UPDATE focus_mode_sessions SET ended_at = ? WHERE id = ?",
                                arguments: [now, rowID])
             }
         }

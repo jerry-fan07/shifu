@@ -21,6 +21,10 @@ if arguments.contains("--version") {
 }
 
 try ShifuPaths.ensureHomeExists()
+// The daemon watches the control file's identity directly rather than going
+// through `FocusModeFile`, so it adopts the pre-rename name here — before
+// `startWatching` below takes the token it will compare everything against.
+FocusModeFile.adoptLegacyName()
 let (database, rotated) = try ShifuDatabase.openRotatingOnCorruption(at: ShifuPaths.database)
 if let rotated {
     log("WARNING: database was corrupt — rotated aside to \(rotated.lastPathComponent), starting fresh")

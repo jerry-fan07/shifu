@@ -188,7 +188,7 @@ private struct SettingsPanel: View {
     }
 }
 
-/// Focus Mode's switch — the `work_mode` control file the daemon watches, not a
+/// Focus Mode's switch — the `focus_mode` control file the daemon watches, not a
 /// catalog setting, so it reads through `LedgerStore` like the rail's copy of
 /// the same switch and there is nothing to store here.
 private struct FocusModeRow: View {

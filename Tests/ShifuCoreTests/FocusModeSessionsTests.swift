@@ -7,7 +7,7 @@ import Testing
 @Suite struct FocusModeSessionsTests {
     private func openSession(_ db: ShifuDatabase, startedAt: Int64) throws {
         try db.queue.write {
-            try $0.execute(sql: "INSERT INTO work_mode_sessions (started_at) VALUES (?)",
+            try $0.execute(sql: "INSERT INTO focus_mode_sessions (started_at) VALUES (?)",
                            arguments: [startedAt])
         }
     }
@@ -15,7 +15,7 @@ import Testing
     private func closedSession(_ db: ShifuDatabase, from: Int64, to: Int64) throws {
         try db.queue.write {
             try $0.execute(
-                sql: "INSERT INTO work_mode_sessions (started_at, ended_at) VALUES (?, ?)",
+                sql: "INSERT INTO focus_mode_sessions (started_at, ended_at) VALUES (?, ?)",
                 arguments: [from, to])
         }
     }
@@ -41,7 +41,7 @@ import Testing
     private func sessions(_ db: ShifuDatabase) throws -> [Span] {
         try db.queue.read { sqlite in
             try Row.fetchAll(sqlite, sql:
-                "SELECT started_at, ended_at FROM work_mode_sessions ORDER BY started_at")
+                "SELECT started_at, ended_at FROM focus_mode_sessions ORDER BY started_at")
                 .map { Span($0["started_at"], $0["ended_at"]) }
         }
     }

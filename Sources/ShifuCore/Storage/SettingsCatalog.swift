@@ -253,7 +253,7 @@ public enum SettingsCatalog {
     )
 
     public static let focusModeDistractingDomains = DomainListSetting(
-        key: "workmode.distracting_domains", section: .focusMode,
+        key: "focusmode.distracting_domains", section: .focusMode,
         title: "Distracting sites",
         help: "Visiting these during Focus Mode triggers the glow. Your ledger "
             + "categories are unchanged. Takes effect the next time Focus Mode turns on.",
