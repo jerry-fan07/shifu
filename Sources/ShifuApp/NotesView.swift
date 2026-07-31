@@ -174,8 +174,8 @@ struct NotesView: View {
             BlankSlate(
                 store.vaultCensus.total == 0
                     ? "There is nothing in the vault to search yet."
-                    : store.noteFilter.isNarrowed
-                        ? "Nothing answers that inside these filters. Try clearing them."
+                    : store.noteFilter.narrowsResults
+                        ? "Nothing answers that inside these filters. Try widening them."
                         : "Nothing answers that. Try fewer words — search reads meaning "
                             + "as well as spelling.")
         } else {

@@ -21,8 +21,10 @@ extension LedgerStore {
     /// vault — 0.15 s for the whole pass, 3.5 s with vectors), and the pass is
     /// one write on a serialized `DatabaseQueue`, so every second of it is a
     /// second the UI's next read blocks for. `backfillVectors` exists for
-    /// exactly this: notes indexed without an embedder get theirs on the next
-    /// analyzer reconcile, and until then search is bm25-only for them.
+    /// exactly this: a note re-indexed here is left *without* a vector rather
+    /// than with the one its previous text earned (`VaultIndexer.embedVector`),
+    /// so the next analyzer reconcile embeds it and until then search is
+    /// bm25-only for that note.
     func syncLibrary() {
         guard !librarySynced, let database = try? db() else { return }
         librarySynced = true

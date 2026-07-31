@@ -218,12 +218,23 @@ public enum VaultIndexer {
     /// Title + the body's first ~500 chars → unit vector (vault-features.md
     /// §4). No embedder (or a nil embedding) leaves the vector row absent —
     /// hybrid search silently degrades to bm25-only for that note.
+    ///
+    /// **Absent, not stale.** Two paths re-index without an embedder — the
+    /// write-through in `VaultStore.save` and the app's launch reconcile
+    /// (`LedgerStore.syncLibrary`) — and both refresh `mtime` and
+    /// `content_hash` as they go, so the analyzer's next pass short-circuits
+    /// and never revisits the note. A vector left behind would then describe
+    /// the text the note used to hold, for good. Dropping it hands the note to
+    /// `backfillVectors`, which is the path that owns embedding: bm25-only
+    /// until the next analyzer run, which is the documented degradation.
     static func embedVector(
         noteID: String, doc: FrontMatter.Document, db: Database, embedder: (any Embedder)?
     ) throws {
-        guard let embedder else { return }
-        let text = "\(title(of: doc)) \(doc.body.prefix(500))"
-        guard let vector = embedder.embed(text) else { return }
+        guard let vector = embedder?.embed("\(title(of: doc)) \(doc.body.prefix(500))") else {
+            try db.execute(sql: "DELETE FROM vault_vectors WHERE note_id = ?",
+                           arguments: [noteID])
+            return
+        }
         try db.execute(sql: """
             INSERT INTO vault_vectors (note_id, embedding) VALUES (?, ?)
             ON CONFLICT(note_id) DO UPDATE SET embedding = excluded.embedding

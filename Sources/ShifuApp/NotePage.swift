@@ -153,8 +153,8 @@ struct NotePage: View {
                 PageBody {
                     note(dossier)
                     stretches(dossier)
-                    related(dossier)
                     underneath(dossier)
+                    related(dossier)
                     sameDay(dossier)
                     effort(dossier)
                 }

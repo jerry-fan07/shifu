@@ -62,7 +62,19 @@ struct NoteLibraryFilter: Equatable {
     var range: TaskRange = .all
     var theme: TaskStore.ThemeScope = .any
 
+    /// Whether anything differs from the default — drives the "clear"
+    /// affordance, exactly as it does on the Task log.
     var isNarrowed: Bool { self != NoteLibraryFilter() }
+
+    /// Whether the page is showing fewer notes than the vault holds, which is
+    /// a different question from `isNarrowed` and the one an empty result has
+    /// to ask. The default filter already excludes traces, so "unchanged" does
+    /// not mean "showing everything"; and *Include traces* is a non-default
+    /// setting that **widens**, so telling someone to clear it when a search
+    /// comes back empty is advice that would narrow the search further.
+    var narrowsResults: Bool {
+        kind != .everything || depth != .everything || range != .all || theme != .any
+    }
 
     func core(
         now: Date = Date(), calendar: Calendar = .current, limit: Int
