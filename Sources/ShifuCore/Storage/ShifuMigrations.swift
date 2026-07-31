@@ -1,6 +1,12 @@
 import Foundation
 import GRDB
 
+// swiftlint:disable file_length
+// The one file in the project that is *supposed* to grow without bound:
+// migrations are append-only and chronological, so nobody reads it top to
+// bottom and splitting it would only make the next author guess which half to
+// append to. Every other length limit still applies.
+
 /// The schema, one registered migration per version. Split from
 /// ShifuDatabase.swift for length only — migrations are append-only, so
 /// this file grows every schema change while the connection logic does not.
@@ -464,6 +470,36 @@ extension ShifuDatabase {
             }
             try db.create(index: "idx_vault_index_deck", on: "vault_index",
                           columns: ["deck_key"])
+        }
+
+        migrator.registerMigration("v19-llm-usage") { db in
+            // What the analyzer's LLM calls cost, in tokens (LLMUsage.swift).
+            // The provider bills tokens and reports them in every response;
+            // read once and thrown away, they leave "what did today cost"
+            // unanswerable after the fact.
+            //
+            // The identifier carries a name, unlike v1–v18, because the bare
+            // number is the trap v18's comment describes and it has already
+            // sprung: this machine's dogfood database has a "v19" (plus v20,
+            // v21) applied from branches that never landed here, so a bare
+            // "v19" would be silently skipped. Number-and-name from here on —
+            // the number places it in the sequence, the name makes a collision
+            // between two branches impossible.
+            //
+            // One row per response, not a per-day counter: a daily row needs a
+            // local-midnight key, and those strand duplicates when the machine
+            // changes time zone (the `task_logs` bug).
+            try db.create(table: "llm_usage") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("at_ms", .integer).notNull()
+                table.column("model", .text).notNull()
+                // Input tokens, cached ones included — the split is what makes
+                // an estimate honest, a hit billing at a fraction of a miss.
+                table.column("prompt_tokens", .integer).notNull()
+                table.column("cached_prompt_tokens", .integer).notNull().defaults(to: 0)
+                table.column("completion_tokens", .integer).notNull()
+            }
+            try db.create(index: "idx_llm_usage_at", on: "llm_usage", columns: ["at_ms"])
         }
 
         return migrator

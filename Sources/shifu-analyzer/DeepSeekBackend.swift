@@ -27,6 +27,10 @@ struct DeepSeekBackend: LLMBackend {
     /// Nonzero only for the reasoning slot — see
     /// `reasoningResponseHeadroomTokens`.
     let responseHeadroomTokens: Int
+    /// Where billed token counts land (`LLMUsage`). This is the only place in
+    /// the codebase that ever sees a provider's `usage` object, so if it isn't
+    /// written here the cost of a day's analysis is gone for good.
+    let database: ShifuDatabase
 
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
     /// batches sane and works with any OpenAI-compatible endpoint the user
@@ -98,7 +102,8 @@ struct DeepSeekBackend: LLMBackend {
         return DeepSeekBackend(
             name: model, apiKey: key, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
-            responseHeadroomTokens: role.responseHeadroomTokens)
+            responseHeadroomTokens: role.responseHeadroomTokens,
+            database: database)
     }
 
     func complete(prompt: String, maxTokens: Int) async throws -> String {
@@ -156,8 +161,18 @@ struct DeepSeekBackend: LLMBackend {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw LLMError.badResponse("HTTP \(status): \(body.prefix(300))")
         }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LLMError.badResponse("response body was not a JSON object")
+        }
+        // Before anything below can throw: an answer we can't parse was billed
+        // exactly like one we can, and the truncation path above deliberately
+        // pays for the prompt twice. Recording only successes would understate
+        // precisely the runs that cost the most.
+        if let call = LLMUsage.Call.parse(response: json, requested: model) {
+            LLMUsage.record(
+                call, at: Int64(Date().timeIntervalSince1970 * 1_000), database: database)
+        }
+        guard let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any] else {
             throw LLMError.badResponse("no choices/message in response")
         }

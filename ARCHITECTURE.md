@@ -231,6 +231,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`, both filtered by `TaskGrouper.notSystemBundleSQL` so the lock screen and Shifu's own UI are charted nowhere (design.md §7) |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
+| What the LLM calls cost — token accounting and its rollups | [`Storage/LLMUsage.swift`](Sources/ShifuCore/Storage/LLMUsage.swift); recorded in `DeepSeekBackend.send`, read by `shifu status` |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
 | What is never captured at all | [`Privacy/Exclusions.swift`](Sources/ShifuCore/Privacy/Exclusions.swift) |
 | The capture ladder / rung thresholds | [`shifud/CaptureEngine.swift`](Sources/shifud/CaptureEngine.swift) |
@@ -365,6 +366,16 @@ stored count wrong within the session, so it is always derived from
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
 task).
+
+**`llm_usage`** (v19, one row per billed response, written by
+`DeepSeekBackend.send` through `LLMUsage.record`) — `prompt_tokens` /
+`cached_prompt_tokens` / `completion_tokens` off the provider's own `usage`
+object, the only record of what a day of analysis cost. Recorded before the
+response is parsed, so a truncated call and its escalated retry both count:
+those are the expensive ones. No prices stored — they change per model and
+endpoint, so `shifu status` and any reader multiply for themselves. Rows are
+per-call, not per-day, because a daily row would need a local-midnight key and
+those strand duplicates across a time-zone change (the `task_logs` bug).
 
 ### Disposable tables — rebuildable, never authoritative
 
