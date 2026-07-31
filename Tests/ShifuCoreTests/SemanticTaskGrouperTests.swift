@@ -262,20 +262,6 @@ private struct TaskRowSnapshot: Sendable {
         #expect(samples.map(\.id) == [ids[3]])
     }
 
-    /// A block whose `ended_at` is within a sessionizer gap of `to` may still
-    /// be growing — its verdict would be discarded by the next rebuild when
-    /// the span moves, so it must not be bought at all.
-    @Test func blocksStillInsideTheSessionGapAreNeverSent() throws {
-        let db = try ShifuDatabase.inMemory()
-        var ids: [Int64] = []
-        try seedBlock(db, id: &ids, startedAt: 0)
-        // Ends exactly at `to` — the shape of a block the user is still in.
-        try seedBlock(db, id: &ids, startedAt: 9_400_000)
-        let samples = try SemanticTaskGrouper.pendingSamples(
-            database: db, from: 0, to: 10_000_000)
-        #expect(samples.map(\.id) == [ids[0]])
-    }
-
     @Test func privateAndAlreadyAssignedBlocksAreNeverSent() async throws {
         let db = try ShifuDatabase.inMemory()
         var ids: [Int64] = []
@@ -374,5 +360,53 @@ private struct TaskRowSnapshot: Sendable {
         // No pre-created row (semantic pass skipped): humanized fallback name.
         #expect(tasks[1].0 == "sem:planning-the-sf-trip")
         #expect(tasks[1].1 == "planning the sf trip")
+    }
+}
+
+// Extension keeps the suite's type body inside the lint budget.
+extension SemanticTaskGrouperTests {
+    /// A block whose `ended_at` is within a sessionizer gap of `to` may still
+    /// be growing — its verdict would be discarded by the next rebuild when
+    /// the span moves, so it must not be bought at all.
+    @Test func blocksStillInsideTheSessionGapAreNeverSent() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, id: &ids, startedAt: 0)
+        // Ends exactly at `to` — the shape of a block the user is still in.
+        try seedBlock(db, id: &ids, startedAt: 9_400_000)
+        let samples = try SemanticTaskGrouper.pendingSamples(
+            database: db, from: 0, to: 10_000_000)
+        #expect(samples.map(\.id) == [ids[0]])
+    }
+
+    /// Minting is held to a higher floor than joining: a wrong join is one
+    /// mislabeled block, a wrong mint is a roster entry every later batch is
+    /// invited to reuse — and the hourly pass runs on the fast slot now.
+    @Test func mintingATaskNeedsMoreConfidenceThanJoiningOne() async throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, id: &ids, startedAt: 0)
+        try seedBlock(db, id: &ids, startedAt: 3_600_000)
+        try await db.queue.write { sqlite in
+            // Active now, so the roster window includes it.
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (key, name, created_at, last_active_at)
+                VALUES ('sem:sf-trip', 'Planning the SF trip', 0, ?)
+                """, arguments: [Int64(Date().timeIntervalSince1970 * 1_000)])
+        }
+        // 0.65 clears the join floor (0.6) but not the mint floor (0.75).
+        let backend = StubBackend(response: #"""
+            {"assignments": [{"id": \#(ids[0]), "task": "t1", "confidence": 0.65},
+                             {"id": \#(ids[1]), "task": "n1", "confidence": 0.65}],
+             "new_tasks": [{"handle": "n1", "title": "Something new", "gist": null}]}
+            """#)
+        let summary = try await SemanticTaskGrouper.run(
+            database: db, backend: backend, from: 0, to: 10_000_000)
+        #expect(summary == .init(assigned: 1, tasksCreated: 0))
+        let assigned = try await db.queue.read { sqlite in
+            try Row.fetchAll(sqlite, sql: "SELECT sem_key FROM activities ORDER BY started_at")
+                .map { $0["sem_key"] as String? }
+        }
+        #expect(assigned == ["sem:sf-trip", nil])
     }
 }

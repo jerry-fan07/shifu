@@ -19,6 +19,12 @@ import GRDB
 /// `SemanticTaskEvidence.swift`; this file is the pipeline around it.
 public enum SemanticTaskGrouper {
     public static let confidenceFloor = 0.6
+    /// Minting a task is held to a higher bar than joining one: the hourly
+    /// pass runs on the fast slot, and a mistaken join is one mislabeled
+    /// block while a mistaken mint is a roster entry every later batch is
+    /// invited to reuse. Below this, the block waits — the daily
+    /// reconciliation (TaskReconciler) audits what does get minted.
+    public static let newTaskConfidenceFloor = 0.75
     public static let maxAttempts = 3
     /// Blocks shorter than this stay mechanically grouped — a 40-second glance
     /// carries too little intent to be worth tokens.
@@ -279,8 +285,9 @@ extension SemanticTaskGrouper {
         var resolved = Resolved()
         for assignment in verdict.assignments {
             guard batchIDs.contains(assignment.id),
-                  assignment.confidence >= confidenceFloor,
                   let key = keyByHandle[assignment.task] else { continue }
+            let floor = newByKey[key] != nil ? newTaskConfidenceFloor : confidenceFloor
+            guard assignment.confidence >= floor else { continue }
             resolved.assignmentsByKey[key, default: []].append(assignment.id)
         }
         resolved.newTaskByKey = newByKey.filter { resolved.assignmentsByKey[$0.key] != nil }

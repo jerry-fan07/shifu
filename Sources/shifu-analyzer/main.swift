@@ -83,8 +83,10 @@ print("analyzed \(summary.observationsProcessed) observations → "
 // DeepSeek is the only LLM backend; without an API key (or with backend
 // "off") every LLM stage is skipped and the rules-only ledger stands (§10
 // fallback). Two model slots share the one opt-in (§4.2): the fast model
-// serves the high-volume labeling stages below, the reasoning model serves
-// the grouping stages that name the user's intent.
+// runs everything hourly — cards, grouping, themes, notes — over card
+// evidence; the reasoning model is reserved for the daily roster
+// reconciliation and the weekly radar, the judgment calls where its billed
+// chain-of-thought earns its price.
 let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: database)
 let reasoningBackend: (any LLMBackend)? =
     try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
@@ -110,15 +112,17 @@ if let backend {
 
 // Semantic task grouping (§5.3): the LLM assigns the window's blocks to
 // intent-level tasks before the mechanical grouper runs, so `sem_key` exists
-// when TaskGrouper picks keys. Uses the reasoning model — naming intent is
-// the judgment call the pricier slot exists for. Fail-soft: on any failure
-// blocks keep their mechanical grouping and stay queued for the next run (§10).
-if let reasoningBackend {
+// when TaskGrouper picks keys. Fast slot, hourly: with card evidence the
+// common case is matching a block against the roster, which doesn't need
+// billed chain-of-thought — minting is held to a higher floor and the daily
+// reconciliation audits the results. Fail-soft: on any failure blocks keep
+// their mechanical grouping and stay queued for the next run (§10).
+if let backend {
     do {
         let semSummary = try await SemanticTaskGrouper.run(
-            database: database, backend: reasoningBackend, from: from, to: nowMs)
+            database: database, backend: backend, from: from, to: nowMs)
         if semSummary.assigned > 0 {
-            print("semantic tasks (\(reasoningBackend.name)): \(semSummary.assigned) "
+            print("semantic tasks (\(backend.name)): \(semSummary.assigned) "
                 + "blocks assigned, \(semSummary.tasksCreated) tasks created")
         }
     } catch {
@@ -136,20 +140,29 @@ if taskSummary.tasksTouched > 0 {
 }
 
 // Theme layer (§5.3): the second, independent clustering into broad
-// initiatives. Runs after TaskGrouper so task names exist as evidence.
-// Clustering is the reasoning model's job; the narratives it refreshes are
-// hash-gated to ~one generation per theme per day, so they ride along rather
-// than earn a second wiring. Fail-soft like every LLM stage.
-if let reasoningBackend {
+// initiatives. Runs after TaskGrouper so task assignments exist — which is
+// also what makes most of it free: a task's dominant theme takes its
+// unthemed blocks in SQL first, and only blocks inheritance couldn't place
+// reach the model. Fast slot with card evidence; narratives are hash-gated
+// to ~one generation per theme per day and summarize compiled facts, not
+// intent, so they ride the fast slot too. Fail-soft like every LLM stage.
+do {
+    let inherited = try ThemeClusterer.inheritFromTasks(
+        database: database, from: from, to: nowMs)
+    if inherited > 0 { print("themes: \(inherited) blocks inherited from their tasks") }
+} catch {
+    print("theme inheritance failed (retries next run): \(error)")
+}
+if let backend {
     do {
         let themeSummary = try await ThemeClusterer.run(
-            database: database, backend: reasoningBackend, from: from, to: nowMs)
+            database: database, backend: backend, from: from, to: nowMs)
         if themeSummary.assigned > 0 || themeSummary.themesProposed > 0 {
-            print("themes (\(reasoningBackend.name)): \(themeSummary.assigned) "
+            print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
         let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: reasoningBackend)
+            database: database, backend: backend)
         if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")
@@ -183,6 +196,28 @@ do {
     if merged > 0 { print("tasks: \(merged) duplicate tasks auto-merged") }
 } catch {
     print("auto-merge failed (retries next run): \(error)")
+}
+
+// Daily reconciliation (§5.3): the reasoning model's one scheduled call —
+// it audits the roster the fast-model stages built (duplicate efforts,
+// missing gists) instead of paying its chain-of-thought hourly. Merge
+// proposals join the suggestion queue and its gates. Stamped only on
+// success, like every LLMStageGate caller.
+if let reasoningBackend,
+   LLMStageGate.due("reconcile.last_ran", everyMs: 24 * 3_600_000,
+                    now: nowMs, database: database) {
+    do {
+        let reconciled = try await TaskReconciler.run(
+            database: database, backend: reasoningBackend)
+        LLMStageGate.stamp("reconcile.last_ran", now: nowMs, database: database)
+        if reconciled.mergesSuggested > 0 || reconciled.gistsFilled > 0 {
+            print("reconcile (\(reasoningBackend.name)): "
+                + "\(reconciled.mergesSuggested) merge suggestions, "
+                + "\(reconciled.gistsFilled) gists filled")
+        }
+    } catch {
+        print("reconcile failed (retries next pass): \(error)")
+    }
 }
 
 // Nothing writes knowledge notes automatically any more (§5.1): the vault's

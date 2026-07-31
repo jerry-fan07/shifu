@@ -80,6 +80,78 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(theme?.1 == 1_900_000)                  // block end advanced it
     }
 
+    /// A task that already lives 70%+ in one theme files its unthemed blocks
+    /// there in SQL — the model only ever sees blocks inheritance couldn't
+    /// place, which for settled tasks is none of them.
+    @Test func dominantThemeInheritsItsTasksUnthemedBlocks() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO themes (key, name, created_at, last_active_at)
+                VALUES ('thm:travel', 'Travel', 0, 5), ('thm:admin', 'Admin', 0, 5)
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (id, key, name, created_at, last_active_at)
+                VALUES (1, 'sem:sf-trip', 'SF trip', 0, 5),
+                       (2, 'sem:split', 'Split task', 0, 5)
+                """)
+            // Task 1: 80% travel, 20% admin → dominant. Task 2: 50/50 → not.
+            for (task, theme, start, minutes) in [
+                (1, "thm:travel", Int64(0), Int64(80)),
+                (1, "thm:admin", Int64(6_000_000), Int64(20)),
+                (2, "thm:travel", Int64(12_000_000), Int64(30)),
+                (2, "thm:admin", Int64(18_000_000), Int64(30))
+            ] {
+                try sqlite.execute(sql: """
+                    INSERT INTO activities
+                        (started_at, ended_at, app_bundle, category, task_id, theme_key, source)
+                    VALUES (?, ?, 'com.apple.Safari', 'admin', ?, ?, 'rules')
+                    """, arguments: [start, start + minutes * 60_000, task, theme])
+            }
+            // The unthemed blocks inheritance should (and shouldn't) file.
+            for (task, start) in [(1, Int64(24_000_000)), (2, Int64(30_000_000))] {
+                try sqlite.execute(sql: """
+                    INSERT INTO activities
+                        (started_at, ended_at, app_bundle, category, task_id, source)
+                    VALUES (?, ?, 'com.apple.Safari', 'admin', ?, 'rules')
+                    """, arguments: [start, start + 600_000, task])
+            }
+        }
+        let filed = try ThemeClusterer.inheritFromTasks(database: db, from: 0, to: 100_000_000)
+        #expect(filed == 1)
+        let keys = try await db.queue.read { sqlite in
+            try Row.fetchAll(sqlite, sql: """
+                SELECT task_id, theme_key FROM activities
+                WHERE started_at >= 24000000 ORDER BY started_at
+                """).map { ($0["task_id"] as Int64, $0["theme_key"] as String?) }
+        }
+        #expect(keys[0] == (1, "thm:travel"))
+        #expect(keys[1].1 == nil)
+    }
+
+    /// A `theme_key` naming a theme that no longer exists must not spread to
+    /// new blocks — inheritance joins on `themes`.
+    @Test func aDeletedThemesKeyDoesNotPropagate() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (id, key, name, created_at, last_active_at)
+                VALUES (1, 'sem:ghost', 'Ghost', 0, 5)
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, theme_key, source)
+                VALUES (0, 3600000, 'com.apple.Safari', 'admin', 1, 'thm:gone', 'rules')
+                """)
+            try sqlite.execute(sql: """
+                INSERT INTO activities
+                    (started_at, ended_at, app_bundle, category, task_id, source)
+                VALUES (7200000, 7800000, 'com.apple.Safari', 'admin', 1, 'rules')
+                """)
+        }
+        #expect(try ThemeClusterer.inheritFromTasks(database: db, from: 0, to: 100_000_000) == 0)
+    }
+
     /// Same closed-blocks rule as the grouper: a block still inside the
     /// sessionizer gap of `to` may grow, and its bought verdict would die
     /// with the next rebuild's span change.
