@@ -174,17 +174,23 @@ public struct ChoiceSetting: Identifiable, Sendable {
     public let help: String
     public let options: [Option]
     public let defaultValue: String
+    /// Same gate as `TextSetting.visibleWhen`: hides the row unless another
+    /// setting has the given value, so backend-specific dials only show for
+    /// their backend.
+    public let visibleWhen: (key: String, value: String)?
 
     public var id: String { key }
 
     public init(key: String, section: SettingsSection, title: String, help: String,
-                options: [Option], defaultValue: String) {
+                options: [Option], defaultValue: String,
+                visibleWhen: (key: String, value: String)? = nil) {
         self.key = key
         self.section = section
         self.title = title
         self.help = help
         self.options = options
         self.defaultValue = defaultValue
+        self.visibleWhen = visibleWhen
     }
 
     /// Unknown stored values collapse to the default — applied on read *and*
@@ -312,6 +318,34 @@ public enum SettingsCatalog {
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
+    // The local profile (design.md §4.2): point Endpoint at a local
+    // OpenAI-compatible server, shrink the window to what it serves, and turn
+    // reasoning thinking off. Every stage then re-sizes its batches through
+    // invariant 7 — no other dial has to move.
+    public static let deepseekContextTokens = TextSetting(
+        key: Settings.deepseekContextTokensKey, section: .analysis,
+        title: "Context window",
+        help: "Tokens per call, prompt and response combined — analysis sizes "
+            + "its batches to fit. Blank uses 60,000, which suits DeepSeek; "
+            + "for a local server, enter what it actually serves (e.g. 16000).",
+        placeholder: "60000",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
+    public static let deepseekReasoningThinking = ChoiceSetting(
+        key: Settings.deepseekReasoningThinkingKey, section: .analysis,
+        title: "Reasoning thinking",
+        help: "Whether the reasoning model thinks before answering. Keep on "
+            + "for DeepSeek; turn off for a local model, or its chain-of-"
+            + "thought reserve would eat a small context window whole.",
+        options: [
+            .init(value: "on", label: "On"),
+            .init(value: "off", label: "Off")
+        ],
+        defaultValue: "on",
+        visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
+    )
+
     // Cost estimation (LLMPrices). Rates as settings, not code: they change
     // without warning, and an estimate that can be corrected in a text field
     // beats one that waits for a release.
@@ -346,10 +380,10 @@ public enum SettingsCatalog {
         heartbeatSeconds, analysisIntervalSeconds, textRetentionDays
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
-    public static let choices: [ChoiceSetting] = [analysisBackend]
+    public static let choices: [ChoiceSetting] = [analysisBackend, deepseekReasoningThinking]
     public static let texts: [TextSetting] = [
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,
-        llmPriceFast, llmPriceReasoning, llmDailyWarn
+        deepseekContextTokens, llmPriceFast, llmPriceReasoning, llmDailyWarn
     ]
 }
 

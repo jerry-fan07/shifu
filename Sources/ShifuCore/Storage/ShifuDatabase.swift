@@ -120,6 +120,14 @@ public enum Settings {
     /// Reasoning model (default deepseek-v4-pro): semantic task grouping and
     /// theme clustering, where naming the user's intent is the whole job.
     public static let deepseekReasoningModelKey = "deepseek.reasoning_model"
+    /// Context window (prompt + response, in tokens) every stage sizes its
+    /// batches to (invariant 7). Blank means 60k, which suits DeepSeek; a
+    /// local-server profile drops it to what the server actually serves.
+    public static let deepseekContextTokensKey = "deepseek.context_tokens"
+    /// Whether the reasoning slot runs as a thinking model ("on"/"off").
+    /// Off makes it behave like the fast slot — no chain-of-thought, no
+    /// response headroom — which is what makes a 16k local window viable.
+    public static let deepseekReasoningThinkingKey = "deepseek.reasoning_thinking"
     public static let digestHourKey = "digest.hour"
 
     public static func get(_ key: String, database: ShifuDatabase) throws -> String? {

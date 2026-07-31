@@ -155,9 +155,7 @@ private struct SettingsPanel: View {
                     ForEach(SettingsCatalog.ints.filter { $0.section == section }) {
                         IntSettingRow(setting: $0)
                     }
-                    ForEach(SettingsCatalog.choices.filter { $0.section == section }) {
-                        ChoiceSettingRow(setting: $0)
-                    }
+                    ForEach(visibleChoices) { ChoiceSettingRow(setting: $0) }
                     ForEach(visibleTexts) { TextSettingRow(setting: $0) }
                     ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
                         DomainListRow(setting: $0)
@@ -172,6 +170,10 @@ private struct SettingsPanel: View {
                 }
             }
         }
+    }
+
+    private var visibleChoices: [ChoiceSetting] {
+        SettingsCatalog.choices.filter { $0.section == section && store.isVisible($0) }
     }
 
     private var visibleTexts: [TextSetting] {

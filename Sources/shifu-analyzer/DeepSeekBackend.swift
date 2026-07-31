@@ -47,10 +47,30 @@ struct DeepSeekBackend: LLMBackend {
     /// column meant for every row written before v27.
     var stage: String?
 
+    /// Prompt + response budget per call, from `deepseek.context_tokens`.
+    /// Every stage sizes its batches to it (invariant 7), so this one number
+    /// is how a local profile adapts the whole pipeline: point the base URL
+    /// at a llama-server, state the window it actually serves, and every
+    /// prompt shrinks to fit.
+    var contextWindowTokens = DeepSeekBackend.defaultContextWindowTokens
+
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
     /// batches sane and works with any OpenAI-compatible endpoint the user
-    /// points the base URL at. Batching sizes prompts to it (invariant 7).
-    let contextWindowTokens = 60_000
+    /// points the base URL at.
+    static let defaultContextWindowTokens = 60_000
+
+    /// What `deepseek.context_tokens` may claim. Below 8k even a compact-
+    /// roster grouping prompt stops fitting; 200k covers any hosted model
+    /// worth pointing the base URL at.
+    static let contextWindowTokenRange = 8_000...200_000
+
+    /// The prompt budget no configuration may take away: the reasoning
+    /// slot's thinking headroom is clamped so `contextWindowTokens -
+    /// responseHeadroomTokens` never drops below this. Without the clamp, a
+    /// 16k window under the stock 32k headroom turns every reasoning-slot
+    /// budget negative — TaskReconciler sheds its roster to 2 entries and
+    /// the `max(512, …)` stages batch degenerately.
+    static let minPromptBudgetTokens = 4_000
 
     /// The `max_tokens` floor for a *thinking* call: observed reasoning runs
     /// are 2-3k tokens, so this is generous while staying inside the output
@@ -127,11 +147,37 @@ struct DeepSeekBackend: LLMBackend {
             .flatMap { $0.isEmpty ? nil : $0 } ?? defaultBaseURL
         let model = (try? Settings.get(role.settingsKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
+        let window = configuredContextWindow(database: database)
+        // Thinking off turns the reasoning slot into a second fast slot — no
+        // chain-of-thought, no headroom reserve. That pairing is the local
+        // profile: at a 16k window the stock 32k headroom otherwise swallows
+        // every reasoning-slot prompt budget.
+        let thinks = role.thinks && reasoningThinkingEnabled(database: database)
+        let headroom = thinks
+            ? min(role.responseHeadroomTokens, window - minPromptBudgetTokens)
+            : 0
         return DeepSeekBackend(
             name: model, apiKey: key, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
-            responseHeadroomTokens: role.responseHeadroomTokens,
-            thinks: role.thinks, database: database)
+            responseHeadroomTokens: headroom,
+            thinks: thinks, database: database,
+            contextWindowTokens: window)
+    }
+
+    /// `deepseek.context_tokens`, clamped to `contextWindowTokenRange`;
+    /// blank, absent or unparseable means the 60k default. Clamped on read
+    /// (like `IntSetting.clamp`) so a hand-edited row can't zero every
+    /// stage's budget.
+    static func configuredContextWindow(database: ShifuDatabase) -> Int {
+        guard let raw = try? Settings.get(Settings.deepseekContextTokensKey, database: database),
+              let parsed = Int(raw.trimmingCharacters(in: .whitespaces))
+        else { return defaultContextWindowTokens }
+        return min(max(parsed, contextWindowTokenRange.lowerBound),
+                   contextWindowTokenRange.upperBound)
+    }
+
+    private static func reasoningThinkingEnabled(database: ShifuDatabase) -> Bool {
+        Settings.value(SettingsCatalog.deepseekReasoningThinking, database: database) != "off"
     }
 
     /// A copy of this backend that stamps `stage` on every row it records.
