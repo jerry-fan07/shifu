@@ -177,6 +177,19 @@ import Testing
         #expect(Set(names.compactMap { colors[$0] }).count == names.count)
     }
 
+    /// The claim above is only worth anything up to the number of groups a
+    /// lens actually ranks. The palette was five hues against a limit of six,
+    /// so a real week always drew two tasks in one colour while this suite —
+    /// which only ever asked for `groupHues.count` names — stayed green.
+    @Test func thePaletteHasAHueForEveryGroupALensWillRank() {
+        #expect(TimePalette.groupHues.count >= TimeBreakdown.maxGroups)
+
+        let names = (0..<TimeBreakdown.maxGroups).map { "task-\($0)" }
+        let colors = TimePalette.colors(
+            for: names + [TimeBreakdown.otherLabel], lens: .task)
+        #expect(Set(names.compactMap { colors[$0] }).count == names.count)
+    }
+
     @Test func theOtherBucketAlwaysGetsTheLeftoverColor() {
         let colors = TimePalette.colors(
             for: ["alpha", TimeBreakdown.otherLabel], lens: .theme)

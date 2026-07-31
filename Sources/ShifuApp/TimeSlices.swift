@@ -61,6 +61,13 @@ struct TimeSlice: Identifiable {
 enum TimeBreakdown {
     /// Where everything past the lens's group limit lands.
     static let otherLabel = "Other"
+    /// How many groups a theme or task lens ranks before folding the rest into
+    /// `otherLabel`, so the table and the ribbon stay readable over a busy
+    /// week. Lives here rather than on the view that passes it, because it is
+    /// half of an invariant whose other half is `TimePalette.groupHues`: a
+    /// limit larger than the palette hands out means two groups on one chart
+    /// wearing one colour, and that has to be checkable.
+    static let maxGroups = 6
     /// How many sources a summary row names when expanded.
     static let maxSources = 3
 
@@ -174,8 +181,8 @@ enum TimeBreakdown {
 
 /// Chart colors for every Ledger view, so a group wears the same color in the
 /// ribbon, the table's meter, and the week's rows. All hues come from
-/// `Instrument.slots` — the accent stepped, one neutral, one warm — because
-/// this is a one-accent instrument (design.md §7).
+/// `Instrument.slots` — the accent stepped, one neutral, one warm, two greens —
+/// and nowhere else: the scale is short on purpose (design.md §7).
 ///
 /// Hue is never the only cue here: every series is named in the row beside its
 /// swatch, and the ribbon carries its group in the tooltip. That is what buys
@@ -198,9 +205,13 @@ enum TimePalette {
         "private": Instrument.quiet, "unclassified": Instrument.other
     ]
 
-    /// Hue order for theme and task groups. Deliberately a *short* fixed list:
-    /// a sixth group takes slot one again rather than minting a hue, and
-    /// anything past the lens's limit folds into "Other".
+    /// Hue order for theme and task groups. Still a *short* fixed list — an
+    /// eighth group takes a slot again rather than minting a hue, and anything
+    /// past the lens's limit folds into "Other" — but no longer shorter than
+    /// the limit it serves: at five slots against a `TimeBreakdown.maxGroups`
+    /// of six, the sixth group had nowhere to go and always duplicated one of
+    /// the five. Seven slots is what makes "two groups on screen together never
+    /// share one" true rather than aspirational.
     static let groupHues: [Color] = Instrument.slots
 
     /// The leftover bucket, and any category the ledger grew without a hue here.

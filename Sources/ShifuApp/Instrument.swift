@@ -4,8 +4,11 @@ import SwiftUI
 /// The Instrument design system (design.md §7): Shifu as a measuring
 /// instrument rather than a place. A near-white ground, a permanent source
 /// list, hairline rules instead of cards, tabular mono for every figure, and
-/// exactly one accent — a slate blue, stepped three ways when a chart has to
-/// separate groups.
+/// exactly one accent — a slate blue, stepped three ways.
+///
+/// The accent is the *interface's*: every control, link, selection and meter
+/// is that blue and nothing else. Only the chart scale (`slots`) reaches past
+/// it, and only as far as separating one group from another demands.
 ///
 /// Nothing here is decorative. A color either separates two series, marks the
 /// one selected thing, or says a number needs acting on.
@@ -89,19 +92,34 @@ enum Instrument {
 
     // MARK: - Data hues
 
-    /// The five slots a chart may use, in assignment order: the accent stepped
-    /// three ways, then a neutral, then the one warm hue. Deliberately short
-    /// and deliberately reused — this is a one-accent instrument, so a sixth
-    /// group takes slot one again rather than minting a colour.
+    /// The slots a chart may use: the accent stepped three ways, a neutral, the
+    /// one warm hue, then two steps of a sage green.
     ///
-    /// Hue is never the only cue: every series here is named in the table row
-    /// or the legend beside it.
+    /// The greens are capacity, not decoration. This was five slots against a
+    /// six-group limit, so the hash had nowhere to put the sixth and two series
+    /// on one chart always came out the same colour — a dogfood week drew
+    /// "iCal" and "applying for openai api credits" both at #8AADD5, and the
+    /// legend simply lied about which band was which. Seven slots is the first
+    /// count where six groups and the leftover bucket each get their own.
+    ///
+    /// Green is a real departure from the one-accent rule, so it is held to the
+    /// muted register the rest of the scale keeps — sage, not emerald — and it
+    /// was measured rather than eyeballed. Against every other colour a single
+    /// chart can draw, plus the tone a band recedes to on hover, the worst pair
+    /// in the whole set is unchanged by them: 14.7 light, 13.8 dark, both
+    /// between colours that were already there.
+    ///
+    /// Deliberately still short: an eighth group takes a slot again rather than
+    /// minting another hue, and hue is never the only cue — every series here
+    /// is named in the table row or the legend beside it.
     static let slots: [Color] = [
         Color(light: 0x3A5F8A, dark: 0x3D6DA5),   // strong
         Color(light: 0x7F9EC0, dark: 0x6F9DD0),   // mid
         Color(light: 0xB9CADB, dark: 0xA8C6E6),   // soft
         Color(light: 0x9C9A92, dark: 0x5E5D58),   // neutral
-        Color(light: 0xC98A3F, dark: 0xD09A5C)    // warm
+        Color(light: 0xC98A3F, dark: 0xD09A5C),   // warm
+        Color(light: 0x7C9669, dark: 0xA5BD93),   // moss
+        Color(light: 0xA4C28E, dark: 0xCFDFC3)    // sage
     ]
 
     static let strong = slots[0]
@@ -109,6 +127,13 @@ enum Instrument {
     static let soft = slots[2]
     static let neutral = slots[3]
     static let warm = slots[4]
+    /// The deeper green. Sits ΔE 10.8 from `live` under protanopia, which is
+    /// inside the band that needs a second cue — and has one by construction:
+    /// `live` is only ever a `StatusDot` with "Watching" or "Paused" written
+    /// beside it, and never shares a surface with a chart series.
+    static let moss = slots[5]
+    /// The light green — the palest step of the scale after `soft`.
+    static let sage = slots[6]
     /// A fourth step below `strong`, held back for the fixed category scale —
     /// the ledger has eight categories and the ramp only has to separate them
     /// beside their own labels, never on its own.

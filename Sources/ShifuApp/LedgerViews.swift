@@ -34,10 +34,6 @@ struct LedgerView: View {
     /// they came from. Week only: a single day has no run to read.
     @State private var signals: [Rhythms.Signal] = []
 
-    /// Theme and task lenses fold everything past the biggest few into
-    /// "Other", so the table and the ribbon stay readable over a busy week.
-    private static let maxGroups = 6
-
     private var lens: TimeLens {
         get { TimeLens(rawValue: lensRaw) ?? .category }
         nonmutating set { lensRaw = newValue.rawValue }
@@ -48,7 +44,7 @@ struct LedgerView: View {
         let blocks = isWeek ? weekBlocks : store.todayActivities
         let slices = TimeBreakdown.slices(
             blocks, lens: lens, from: window.from, to: window.to,
-            limit: lens == .category ? nil : Self.maxGroups)
+            limit: lens == .category ? nil : TimeBreakdown.maxGroups)
         let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
 
         VStack(spacing: 0) {
