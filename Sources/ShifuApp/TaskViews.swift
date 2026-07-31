@@ -13,8 +13,8 @@ struct TasksView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !store.mergeSuggestions.isEmpty { mergeBanner }
             PageBody {
+                if !store.mergeBannerClosed { mergeBanner }
                 if store.filteredTasks.isEmpty {
                     BlankSlate(
                         store.taskFilter.narrowsResults
@@ -77,7 +77,10 @@ struct TasksView: View {
 
     /// The strongest open merge, above the rows it concerns. One at a time:
     /// a weekly pass can open more pairs than the list has rows, and inline
-    /// they would push the actual task list off the screen.
+    /// they would push the actual task list off the screen. It sits *inside*
+    /// the scrolling body rather than pinned under the header — a suggestion
+    /// is worth a first screen, not a permanent band — and closes for the
+    /// launch, because reading down the log shouldn't cost an answer.
     @ViewBuilder private var mergeBanner: some View {
         if let suggestion = store.mergeSuggestions.first {
             HStack(spacing: 10) {
@@ -86,12 +89,13 @@ struct TasksView: View {
                     .foregroundStyle(Instrument.railInk)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 SolidButton(title: "Merge") { store.acceptMerge(suggestion) }
-                OutlineButton(title: "Not now") { store.dismissMerge(suggestion) }
+                OutlineButton(title: "Not a duplicate") { store.dismissMerge(suggestion) }
                 if store.hiddenSuggestionCount > 0 {
                     InlineLink("\(store.hiddenSuggestionCount) more") {
                         router.open(.merges)
                     }
                 }
+                closeMark
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -100,9 +104,24 @@ struct TasksView: View {
                 RoundedRectangle(cornerRadius: 7)
                     .strokeBorder(Instrument.alert.opacity(0.3), lineWidth: 1)
             }
-            .padding(.horizontal, Instrument.gutter)
             .padding(.top, 12)
         }
+    }
+
+    /// Puts the banner away without answering it. Deliberately not the same
+    /// act as "Not a duplicate", which answers *this pair* for good in the
+    /// database — this one only clears the page, and every pair is still
+    /// waiting on the Suggestions screen.
+    private var closeMark: some View {
+        Button { store.mergeBannerClosed = true } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Instrument.faint)
+                .padding(4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Hide these until the next launch")
     }
 
     // MARK: - Rows

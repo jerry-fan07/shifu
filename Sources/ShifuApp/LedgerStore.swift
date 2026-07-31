@@ -55,6 +55,14 @@ final class LedgerStore: ObservableObject {
         Array(allMergeSuggestions.prefix(Self.suggestionLimit))
     }
 
+    /// Whether the Task log's merge banner has been closed with its ✕. Lives
+    /// on the store rather than in the view so it holds for the whole launch —
+    /// "not now, and stop asking" shouldn't expire the moment you step off the
+    /// page and come back. Deliberately not persisted: a new launch is a new
+    /// chance to ask, and closing the banner is not the same act as dismissing
+    /// the suggestion, which `dismissMerge` writes down.
+    @Published var mergeBannerClosed = false
+
     /// Open suggestions the inline list isn't showing — the count behind
     /// the "Review all" link. Theme assignments live only on the Merge
     /// review screen now, so all of them count as hidden.
