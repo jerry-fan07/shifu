@@ -15,8 +15,11 @@ final class LedgerStore: ObservableObject {
     /// source list's counts, the Breakdown table, and the Timeline. The Time
     /// pages used to open this query on every body pass.
     @Published private(set) var todayActivities: [LedgerBuilder.LabeledActivity] = []
-    /// Everything in the vault, cards or not — the Notes row's count.
-    @Published private(set) var noteCount = 0
+    /// What the vault holds, by kind and by depth (vault-features.md §4).
+    /// Counted from the index rather than by walking the tree: the walk only
+    /// parsed `kind: knowledge`, which is why the Notes row read "21" over
+    /// nearly seven hundred documents.
+    @Published private(set) var vaultCensus = VaultLibrary.Census()
     @Published private(set) var pausedUntil: Date?
     @Published private(set) var workModeOn = false
     @Published private(set) var dueNotes: [Note] = []
@@ -110,7 +113,24 @@ final class LedgerStore: ObservableObject {
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
+    /// The library as it reads with nothing typed — the Notes place is a shelf
+    /// first and a search box second, which is the half it used to be missing.
+    @Published private(set) var vaultShelf: [VaultLibrary.Entry] = []
+    @Published var noteFilter = NoteLibraryFilter()
+    /// One reconcile per launch, and whether it has happened — see
+    /// `syncLibrary()`.
+    var librarySynced = false
     @Published private(set) var lastError: String?
+
+    /// Everything the vault holds — the Notes row's count.
+    var noteCount: Int { vaultCensus.total }
+
+    /// Rows the Notes place draws at once. A shelf, not a feed: past a couple
+    /// of hundred the answer is a filter, not more scrolling.
+    static let noteListLimit = 200
+    /// Ranked results kept for a query. Deeper than the shelf is wide is
+    /// pointless — nobody reads to rank 41 of a relevance list.
+    static let searchLimit = 40
 
     /// Surfaces a failure on the UI's error line. Internal (and a method
     /// rather than a settable property) so the extensions split out of this
@@ -221,34 +241,32 @@ final class LedgerStore: ObservableObject {
 
     // MARK: - Vault search (vault-features.md §4)
 
-    func searchVault() {
-        guard let database = try? db(),
-              !vaultQuery.trimmingCharacters(in: .whitespaces).isEmpty else {
+    /// The library under the current query and filter. With nothing typed this
+    /// is the shelf; with a query it is the ranked answer — both narrowed by
+    /// the same facets, so the filter row means the same thing either way.
+    ///
+    /// The shelf is skipped entirely while searching, because it isn't on
+    /// screen then — the old page recomputed both on every keystroke.
+    func loadLibrary() {
+        guard let database = try? db() else { return }
+        let filter = noteFilter.core(limit: Self.noteListLimit)
+        let query = vaultQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
             vaultHits = []
+            vaultShelf = (try? VaultLibrary.shelf(filter: filter, database: database)) ?? []
             return
         }
         vaultHits = (try? VaultSearch.search(
-            vaultQuery, database: database, embedder: embedder)) ?? []
+            query, filter: filter, limit: Self.searchLimit,
+            database: database, embedder: embedder)) ?? []
     }
 
-    /// The note file behind a search hit, split for display. Nil if the file
-    /// vanished since indexing (next reconcile cleans the row up).
-    func noteDocument(for hit: VaultSearch.Hit) -> FrontMatter.Document? {
-        let file = ShifuPaths.vault.appendingPathComponent(hit.path)
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
-        return FrontMatter.parse(text)
-    }
-
-    func noteFileURL(for hit: VaultSearch.Hit) -> URL {
-        ShifuPaths.vault.appendingPathComponent(hit.path)
-    }
-
-    /// The task's most recent work note (vault-features.md §2.1) as a search
-    /// hit, so the Vault tab's rows open in the same note reader.
-    func latestWorkNote(taskID: Int64, title: String) -> VaultSearch.Hit? {
-        guard let database = try? db() else { return nil }
-        return (try? VaultSearch.latest(
-            kind: .work, taskID: taskID, title: title, database: database)) ?? nil
+    /// loadLibrary(), one runloop turn later — the filter row's `onChange` and
+    /// the search field's fire inside SwiftUI's action-dispatch phase, and
+    /// republishing a list's own data there is the reentrancy `loadTasksSoon`
+    /// documents.
+    func loadLibrarySoon() {
+        Task { @MainActor [weak self] in self?.loadLibrary() }
     }
 
     // MARK: - Tasks & themes (design.md §5.3)
@@ -423,6 +441,8 @@ final class LedgerStore: ObservableObject {
         allCards = snapshot.cards
         dueNotes = snapshot.due
         reviewsByDay = snapshot.reviewsByDay
-        noteCount = snapshot.total
+        if let database = try? db() {
+            vaultCensus = (try? VaultLibrary.census(database: database)) ?? VaultLibrary.Census()
+        }
     }
 }

@@ -472,6 +472,61 @@ extension ShifuDatabase {
             }
         }
 
+        migrator.registerMigration("v24-vault-library") { db in
+            // The Notes place browses the vault now, it doesn't only search it
+            // (vault-features.md §4, §6). Browsing needs the facts a row is
+            // *displayed* with — its title, the task and day it came from, how
+            // long that day was, and how much substance the body actually
+            // carries — and reading those meant opening seven hundred files or
+            // joining FTS on every scroll.
+            //
+            // `words`/`sections` are what separate a compiled document from the
+            // one-line stub the compiler writes for a nine-second glance at a
+            // dashboard. Six hundred of the dogfood vault's six hundred and
+            // fifty work notes are that stub, and ranking them alongside real
+            // notes is what made the place read as empty.
+            //
+            // All six are derived from the file, so the index stays disposable
+            // (§4): reconcile refills them from the Markdown, and losing it
+            // still loses nothing.
+            guard try !db.columns(in: "vault_index").contains(where: { $0.name == "words" })
+            else { return }
+            try db.alter(table: "vault_index") { table in
+                table.add(column: "title", .text)
+                table.add(column: "task_key", .text)
+                table.add(column: "summary", .text)
+                table.add(column: "duration_ms", .integer)
+                table.add(column: "words", .integer).notNull().defaults(to: 0)
+                table.add(column: "sections", .integer).notNull().defaults(to: 0)
+            }
+            try db.create(index: "idx_vault_index_captured", on: "vault_index",
+                          columns: ["captured"])
+
+            // Existing rows carry none of it, and reconcile short-circuits on
+            // mtime and then on content hash. Zeroing both makes the next pass
+            // re-read every file exactly once and fill the columns in.
+            try db.execute(sql: "UPDATE vault_index SET mtime = 0, content_hash = 0")
+
+            // But that pass takes seconds over a real vault, and until it runs
+            // every row is untitled and graded as a trace — an upgrade whose
+            // first screen is seven hundred rows reading "Untitled". The FTS
+            // side already holds a copy of every title and body, so four of
+            // the six columns can be filled here, synchronously, from data the
+            // database is holding anyway. Reconcile then corrects the titles
+            // of the compiled kinds and fills the two columns only the file
+            // has (`task_key`, `duration_ms`).
+            for row in try Row.fetchAll(
+                db, sql: "SELECT rowid, title, body FROM vault_fts") {
+                let shape = VaultIndexer.Shape(body: row["body"] ?? "")
+                try db.execute(sql: """
+                    UPDATE vault_index SET title = ?, summary = ?, words = ?, sections = ?
+                    WHERE id = ?
+                    """, arguments: [
+                        row["title"], shape.summary, shape.words, shape.sections, row["rowid"]
+                    ])
+            }
+        }
+
         return migrator
     }
 }

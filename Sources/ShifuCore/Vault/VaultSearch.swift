@@ -4,29 +4,31 @@ import GRDB
 /// Full-text search over the vault index (vault-features.md §4): bm25-ranked,
 /// filterable by kind/task/date. Hybrid semantic ranking is V4.
 public enum VaultSearch {
-    /// One search result. Points at a file rather than carrying its content —
-    /// the Markdown tree is the source of truth, so readers re-read from
-    /// `path`. A hit can outlive its file if it was deleted since indexing;
-    /// callers handle a nil read, and the next reconcile drops the row.
+    /// One search result: a library entry plus the text that matched. Points
+    /// at a file rather than carrying its content — the Markdown tree is the
+    /// source of truth, so readers re-read from `path`. A hit can outlive its
+    /// file if it was deleted since indexing; callers handle a nil read, and
+    /// the next reconcile drops the row.
+    ///
+    /// The entry is the whole row model (`VaultLibrary.Entry`), so a result
+    /// arrives already knowing its task, its theme and its depth — a hit list
+    /// that can only say "note, kind, date" is exactly the one you can't tell
+    /// a compiled document from a nine-second stub in.
     public struct Hit: Identifiable, Sendable {
-        public var noteID: String
-        public var path: String          // relative to the vault root
-        public var kind: FrontMatter.Kind
-        public var title: String
+        public var entry: VaultLibrary.Entry
         /// Match context for display, may span lines. Not valid Markdown.
         public var snippet: String
-        public var captured: Date?
 
-        public var id: String { noteID }
+        public var id: String { entry.noteID }
+        public var noteID: String { entry.noteID }
+        public var path: String { entry.path }
+        public var kind: FrontMatter.Kind? { entry.kind }
+        public var title: String { entry.title }
+        public var captured: Date? { entry.captured }
 
-        public init(noteID: String, path: String, kind: FrontMatter.Kind,
-                    title: String, snippet: String, captured: Date?) {
-            self.noteID = noteID
-            self.path = path
-            self.kind = kind
-            self.title = title
+        public init(entry: VaultLibrary.Entry, snippet: String) {
+            self.entry = entry
             self.snippet = snippet
-            self.captured = captured
         }
     }
 
@@ -43,50 +45,6 @@ public enum VaultSearch {
         return quoted.joined(separator: " ")
     }
 
-    /// The task's most recent note of one kind — the Vault tab's "open the
-    /// latest work note" query (vault-features.md §2.1). The caller supplies
-    /// the display title (typically the task name); snippet stays empty.
-    public static func latest(
-        kind: FrontMatter.Kind, taskID: Int64, title: String, database: ShifuDatabase
-    ) throws -> Hit? {
-        try database.queue.read { db in
-            try Row.fetchOne(db, sql: """
-                SELECT note_id, path, captured FROM vault_index
-                WHERE kind = ? AND task_id = ?
-                ORDER BY captured DESC LIMIT 1
-                """, arguments: [kind.rawValue, taskID]
-            ).map { row in
-                Hit(
-                    noteID: row["note_id"], path: row["path"], kind: kind,
-                    title: title, snippet: "",
-                    captured: (row["captured"] as Int64?).map {
-                        Date(timeIntervalSince1970: Double($0) / 1_000)
-                    })
-            }
-        }
-    }
-
-    /// Shared filter clauses over `vi` (vault_index).
-    struct Filters {
-        var conditions: [String] = []
-        var arguments: [DatabaseValueConvertible] = []
-
-        init(kind: FrontMatter.Kind?, taskID: Int64?, since: Date?) {
-            if let kind {
-                conditions.append("vi.kind = ?")
-                arguments.append(kind.rawValue)
-            }
-            if let taskID {
-                conditions.append("vi.task_id = ?")
-                arguments.append(taskID)
-            }
-            if let since {
-                conditions.append("vi.captured >= ?")
-                arguments.append(Int64(since.timeIntervalSince1970 * 1_000))
-            }
-        }
-    }
-
     /// Hybrid search (vault-features.md §4, V4): reciprocal-rank fusion of
     /// bm25 top-k and cosine top-k over `vault_vectors`. No embedder (or a
     /// query that can't embed) ⇒ bm25-only, silently — byte-compatible with
@@ -100,30 +58,56 @@ public enum VaultSearch {
         database: ShifuDatabase,
         embedder: (any Embedder)? = nil
     ) throws -> [Hit] {
-        let filters = Filters(kind: kind, taskID: taskID, since: since)
-        let poolSize = max(limit, 20)
-        let lexical = try bm25Hits(query, filters: filters, limit: poolSize, database: database)
+        try search(
+            query,
+            filter: VaultLibrary.Filter(kind: kind, taskID: taskID, since: since),
+            limit: limit, database: database, embedder: embedder)
+    }
+
+    /// The same search under the library's full facet set — the Notes page
+    /// narrows by theme and by depth too, and a query that ignored the facets
+    /// on screen would be a filter bar that lies.
+    public static func search(
+        _ query: String,
+        filter: VaultLibrary.Filter,
+        limit: Int = 20,
+        database: ShifuDatabase,
+        embedder: (any Embedder)? = nil
+    ) throws -> [Hit] {
+        let scope = VaultLibrary.Scope(filter)
+        // Three times the display limit, because re-ranking can only reorder
+        // what it was given. A term that appears in a hundred one-line traces
+        // and one written-up day puts that day past rank 40 on bm25 alone, and
+        // a pool of 40 would drop it before the depth weight ever saw it.
+        // bm25 sorts the whole match set regardless of LIMIT, so a deeper pool
+        // is very nearly free (measured: 2 ms either way).
+        let poolSize = max(limit * 3, 60)
+        let lexical = try bm25Hits(query, scope: scope, limit: poolSize, database: database)
         guard let queryVector = embedder?.embed(query) else {
-            return Array(lexical.prefix(limit))
+            // Still through `fuse`, with nothing to fuse against: it is what
+            // applies the depth weight, and bm25-only is the path a machine
+            // with no sentence model takes — the one that most needs the
+            // one-line traces kept off the top.
+            return fuse(lexical, [], limit: limit)
         }
-        let semantic = try cosineHits(queryVector, filters: filters,
+        let semantic = try cosineHits(queryVector, scope: scope,
                                       limit: poolSize, database: database)
         return fuse(lexical, semantic, limit: limit)
     }
 
     static func bm25Hits(
-        _ query: String, filters: Filters, limit: Int, database: ShifuDatabase
+        _ query: String, scope: VaultLibrary.Scope, limit: Int, database: ShifuDatabase
     ) throws -> [Hit] {
         guard let match = ftsQuery(from: query) else { return [] }
-        let conditions = ["vault_fts MATCH ?"] + filters.conditions
-        let arguments = [match] + filters.arguments + [limit]
+        let arguments: [any DatabaseValueConvertible] = [match] + scope.arguments + [limit]
         return try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT vi.note_id, vi.path, vi.kind, vi.captured, vault_fts.title,
+                SELECT \(VaultLibrary.entryColumns),
                        snippet(vault_fts, 1, '«', '»', '…', 12) AS snip
                 FROM vault_fts
                 JOIN vault_index vi ON vi.id = vault_fts.rowid
-                WHERE \(conditions.joined(separator: " AND "))
+                \(VaultLibrary.entryJoins)
+                WHERE vault_fts MATCH ?\(scope.andClause)
                 ORDER BY bm25(vault_fts)
                 LIMIT ?
                 """, arguments: StatementArguments(arguments)
@@ -131,23 +115,29 @@ public enum VaultSearch {
         }
     }
 
-    /// Brute-force scan of vault_vectors — at 10k notes × 512 dims this is a
-    /// few ms; no ANN index until measured otherwise (§V8). Two phases so
-    /// the scan touches only (note_id, blob): full hit rows are fetched for
-    /// the top-k survivors alone.
+    /// Brute-force scan of vault_vectors. Two phases so the scan touches only
+    /// (note_id, blob): full hit rows are fetched for the top-k survivors
+    /// alone, and the scope's joins are hung on the scan only when a condition
+    /// actually names them (`Scope.needsJoins`).
+    ///
+    /// **Measured, since the estimate here was wrong:** 32 ms over 686 notes
+    /// on an M-series Mac — decoding one `Data` per row dominates, not the dot
+    /// product — so "a few ms at 10k notes" was optimistic by ~50×, and this
+    /// is what puts hybrid search at ~37 ms per keystroke. It is unchanged
+    /// from V4 and inside the §8 budget at today's size; an ANN index or a
+    /// packed single-blob matrix is the fix when a vault reaches thousands.
     static func cosineHits(
-        _ queryVector: [Float], filters: Filters, limit: Int, database: ShifuDatabase
+        _ queryVector: [Float], scope: VaultLibrary.Scope, limit: Int, database: ShifuDatabase
     ) throws -> [Hit] {
-        let whereClause = filters.conditions.isEmpty
-            ? "" : "WHERE " + filters.conditions.joined(separator: " AND ")
         let ranked: [String] = try database.queue.read { db in
             var scored: [(String, Float)] = []
             let cursor = try Row.fetchCursor(db, sql: """
                 SELECT vv.note_id, vv.embedding
                 FROM vault_vectors vv
                 JOIN vault_index vi ON vi.note_id = vv.note_id
-                \(whereClause)
-                """, arguments: StatementArguments(filters.arguments))
+                \(scope.needsJoins ? VaultLibrary.entryJoins : "")
+                \(scope.whereClause)
+                """, arguments: StatementArguments(scope.arguments))
             while let row = try cursor.next() {
                 let blob: Data = row["embedding"]
                 let score = blob.withUnsafeBytes { raw -> Float in
@@ -167,10 +157,11 @@ public enum VaultSearch {
         let byID: [String: Hit] = try database.queue.read { db in
             var out: [String: Hit] = [:]
             for row in try Row.fetchAll(db, sql: """
-                SELECT vi.note_id, vi.path, vi.kind, vi.captured, vault_fts.title,
+                SELECT \(VaultLibrary.entryColumns),
                        substr(vault_fts.body, 1, 160) AS snip
                 FROM vault_index vi
                 JOIN vault_fts ON vault_fts.rowid = vi.id
+                \(VaultLibrary.entryJoins)
                 WHERE vi.note_id IN (\(marks))
                 """, arguments: StatementArguments(ranked)) {
                 out[row["note_id"]] = hit(from: row)
@@ -180,8 +171,17 @@ public enum VaultSearch {
         return ranked.compactMap { byID[$0] }  // preserve cosine order
     }
 
-    /// Reciprocal-rank fusion: score = Σ 1/(60 + rank). When both lists carry
-    /// a note, the bm25 hit wins the display slot (its snippet is query-aware).
+    /// Reciprocal-rank fusion: score = Σ 1/(60 + rank), then scaled by how
+    /// much of a note there is to have matched.
+    ///
+    /// The depth weight is what keeps the result list honest. bm25 rewards a
+    /// short document for containing the term, and the vault's shortest
+    /// documents are the ~600 one-line work-note traces the compiler writes
+    /// for every task-day — so a search for "arxiv" ranked a nine-second
+    /// glance above the afternoon that was written up. Weighting by depth
+    /// (¼ for a trace, 1 for a note, 1¼ for a compiled document) reorders
+    /// within the pool without removing anything: a trace is still findable,
+    /// it just stops out-ranking the document that says what happened.
     static func fuse(_ lexical: [Hit], _ semantic: [Hit], limit: Int) -> [Hit] {
         var scores: [String: Double] = [:]
         var byID: [String: Hit] = [:]
@@ -194,20 +194,21 @@ public enum VaultSearch {
             if byID[hit.noteID] == nil { byID[hit.noteID] = hit }
         }
         return scores
-            .sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+            .map { (id: $0.key, score: $0.value * weight(byID[$0.key])) }
+            .sorted { ($0.score, $1.id) > ($1.score, $0.id) }
             .prefix(limit)
-            .compactMap { byID[$0.key] }
+            .compactMap { byID[$0.id] }
+    }
+
+    static func weight(_ hit: Hit?) -> Double {
+        switch hit?.entry.depth {
+        case .trace: return 0.25
+        case .document: return 1.25
+        case .note, nil: return 1
+        }
     }
 
     private static func hit(from row: Row) -> Hit {
-        Hit(
-            noteID: row["note_id"],
-            path: row["path"],
-            kind: FrontMatter.Kind(rawValue: row["kind"]) ?? .knowledge,
-            title: row["title"],
-            snippet: row["snip"],
-            captured: (row["captured"] as Int64?).map {
-                Date(timeIntervalSince1970: Double($0) / 1_000)
-            })
+        Hit(entry: VaultLibrary.entry(from: row), snippet: (row["snip"] as String?) ?? "")
     }
 }

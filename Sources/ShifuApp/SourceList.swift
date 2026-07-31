@@ -20,6 +20,7 @@ struct SourceList: View {
             case .newDeck: NewDeckContents()
             case .looseCards: LooseContents()
             case .merges: MergeContents()
+            case .note(let noteID): NoteContents(noteID: noteID)
             }
         }
         .frame(width: Instrument.railWidth)

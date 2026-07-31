@@ -240,18 +240,53 @@ the freshly assigned `activities.task_id` rows. Constraints:
 The Markdown tree stays the source of truth; SQLite gets a **disposable index**
 so the vault is queryable without ever locking users into the DB.
 
-- `vault_index` table: path, note id, kind, task_id, `deck_key`, captured,
-  content hash. Plus an FTS5 table over (title, body) with bm25 ranking.
-  `deck_key` mirrors the note's `deck:` frontmatter and is rebuildable from it
-  like every other column here — it is what makes deck membership, deck card
-  counts, and deck-scoped dedupe one indexed query each.
+- `vault_index` table: path, note id, kind, task_id, `task_key`, `deck_key`,
+  captured, title, summary, `duration_ms`, `words`, `sections`, content hash.
+  Plus an FTS5 table over (title, body) with bm25 ranking. Every column is
+  derived from the file, so the index stays disposable — `deck_key` mirrors
+  `deck:` and makes deck membership one indexed query; `words`/`sections` are
+  what `VaultLibrary.Depth` grades a body by (§4.1).
 - Incrementally maintained by `VaultStore.save` and a reconcile pass in each
   analyzer run (mtime + hash catches external edits from Obsidian et al.).
   `shifu vault reindex` rebuilds from zero; deleting the index loses nothing.
+  The app also reconciles once per launch (`LedgerStore.syncLibrary`) — it is
+  where the vault is *read*, and an hour-stale library is a library that
+  disagrees with its own files.
 - **CLI:** `shifu vault search <query> [--task] [--kind] [--since]`
   → ranked snippets with file paths.
-- **UI:** the *Scrolls* page is the search field; results open the note in-place, with
-  "Reveal in Finder" for editing elsewhere.
+- **UI:** the *Notes* page — see §4.1.
+
+### 4.1 Depth, and why the library needed it
+
+A read model (`VaultLibrary`) sits over the index: one `Entry` row for all
+three kinds, carrying the note's task, its dominant theme, and its **depth**.
+
+Depth is the load-bearing idea. `WorkNoteCompiler` writes a note per (task,
+day) whatever happened, so the vault's *majority* note is one deterministic
+line standing in for a nine-second glance — 605 of the dogfood vault's 654
+work notes. Two failures followed from ranking those beside real notes:
+
+- The Notes page counted `21`, because the count walked the tree with
+  `Note.parse`, which only accepts `kind: knowledge`. The tree held 686.
+- bm25 rewards a short document for containing the term, and those are the
+  shortest documents there are: searching "arxiv" returned six one-word
+  `arxiv.org` traces above the paper the query was about.
+
+So `Depth.of(kind:sections:words:)` grades a body — `trace` (the receipt),
+`note` (prose), `document` (a compiled write-up) — and:
+
+- the shelf's default floor is `note`, with the header saying how many were
+  hidden; nothing is deleted, and *Include traces* is one chip away;
+- `VaultSearch.fuse` scales each fused score by depth (¼ / 1 / 1¼), which
+  reorders within the result pool without removing anything;
+- **only a work note can be a trace.** A card exists because the user asked
+  for a deck and an overview because the task earned one; a terse one is still
+  deliberate.
+
+An overview is dated by its task's last activity, not by its `updated:` stamp
+(`VaultLibrary.occurredSQL`): it is rewritten in full on every change, so the
+stamp is a build time and dating eleven months-old efforts "today" is true of
+the file and false of the work.
 
 **Semantic search is a later phase** (§7): store an on-device sentence
 embedding (`NLEmbedding`, NaturalLanguage framework — no model download, no
@@ -365,12 +400,23 @@ caught up.
 
 ---
 
-## 6. UI (the Scrolls and Task log pages)
+## 6. UI (the Notes and Task log pages)
 
 Written when both were one Vault tab; the redesign (design.md §7) split them into
 stations on the trail, but the contents and their order are unchanged.
 
-1. **Search field** (§4) — now a page of its own, *Scrolls*.
+1. **Notes** (§4, §4.1) — a page of its own, and a *library* rather than a
+   search box. With nothing typed it is the shelf: every note the vault holds,
+   newest first, grouped under the day it belongs to, narrowed by four facets
+   (kind, depth, range, theme) that mean the same thing to the shelf and to
+   the ranked search. A row opens `NotePage`, which reads the note *and its
+   collections* — `VaultLibrary.Dossier`: the exact wall-clock stretches, the
+   raw blocks underneath while retention still holds them (design.md §3.5),
+   what else that day held, the same effort's notes around it, the cards the
+   day captured (or, for a card, the day that captured it), and the task and
+   theme it belongs to, both openable. That last part is the point: a
+   half-remembered phrase has to lead back to the stretch of time that made
+   it, or the vault is a folder rather than a memory.
 2. **Today** — compiled log, as today, but each row now opens its work note.
 3. **Tasks** — recent tasks with latest log line; the strongest few merge
    suggestions appear inline here (accept / dismiss), capped at
