@@ -1,312 +1,227 @@
 import ShifuCore
 import SwiftUI
 
-/// The Settings place (design.md §9), in the Instrument register: a label, its
-/// value in mono on the right, and one line underneath saying what it does. No
-/// boxes — a section is a rule and a heading. A place like any other rather
-/// than a separate window: the app is one instrument, and its dials are on it.
+/// The Settings place (design.md §9), as three columns rather than one scroll:
+/// a rail of sections, the section's dials, and — on a window with room for
+/// it — a column of live readings on the right.
 ///
-/// Rendered *from* `SettingsCatalog` rather than from hand-written rows: adding
-/// a numeric setting to the catalog makes it appear here, correctly bounded and
-/// labelled, with no change to this file. The one exception is Work Mode's own
-/// switch — live state, not a stored setting — which stands at the head of its
-/// section so the dials under it read as what the switch does.
+/// The rail is the change that matters. §7's minimalism rule says no settings
+/// page longer than one screen, and a single scrolling list stopped honouring
+/// that the moment the analyzer grew rates and model slots; you now hunted for
+/// the heartbeat past nine LLM fields. One section per screen restores it, and
+/// makes "where do I change X" a question the rail answers before you scroll.
+///
+/// The right-hand column answers the question a settings screen normally
+/// leaves hanging — *is this actually working* — with measured numbers rather
+/// than a restatement of the dials beside them (`SettingsDiagnostics`).
+///
+/// Still rendered *from* `SettingsCatalog`: adding a numeric setting to the
+/// catalog makes it appear in its section, correctly bounded and labelled,
+/// with no change to this file. The exceptions are the things that aren't
+/// stored settings — Work Mode's own switch, the exclusion table, and About's
+/// facts about the disk — which each section adds under its catalog rows.
 struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
 
+    /// Below this, the readings column costs the dials more room than it is
+    /// worth and the help text under every label wraps to a paragraph. The
+    /// window's own 960 minimum lands here, so the column is a reward for a
+    /// larger window rather than something a small one has to live without.
+    private static let panelMinWidth: CGFloat = 420
+
     var body: some View {
-        VStack(spacing: 0) {
-            PageHead(
-                "Settings",
-                subtitle: "Capture and analysis changes reach the running daemon "
-                    + "without a restart.")
-            PageBody {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(
-                        Array(SettingsSection.allCases.enumerated()), id: \.element
-                    ) { index, section in
-                        SettingsGroup(section: section, ruled: index > 0)
-                    }
-                    if let error = store.lastError {
-                        Text(error)
-                            .font(Instrument.sans(11.5))
-                            .foregroundStyle(Instrument.overdue)
-                            .padding(.top, 10)
-                    }
+        GeometryReader { geometry in
+            let showsReadings =
+                geometry.size.width - SettingsRail.width - SettingsReadings.width
+                    >= Self.panelMinWidth
+            HStack(spacing: 0) {
+                SettingsRail()
+                VerticalRule()
+                SettingsPanel(section: store.section)
+                    .frame(maxWidth: .infinity)
+                if showsReadings {
+                    VerticalRule()
+                    SettingsReadings()
                 }
-                // Full-bleed rows would strand each value a window's width from
-                // its label; the page is a column of dials, not a table.
-                .frame(maxWidth: 560, alignment: .leading)
             }
         }
         .onAppear { store.load() }
     }
 }
 
-/// One catalog section, or nothing at all when everything in it is hidden.
-/// `ruled` separates it from the section above; the first sits directly under
-/// the page head's own rule.
-private struct SettingsGroup: View {
+/// The column separator. `Rule` is a horizontal hairline; between columns the
+/// same edge has to stand on end.
+struct VerticalRule: View {
+    var body: some View {
+        Rectangle()
+            .fill(Instrument.edge)
+            .frame(width: 1)
+            .frame(maxHeight: .infinity)
+    }
+}
+
+// MARK: - The section rail
+
+/// Which part of the instrument you are adjusting. A second rail inside the
+/// page rather than a nesting of the source list: the source list says which
+/// *place* you are in, and Settings is one place — the same relationship a
+/// task's contents have with it.
+private struct SettingsRail: View {
     @EnvironmentObject private var store: SettingsStore
-    let section: SettingsSection
-    let ruled: Bool
+
+    static let width: CGFloat = 150
 
     var body: some View {
-        let ints = SettingsCatalog.ints.filter { $0.section == section }
-        let choices = SettingsCatalog.choices.filter { $0.section == section }
-        let texts = SettingsCatalog.texts.filter {
-            $0.section == section && store.isVisible($0)
-        }
-        let lists = SettingsCatalog.domainLists.filter { $0.section == section }
-        if section == .workMode || !ints.isEmpty || !choices.isEmpty
-            || !texts.isEmpty || !lists.isEmpty {
+        VStack(alignment: .leading, spacing: 0) {
+            Eyebrow("Settings", tracking: 1.2)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+            ForEach(SettingsSection.allCases, id: \.self) { section in
+                SettingsRailRow(section: section, selected: store.section == section)
+            }
+            Spacer(minLength: 12)
             VStack(alignment: .leading, spacing: 0) {
-                if ruled {
-                    Rule(weight: .section)
-                        .padding(.top, 6)
-                }
-                Eyebrow(section.rawValue, tracking: 1.2)
-                    .padding(.top, 16)
+                Rule(weight: .section)
                     .padding(.bottom, 8)
-                if section == .workMode { WorkModeRow() }
-                ForEach(ints) { IntSettingRow(setting: $0) }
-                ForEach(choices) { ChoiceSettingRow(setting: $0) }
-                ForEach(texts) { TextSettingRow(setting: $0) }
-                ForEach(lists) { DomainListRow(setting: $0) }
-                if section == .analysis, let spend = store.llmSpendToday {
-                    LLMSpendRow(spend: spend)
+                // The promise that governs the section you are in — the one
+                // thing a settings screen has to say and normally buries in a
+                // release note.
+                Text(store.section.promise)
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+        .padding(.top, 14)
+        .frame(width: SettingsRail.width, alignment: .leading)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Instrument.rail.opacity(0.55))
+    }
+}
+
+/// One rail row. Filled rather than tinted when selected: this rail sits
+/// beside the source list, whose selection is a tint, and two tints one column
+/// apart read as two selections in the same list.
+private struct SettingsRailRow: View {
+    @EnvironmentObject private var store: SettingsStore
+    let section: SettingsSection
+    let selected: Bool
+
+    var body: some View {
+        Button {
+            store.section = section
+        } label: {
+            Text(section.rawValue)
+                .font(Instrument.sans(13, selected ? .medium : .regular))
+                .foregroundStyle(selected ? Instrument.solidInk : Instrument.railInk)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    selected ? Instrument.solidFill : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - The panel
+
+/// One section: its head, then its dials — catalog rows first, then whatever
+/// the section carries that isn't a stored setting.
+private struct SettingsPanel: View {
+    @EnvironmentObject private var store: SettingsStore
+    let section: SettingsSection
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PageHead(section.rawValue, subtitle: section.summary)
+            PageBody {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Work Mode's switch is live state, not a stored setting,
+                    // so it stands at the head of its section: the dials under
+                    // it read as what the switch does.
+                    if section == .workMode { WorkModeRow() }
+                    // Privacy's exclusions come *before* its one catalog
+                    // setting: the section is about what Shifu refuses to
+                    // look at, and opening with "how long text is kept"
+                    // answers a question nobody arrived with.
+                    if section == .privacy { PrivacyRows() }
+                    ForEach(SettingsCatalog.ints.filter { $0.section == section }) {
+                        IntSettingRow(setting: $0)
+                    }
+                    ForEach(SettingsCatalog.choices.filter { $0.section == section }) {
+                        ChoiceSettingRow(setting: $0)
+                    }
+                    ForEach(visibleTexts) { TextSettingRow(setting: $0) }
+                    ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
+                        DomainListRow(setting: $0)
+                    }
+                    extras
+                    if let error = store.lastError {
+                        Text(error)
+                            .font(Instrument.sans(11.5))
+                            .foregroundStyle(Instrument.overdue)
+                            .padding(.top, 12)
+                    }
                 }
             }
         }
     }
+
+    private var visibleTexts: [TextSetting] {
+        SettingsCatalog.texts.filter { $0.section == section && store.isVisible($0) }
+    }
+
+    /// What a section carries beyond the catalog, under its catalog rows. Each
+    /// is a separate `if` rather than one switch: a reused `@ViewBuilder`
+    /// switch over a section is one of the shapes that crashes this app's
+    /// SwiftUI IRGen.
+    @ViewBuilder private var extras: some View {
+        if section == .capture { CaptureLadderRow() }
+        if section == .about { AboutRows() }
+    }
 }
 
-/// Work Mode's switch. Live state — the `work_mode` control file the daemon
-/// watches — not a catalog setting, so it reads through `LedgerStore` like the
-/// rail's copy of the same switch and there is nothing to store here.
+/// Work Mode's switch — the `work_mode` control file the daemon watches, not a
+/// catalog setting, so it reads through `LedgerStore` like the rail's copy of
+/// the same switch and there is nothing to store here.
 private struct WorkModeRow: View {
     @EnvironmentObject private var ledger: LedgerStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 12) {
-                Text("Work Mode")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                Spacer(minLength: 0)
-                Figure(
-                    ledger.workModeOn ? "on" : "off",
-                    color: Instrument.secondary)
+        SettingRow(
+            "Work Mode",
+            help: "On until you turn it off — it doesn't expire. The same switch sits "
+                + "at the source list's foot and in the menu bar, and all three show "
+                + "the same state because all three read the one control file."
+        ) {
+            HStack(spacing: 10) {
+                Figure(ledger.workModeOn ? "on" : "off", color: Instrument.secondary)
                 ToggleSwitch(isOn: ledger.workModeOn) { ledger.toggleWorkMode() }
             }
-            SettingHelp(
-                "A gentle glow when a distracting site holds the screen. The same "
-                    + "switch sits at the rail's foot and in the menu bar.")
-        }
-        .accessibilityLabel("Work Mode")
-    }
-}
-
-/// What today's analysis has cost, at the rates set just above it. A reading,
-/// not a dial — the only row here the user can't turn — so it carries no
-/// control and stands last in its section. Absent entirely on a day nothing
-/// was billed, rather than reading "$0.000" at someone who hasn't opted in.
-private struct LLMSpendRow: View {
-    let spend: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 12) {
-                Text("LLM spend today")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                Spacer(minLength: 0)
-                Figure(spend, color: Instrument.secondary)
-            }
-            SettingHelp("An estimate: today's token counts priced at the rates "
-                + "above. Analysis is never stopped on cost.")
+            .accessibilityLabel("Work Mode")
         }
     }
 }
 
-/// The help line every setting carries. Kept as its own view so no row can
-/// forget it — a number with no explanation is how a settings screen rots.
-private struct SettingHelp: View {
-    let text: String
-
-    init(_ text: String) { self.text = text }
-
+/// The capture ladder, stated (§3.2). A reading with no dial, because the
+/// rungs are not configurable and the thing worth saying about them — that the
+/// screenshot is never written down — is an invariant, not a preference.
+private struct CaptureLadderRow: View {
     var body: some View {
-        Text(text)
-            .font(Instrument.sans(11.5))
-            .foregroundStyle(Instrument.muted)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 12)
-    }
-}
-
-/// Stepper bounded by the descriptor's own range — the UI states no limits of
-/// its own, so it can't drift from what the daemon enforces.
-private struct IntSettingRow: View {
-    @EnvironmentObject private var store: SettingsStore
-    let setting: IntSetting
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 12) {
-                Text(setting.title)
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                Spacer(minLength: 0)
-                Figure(setting.display(store.value(for: setting)), color: Instrument.secondary)
-                HStack(spacing: 0) {
-                    nudge("−", by: -setting.step)
-                    Rectangle().fill(Instrument.edge).frame(width: 1)
-                    nudge("+", by: setting.step)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Instrument.edge, lineWidth: 1)
-                }
-            }
-            SettingHelp(setting.help)
+        SettingRow(
+            "Screenshots", note: "never saved",
+            help: "Shifu reads window titles and accessibility text first, and only "
+                + "falls back to a screenshot for apps that expose no text. The bitmap "
+                + "lives in memory for the one OCR call and is never written to disk."
+        ) {
+            EmptyView()
         }
-    }
-
-    private func nudge(_ glyph: String, by step: Int) -> some View {
-        let value = store.value(for: setting)
-        let next = value + step
-        return Button {
-            store.binding(for: setting).wrappedValue = next
-        } label: {
-            Text(glyph)
-                .font(Instrument.sans(12))
-                .foregroundStyle(Instrument.railInk)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 1)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!setting.range.contains(next))
-        .opacity(setting.range.contains(next) ? 1 : 0.35)
-    }
-}
-
-/// The descriptor's own options as a segmented strip; unknown stored values
-/// render as the default because reads normalize.
-private struct ChoiceSettingRow: View {
-    @EnvironmentObject private var store: SettingsStore
-    let setting: ChoiceSetting
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 12) {
-                Text(setting.title)
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                Spacer(minLength: 0)
-                SegmentedBar(
-                    options: setting.options.map { ($0.label, $0.value) },
-                    selection: store.binding(for: setting))
-            }
-            SettingHelp(setting.help)
-        }
-    }
-}
-
-/// Free-text row; secure settings (API keys) render as a SecureField.
-private struct TextSettingRow: View {
-    @EnvironmentObject private var store: SettingsStore
-    let setting: TextSetting
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 12) {
-                Text(setting.title)
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                    .frame(width: 108, alignment: .leading)
-                Group {
-                    if setting.secure {
-                        SecureField(setting.placeholder, text: store.binding(for: setting))
-                    } else {
-                        TextField(setting.placeholder, text: store.binding(for: setting))
-                    }
-                }
-                .textFieldStyle(.plain)
-                .font(Instrument.mono(12))
-                .foregroundStyle(Instrument.secondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Instrument.edge, lineWidth: 1)
-                }
-            }
-            SettingHelp(setting.help)
-        }
-    }
-}
-
-/// Add-row plus a deletable list: type a value, Add appends it, remove drops it.
-private struct DomainListRow: View {
-    @EnvironmentObject private var store: SettingsStore
-    let setting: DomainListSetting
-    @State private var draft = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(setting.title)
-                .font(Instrument.sans(13))
-                .foregroundStyle(Instrument.ink)
-            Text(setting.help)
-                .font(Instrument.sans(11.5))
-                .foregroundStyle(Instrument.muted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 8)
-            HStack(spacing: 8) {
-                TextField(setting.placeholder, text: $draft)
-                    .textFieldStyle(.plain)
-                    .font(Instrument.mono(12))
-                    .foregroundStyle(Instrument.secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Instrument.edge, lineWidth: 1)
-                    }
-                    .onSubmit(add)
-                OutlineButton(title: "Add", action: add)
-                    .opacity(setting.normalize(draft) == nil ? 0.35 : 1)
-                    .allowsHitTesting(setting.normalize(draft) != nil)
-            }
-            .padding(.bottom, 8)
-
-            let domains = store.domains(for: setting)
-            if domains.isEmpty {
-                Text("No sites yet.")
-                    .font(Instrument.sans(11.5))
-                    .foregroundStyle(Instrument.ghost)
-                    .padding(.bottom, 12)
-            } else {
-                ForEach(domains, id: \.self) { domain in
-                    Rule()
-                    HStack {
-                        Figure(domain, size: 12, color: Instrument.secondary)
-                        Spacer()
-                        InlineLink("remove") { store.remove(domain, from: setting) }
-                    }
-                    .padding(.vertical, 4)
-                }
-                Spacer().frame(height: 12)
-            }
-        }
-    }
-
-    private func add() {
-        store.add(draft, to: setting)
-        draft = ""
     }
 }

@@ -514,7 +514,11 @@ This section is load-bearing; a screen watcher lives or dies on trust.
 
 Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `themes` / `task_logs` (§5.3), `decks` / `deck_suggestions` (§5.2), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences), plus the disposable `vault_index` / `vault_fts` / `vault_vectors` search index — rebuildable from the Markdown, which is the source of truth.
 
-User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Work Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched.
+User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Work Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched. Raw-text retention is a catalog setting too (`privacy.text_retention_days`, 1–90, default 14) and the analyzer reads it on every run, so shortening it takes effect at the next scrub rather than at the next release.
+
+**Settings is one place with a rail of its own** (`SettingsView`): the `SettingsSection` cases *are* that rail, in declaration order, and each carries its own summary and the one guarantee that governs it. This is what keeps §7's "no settings page longer than one screen" true now that the analyzer alone has nine dials. Three columns: sections, the section's rows — every control landing on one right-hand edge, so the page reads as a panel of dials rather than a form — and, on a window wide enough for it, a column of **measured** readings (`SettingsDiagnostics`: today's captures split by ladder rung, what the LLM sent, database size). Nothing in that column restates a setting; it exists to answer "is this actually working", which is the one question a settings screen normally cannot. It deliberately does *not* report the daemon's TCC grants: `shifud` is a separate binary with its own identity and this process cannot read them, and a green tick we cannot see would be the one lie on the page whose whole job is to be believed.
+
+Exclusions (§8) are not settings — they live in the `exclusions` table, merged with the hardcoded defaults at capture time — but the Privacy section is where they are edited, and `Exclusions.add/remove/userValues` is the only writer. Adding something already built in is a no-op rather than a row, so nothing in the user's list carries a "remove" that would not actually remove the exclusion.
 
 ---
 
@@ -547,6 +551,31 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
 ---
 
 ## 12. Future Directions (explicitly out of v1)
+
+- **The rest of the Settings readings column (§9)** — the design it was built
+  from also shows daemon uptime, CPU and RSS, the last analysis time, the
+  daemon's own Accessibility/Screen Recording grants, and a preview of the last
+  payload sent. All four need something that does not exist: a heartbeat row
+  `shifud` writes with its own pid and grant state (the app cannot read another
+  binary's TCC), a stamp the analyzer writes on every run, and a retained
+  sample of the last request body — which is a new place redacted text would
+  sit on disk and wants its own retention decision before it is built. Today's
+  capture split is the honest proxy for all of them and cost nothing new.
+- **Redaction counters on the Privacy row (§8)** — the design shows KEY/JWT/
+  CARD/PEM hit counts beside the choke point. `Redactor.redact` returns only
+  the redacted string; counting means a per-pattern tally threaded out of the
+  hot write path and somewhere to accumulate it. Worth doing when there is a
+  reason to doubt the patterns, not before.
+- **Export and delete-everything from Privacy (§8)** — `DeletionTools` already
+  backs `shifu forget`, so this is a UI affordance over existing machinery.
+  Deliberately not wired to a button yet: irreversible bulk deletion wants a
+  confirmation design (what exactly goes, what survives, how it is undone) that
+  is more work than the button.
+- **One "Models" row instead of two (§9)** — the design pairs the fast and
+  reasoning model fields under a single label with sub-captions. Better
+  reading, but it means the Settings page stops being a pure render of
+  `SettingsCatalog` and starts hand-arranging keys, which is the property that
+  makes adding a setting free. Wants a `group:` on `TextSetting` first.
 
 - **Retry backoff for LLM attempt credits (§4.2)** — attempts are spent on
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
