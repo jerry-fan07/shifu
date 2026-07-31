@@ -16,9 +16,14 @@ import Testing
         #expect(applied == Self.migrationNames)
     }
 
+    /// "v<n>" or "v<n>-<name>". The optional name is what keeps two branches
+    /// that both pick the next number from silently skipping each other's
+    /// migration — GRDB keys `grdb_migrations` on the whole string, so "v19"
+    /// and "v19-llm-usage" coexist while two bare "v19"s do not. The number
+    /// still has to be the next one, so the sequence stays readable.
     @Test func migrationsAreNamedInVersionOrderWithNoGapsOrRepeats() throws {
         let versions = Self.migrationNames.map { name -> Int in
-            Int(name.dropFirst()) ?? -1
+            Int(name.dropFirst().prefix { $0.isNumber }) ?? -1
         }
         #expect(Self.migrationNames.allSatisfy { $0.hasPrefix("v") })
         #expect(versions == Array(1...versions.count))

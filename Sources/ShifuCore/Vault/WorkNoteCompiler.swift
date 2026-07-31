@@ -83,10 +83,19 @@ public enum WorkNoteCompiler {
     /// Runs after TaskGrouper (so `activities.task_id` is assigned) and after
     /// KnowledgeExtractor (so the day's knowledge notes are indexed for
     /// `## Captured`). Works without a backend — notes ship deterministic-only.
+    ///
+    /// `regenerateOpenDay: false` throttles the one day still in progress
+    /// (the day containing `to`): an actively-worked task's hash changes on
+    /// every hourly pass, so without the throttle its narrative re-bills up
+    /// to ~14×/day to describe an afternoon that isn't over. Completed days
+    /// keep the pure hash gate either way, so end-of-day prose is never
+    /// skipped — the throttled day just reads a few hours stale until the
+    /// caller's gate (main.swift, `LLMStageGate`) opens or the day completes.
     @discardableResult
     public static func run(
         database: ShifuDatabase, vault: VaultStore, backend: (any LLMBackend)?,
-        from: Int64, to: Int64, calendar: Calendar = .current
+        from: Int64, to: Int64, regenerateOpenDay: Bool = true,
+        calendar: Calendar = .current
     ) async throws -> Summary {
         let spans: [(start: Int64, end: Int64)] = try await database.queue.read { db in
             try Row.fetchAll(db, sql: """
@@ -101,8 +110,9 @@ public enum WorkNoteCompiler {
 
         var summary = Summary()
         for day in days {
-            let pendings = try gather(day: day, database: database, vault: vault,
-                                      calendar: calendar, minMs: minMs)
+            let pendings = try gather(
+                day: day, database: database, vault: vault, calendar: calendar,
+                minMs: minMs, throttleNarratives: !regenerateOpenDay && day.end > to)
             for var pending in pendings {
                 if pending.needsNarrative, let backend,
                    let prose = try? await narrative(for: pending, backend: backend),
@@ -283,9 +293,15 @@ public enum WorkNoteCompiler {
 
     /// Builds the day's pending notes: aggregates per task, computes the
     /// content hash, and decides prose carry-over vs regeneration.
+    ///
+    /// `throttleNarratives` defers a changed day's prose instead of queueing
+    /// it: the old prose *and the old hash* carry over, so the note still
+    /// reads "changed" to whichever later pass is allowed to regenerate.
+    /// Writing the new hash here would be the silent failure — the throttled
+    /// regeneration would look already-done and never happen.
     static func gather(
         day: (start: Int64, end: Int64), database: ShifuDatabase, vault: VaultStore,
-        calendar: Calendar, minMs: Int64
+        calendar: Calendar, minMs: Int64, throttleNarratives: Bool = false
     ) throws -> [Pending] {
         let fetched = try fetchDay(day: day, database: database)
         guard !fetched.rows.isEmpty else { return [] }
@@ -302,6 +318,7 @@ public enum WorkNoteCompiler {
             // on every unchanged-day rebuild — and the hash gate would then
             // never regenerate it, because the day is by definition unchanged.
             let unchanged = old?.contentHash == hash
+            let deferred = !unchanged && throttleNarratives
             let tier = agg.tier
             let samples = agg.samples
                 .map { String($0.prefix(tier.sampleChars)) }
@@ -314,13 +331,14 @@ public enum WorkNoteCompiler {
                 durationMs: agg.durationMs,
                 sources: agg.sources,
                 sessions: sessions(from: agg.spans, formatter: times),
-                contentHash: hash,
+                contentHash: deferred ? (old?.contentHash ?? 0) : hash,
                 summary: TaskGrouper.summaryLine(sources: agg.sources, topics: agg.topics),
-                sessionsProse: unchanged ? old?.sessionsProse : nil,
-                detailProse: unchanged ? old?.detailProse : nil,
+                sessionsProse: unchanged || deferred ? old?.sessionsProse : nil,
+                detailProse: unchanged || deferred ? old?.detailProse : nil,
                 capturedLinks: wikiLinks(fetched.linksByTask[taskID] ?? []))
             let substantial = agg.durationMs >= minMs && !samples.isEmpty
-            return Pending(note: note, needsNarrative: !unchanged && substantial,
+            return Pending(note: note,
+                           needsNarrative: !unchanged && substantial && !throttleNarratives,
                            tier: tier, samples: samples)
         }
     }
@@ -341,89 +359,6 @@ public enum WorkNoteCompiler {
         }
     }
 
-}
-
-// MARK: - Narrative (LLM, optional — vault-features.md §2.1)
-
-extension WorkNoteCompiler {
-    static func prompt(taskName: String, day: String, sessions: [WorkNote.Session],
-                       samples: String, tier: Tier = .light) -> String {
-        let spans = sessions.map { "\($0.start)–\($0.end)" }.joined(separator: ", ")
-        let bullets = """
-        Summarize one day (\(day)) of work on the task "\(taskName)".
-        Session times: \(spans)
-        Write 1-3 markdown bullets, each formatted
-        "**HH:MM–HH:MM** — what happened, what was accomplished."
-        """
-        guard tier == .detailed else {
-            return """
-            \(bullets)
-            Use ONLY the screen-text samples below as evidence. Respond with ONLY the bullets.
-
-            Screen-text samples:
-            \(samples)
-            """
-        }
-        return """
-        \(bullets)
-        Then, after the bullets, write a section that starts with the exact line
-        "## Notes" and documents the day under these sub-headings:
-        "### What was worked on" — 2-5 sentences of what the work actually was.
-        "### Learned / decided" — bullets, each with the reason behind it.
-        "### Problems → fixes" — bullets pairing what went wrong with what fixed it;
-        omit this whole sub-heading if the day had no problems.
-        Write documentation someone could read months from now to understand this day.
-        No flashcards, no quiz questions.
-        Use ONLY the screen-text samples below as evidence — do not invent anything
-        they don't show.
-
-        Screen-text samples:
-        \(samples)
-        """
-    }
-
-    /// The `## Notes` header the detailed prompt is told to emit, and the seam
-    /// the response is split on.
-    static let detailHeader = "\n## Notes"
-
-    /// Splits a detailed response into its two sections. A model that ignored
-    /// the header instruction has written session bullets and nothing else,
-    /// which is exactly the light shape — so it degrades rather than fails.
-    static func split(_ response: String) -> (sessions: String, detail: String?) {
-        guard let range = response.range(of: detailHeader) else {
-            return (response.trimmingCharacters(in: .whitespacesAndNewlines), nil)
-        }
-        let detail = response[range.upperBound...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (String(response[..<range.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-                detail.isEmpty ? nil : detail)
-    }
-
-    /// One prompt per task-day, sized to the backend's window (invariant 7):
-    /// samples are truncated rather than the day split — quality over
-    /// coverage, the deterministic line 1 always exists.
-    static func narrative(
-        for pending: Pending, backend: any LLMBackend
-    ) async throws -> (sessions: String, detail: String?) {
-        var samples = pending.samples
-        func render() -> String {
-            prompt(taskName: pending.note.taskName, day: pending.note.day,
-                   sessions: pending.note.sessions, samples: samples, tier: pending.tier)
-        }
-        var text = render()
-        // The tier's own answer need, floored at the backend's thinking
-        // headroom (`responseReserve`) so a reasoning slot can't be starved.
-        while !samples.isEmpty,
-              LLMTokens.estimate(text) + backend.responseReserve(pending.tier.responseTokens)
-                > backend.contextWindowTokens {
-            samples = String(samples.prefix(samples.count * 2 / 3))
-            text = render()
-        }
-        let response = try await backend.complete(
-            prompt: text, maxTokens: pending.tier.responseTokens)
-        return split(response)
-    }
 }
 
 // MARK: - Helpers

@@ -39,6 +39,12 @@ public enum LedgerBuilder {
         /// a rebuild that dropped it would silently un-protect the task from
         /// prune and auto-merge an hour after the user filed it.
         var themeUserSet: Bool
+        /// The block card (v20). Dropping it wouldn't lose data outright —
+        /// CardBuilder would rebuild it — but every card in the window would
+        /// be re-billed on every hourly pass, which is the exact spend the
+        /// card exists to end.
+        var card: String?
+        var cardAttempts: Int
     }
 
     /// Rebuilds all activities overlapping [from, to). Blocks whose spans are
@@ -97,13 +103,15 @@ public enum LedgerBuilder {
         let rows = try Row.fetchAll(db, sql: """
             SELECT started_at, ended_at, app_bundle, category, topic,
                    confidence, source, llm_attempts,
-                   sem_key, sem_attempts, theme_key, theme_attempts, theme_user_set
+                   sem_key, sem_attempts, theme_key, theme_attempts, theme_user_set,
+                   card, card_attempts
             FROM activities
             WHERE ended_at > ? AND started_at < ?
               AND (source = 'llm' OR llm_attempts > 0
                    OR sem_key IS NOT NULL OR sem_attempts > 0
                    OR theme_key IS NOT NULL OR theme_attempts > 0
-                   OR theme_user_set = 1)
+                   OR theme_user_set = 1
+                   OR card IS NOT NULL OR card_attempts > 0)
             """, arguments: [from, to])
         var carried: [SpanKey: CarriedState] = [:]
         for row in rows {
@@ -121,7 +129,9 @@ public enum LedgerBuilder {
                 semAttempts: row["sem_attempts"],
                 themeKey: row["theme_key"],
                 themeAttempts: row["theme_attempts"],
-                themeUserSet: row["theme_user_set"]
+                themeUserSet: row["theme_user_set"],
+                card: row["card"],
+                cardAttempts: row["card_attempts"]
             )
         }
         return carried
@@ -170,6 +180,11 @@ public enum LedgerBuilder {
                 SET theme_key = ?, theme_attempts = ?, theme_user_set = ? WHERE id = ?
                 """, arguments: [prior.themeKey, prior.themeAttempts,
                                  prior.themeUserSet, sessionID])
+        }
+        if let prior, prior.card != nil || prior.cardAttempts > 0 {
+            try db.execute(
+                sql: "UPDATE activities SET card = ?, card_attempts = ? WHERE id = ?",
+                arguments: [prior.card, prior.cardAttempts, sessionID])
         }
         if !observationIDs.isEmpty {
             let placeholders = databaseQuestionMarks(count: observationIDs.count)

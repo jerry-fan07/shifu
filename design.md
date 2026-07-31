@@ -548,6 +548,21 @@ User-tunable settings are declared once in `SettingsCatalog` (key, default, boun
 
 ## 12. Future Directions (explicitly out of v1)
 
+- **Retry backoff for LLM attempt credits (§4.2)** — attempts are spent on
+  consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
+  would spread them, but the closed-block gate plus the cap already bound the
+  waste to two extra calls per stubborn block; not worth a timestamp column.
+- **Cross-run prompt-cache alignment as its own effort (§4.2)** — rosters now
+  render in stable key order, which is the free win. Going further (quantizing
+  roster stats, freezing block rendering across attempts) chases input-token
+  discounts on prompts that card evidence already made small; revisit only if
+  `llm_usage` shows cache misses dominating a real bill.
+- **Card-fed light-tier work notes and radar/deck evidence (§5.3)** — cards
+  could stand in for raw screen-text in the light day-note prompt and the
+  weekly evidence dossiers. After the open-day throttle those stages are
+  pennies a day, and bullets written from raw text read better than bullets
+  written from gists — swap only if the meter says otherwise.
+
 - **Cross-platform core**: extract sessionization/classification/SRS/mining into a Rust core with platform-specific capture shims (Windows: `Windows.Graphics.Capture` + UIA; Linux: wayland portals) — this is where Rust earns its place.
 - Browser extension for exact URL + selection-level capture where AX falls short.
 - Calendar/task integration to label blocks with intended work ("was I doing what I planned?").

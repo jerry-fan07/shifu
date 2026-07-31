@@ -206,11 +206,11 @@ extension ShifuDatabase {
 
         migrator.registerMigration("v10") { db in
             // Bounds LLM re-billing on blocks that never clear the confidence
-            // floor (design.md §4.2, §12): AmbiguousClassifier skips a block
-            // once it has been attempted this many times, until the block's
-            // text changes (a changed span resets the count via the rebuild
-            // carry). Without this, an unchanged window re-bills the same
-            // low-confidence blocks every run.
+            // floor (design.md §4.2, §12): the tier-2 classifier skipped a block
+            // once it had been attempted this many times. The classifier is
+            // gone (CardBuilder and its v20 `card_attempts` replaced it), so
+            // the column is inert like v4's `extracted` — migrations are
+            // append-only.
             try db.alter(table: "activities") { table in
                 table.add(column: "llm_attempts", .integer).notNull().defaults(to: 0)
             }
@@ -415,6 +415,62 @@ extension ShifuDatabase {
         // split for file length only. Order is registration order, so the
         // call sits exactly where v18 does in the sequence.
         registerDeckMigrations(into: &migrator)
+
+        migrator.registerMigration("v22-llm-usage") { db in
+            // What the analyzer's LLM calls cost, in tokens (LLMUsage.swift).
+            // The provider bills tokens and reports them in every response;
+            // read once and thrown away, they leave "what did today cost"
+            // unanswerable after the fact.
+            //
+            // The identifier carries a name, unlike v1–v18, because the bare
+            // number is the trap v18's comment describes and it has already
+            // sprung: the dogfood database had a "v19" (plus v20, v21) applied
+            // from branches that hadn't landed yet, so a bare "v19" would have
+            // been silently skipped. Number-and-name from here on — the number
+            // places it in the sequence, the name makes a collision between
+            // two branches impossible.
+            //
+            // Those branches have since landed as v19–v21, so this is v22: the
+            // name kept the collision from being silent, and renumbering is
+            // what keeps the sequence honest. The guard below is the cost of
+            // that rename — GRDB keys `grdb_migrations` on the whole string, so
+            // to a database that already ran "v19-llm-usage" this reads as a
+            // brand-new migration and would fail on the table it built itself.
+            //
+            // One row per response, not a per-day counter: a daily row needs a
+            // local-midnight key, and those strand duplicates when the machine
+            // changes time zone (the `task_logs` bug).
+            guard try !db.tableExists("llm_usage") else { return }
+            try db.create(table: "llm_usage") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("at_ms", .integer).notNull()
+                table.column("model", .text).notNull()
+                // Input tokens, cached ones included — the split is what makes
+                // an estimate honest, a hit billing at a fraction of a miss.
+                table.column("prompt_tokens", .integer).notNull()
+                table.column("cached_prompt_tokens", .integer).notNull().defaults(to: 0)
+                table.column("completion_tokens", .integer).notNull()
+            }
+            try db.create(index: "idx_llm_usage_at", on: "llm_usage", columns: ["at_ms"])
+        }
+
+        migrator.registerMigration("v23-block-cards") { db in
+            // The block card (CardBuilder): one fast-model pass distills each
+            // closed block into compact structured JSON — category, topic,
+            // entities, gist — and every later LLM stage renders the card
+            // into its prompt instead of re-sampling raw OCR text. One JSON
+            // column rather than per-field columns because cards are only
+            // ever rendered, never filtered by SQL; like `signature` (v8) it
+            // is durable derived text that outlives raw-text retention.
+            // Number-and-name, and renumbered from "v20-block-cards", both for
+            // the reasons v22 spells out — including its guard.
+            guard try !db.columns(in: "activities").contains(where: { $0.name == "card" })
+            else { return }
+            try db.alter(table: "activities") { table in
+                table.add(column: "card", .text)
+                table.add(column: "card_attempts", .integer).notNull().defaults(to: 0)
+            }
+        }
 
         return migrator
     }

@@ -12,13 +12,19 @@ import GRDB
 /// grouped mechanically (§10). Assignments are expensive derived state, so
 /// `LedgerBuilder` carries them across rebuilds by span identity, and blocks
 /// the model declines to place burn one of `maxAttempts` credits — mirroring
-/// `AmbiguousClassifier` — so an unchanged window stops billing.
+/// `CardBuilder` — so an unchanged window stops billing.
 ///
 /// What the model is shown — the weighted roster, the already-grouped blocks
 /// around a batch, and each block's sampled evidence — lives in
 /// `SemanticTaskEvidence.swift`; this file is the pipeline around it.
 public enum SemanticTaskGrouper {
     public static let confidenceFloor = 0.6
+    /// Minting a task is held to a higher bar than joining one: the hourly
+    /// pass runs on the fast slot, and a mistaken join is one mislabeled
+    /// block while a mistaken mint is a roster entry every later batch is
+    /// invited to reuse. Below this, the block waits — the daily
+    /// reconciliation (TaskReconciler) audits what does get minted.
+    public static let newTaskConfidenceFloor = 0.75
     public static let maxAttempts = 3
     /// Blocks shorter than this stay mechanically grouped — a 40-second glance
     /// carries too little intent to be worth tokens.
@@ -56,7 +62,9 @@ public enum SemanticTaskGrouper {
 
     /// The evidence for one block, as sent to the model. Titles and text come
     /// from `observations`, which `ObservationRecorder` redacted before disk;
-    /// `urls` are re-redacted on the way out (`urlToken`).
+    /// `urls` are re-redacted on the way out (`urlToken`). A block with a
+    /// `card` carries no titles or text at all — the card *is* its evidence,
+    /// ~40 tokens where the raw sampling cost ~180, and cleaner signal.
     public struct BlockSample: Sendable {
         public var id: Int64
         public var startedAt: Int64
@@ -64,6 +72,9 @@ public enum SemanticTaskGrouper {
         public var appBundle: String
         public var domain: String?
         public var topic: String?
+        /// `activities.card` JSON (v20), when CardBuilder has distilled this
+        /// block. Rendered via `BlockCard.promptFacts` in place of raw text.
+        public var card: String?
         public var titles: [String]
         /// Sanitized "host/seg/seg" page identities — `github.com/org/repo`
         /// says what the domain alone never could.
@@ -71,14 +82,15 @@ public enum SemanticTaskGrouper {
         public var textSample: String
 
         public init(id: Int64, startedAt: Int64, endedAt: Int64, appBundle: String,
-                    domain: String?, topic: String?, titles: [String],
-                    urls: [String] = [], textSample: String) {
+                    domain: String?, topic: String?, card: String? = nil,
+                    titles: [String], urls: [String] = [], textSample: String) {
             self.id = id
             self.startedAt = startedAt
             self.endedAt = endedAt
             self.appBundle = appBundle
             self.domain = domain
             self.topic = topic
+            self.card = card
             self.titles = titles
             self.urls = urls
             self.textSample = textSample
@@ -273,8 +285,9 @@ extension SemanticTaskGrouper {
         var resolved = Resolved()
         for assignment in verdict.assignments {
             guard batchIDs.contains(assignment.id),
-                  assignment.confidence >= confidenceFloor,
                   let key = keyByHandle[assignment.task] else { continue }
+            let floor = newByKey[key] != nil ? newTaskConfidenceFloor : confidenceFloor
+            guard assignment.confidence >= floor else { continue }
             resolved.assignmentsByKey[key, default: []].append(assignment.id)
         }
         resolved.newTaskByKey = newByKey.filter { resolved.assignmentsByKey[$0.key] != nil }

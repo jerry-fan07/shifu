@@ -11,7 +11,7 @@ usage: shifu <command>
   log export [days]
                  write full logs, including captured text, to
                  ~/Shifu/logs/log-<date>.md (one file per day)
-  status         daemon pause state and today's counts
+  status         daemon pause state, today's counts and LLM token spend
   pause [dur]    pause capture: 30m, 1h (default), 2h, tomorrow
   resume         resume capture
   work on|off    toggle Work Mode (focus contract with glow nudges)
@@ -44,6 +44,13 @@ func formatDuration(_ ms: Int64) -> String {
     if seconds < 60 { return "\(seconds)s" }
     if seconds < 3_600 { return "\(seconds / 60)m\(seconds % 60 == 0 ? "" : "\(seconds % 60)s")" }
     return "\(seconds / 3_600)h\((seconds % 3_600) / 60)m"
+}
+
+/// Token counts run to six digits; nobody reads them digit by digit, and the
+/// question they answer ("is this a cheap day or an expensive one?") survives
+/// rounding to thousands.
+func formatTokens(_ count: Int) -> String {
+    count < 1_000 ? "\(count)" : "\(count / 1_000)k"
 }
 
 func commandLog(days: Int) throws {
@@ -170,6 +177,25 @@ func commandStatus() throws {
         let parts = counts.map { "\($0["n"] as Int64) \($0["capture_kind"] as String)" }
         print("today: \(parts.joined(separator: ", "))")
     }
+    // What today's analysis cost, per model — the two slots are priced an
+    // order of magnitude apart, so a combined token count would say nothing.
+    // The dollar figure is an estimate at the configured per-million rates
+    // (LLMPrices); the token counts beside it are the ground truth.
+    let priceBook = LLMPriceBook.load(database: db)
+    let llmTotals = try LLMUsage.totals(from: since, to: Int64.max, database: db)
+    for spend in llmTotals {
+        let cached = spend.cachedPromptTokens > 0
+            ? " (\(formatTokens(spend.cachedPromptTokens)) cached)" : ""
+        print("llm today (\(spend.model)): \(spend.calls) call\(spend.calls == 1 ? "" : "s"), "
+            + "\(formatTokens(spend.promptTokens)) in\(cached), "
+            + "\(formatTokens(spend.completionTokens)) out"
+            + String(format: " ≈ $%.3f", priceBook.cost(of: spend)))
+    }
+    if llmTotals.count > 1 {
+        let total = llmTotals.reduce(0) { $0 + priceBook.cost(of: $1) }
+        print(String(format: "llm today total: ≈ $%.2f", total))
+    }
+
     if let size = try? FileManager.default.attributesOfItem(atPath: ShifuPaths.database.path)[.size] as? Int64 {
         let encryption = ShifuDatabase.isEncrypted(at: ShifuPaths.database)
             ? "encrypted" : "plaintext"

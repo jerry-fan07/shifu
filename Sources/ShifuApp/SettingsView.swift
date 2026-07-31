@@ -73,6 +73,9 @@ private struct SettingsGroup: View {
                 ForEach(choices) { ChoiceSettingRow(setting: $0) }
                 ForEach(texts) { TextSettingRow(setting: $0) }
                 ForEach(lists) { DomainListRow(setting: $0) }
+                if section == .analysis, let spend = store.llmSpendToday {
+                    LLMSpendRow(spend: spend)
+                }
             }
         }
     }
@@ -101,6 +104,28 @@ private struct WorkModeRow: View {
                     + "switch sits at the rail's foot and in the menu bar.")
         }
         .accessibilityLabel("Work Mode")
+    }
+}
+
+/// What today's analysis has cost, at the rates set just above it. A reading,
+/// not a dial — the only row here the user can't turn — so it carries no
+/// control and stands last in its section. Absent entirely on a day nothing
+/// was billed, rather than reading "$0.000" at someone who hasn't opted in.
+private struct LLMSpendRow: View {
+    let spend: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Text("LLM spend today")
+                    .font(Instrument.sans(13))
+                    .foregroundStyle(Instrument.ink)
+                Spacer(minLength: 0)
+                Figure(spend, color: Instrument.secondary)
+            }
+            SettingHelp("An estimate: today's token counts priced at the rates "
+                + "above. Analysis is never stopped on cost.")
+        }
     }
 }
 

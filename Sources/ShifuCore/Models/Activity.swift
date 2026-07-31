@@ -29,7 +29,7 @@ public enum Category: String, Codable, Sendable, CaseIterable {
 /// added by migrations v4–v10 — `extracted`, `task_id`, `signature`,
 /// `llm_attempts` — are deliberately absent here and read/written with raw SQL
 /// by the passes that own them (`KnowledgeExtractor`, `TaskGrouper`,
-/// `TaskMerges`, `AmbiguousClassifier`). Check the migrator in
+/// `TaskMerges`, `CardBuilder`). Check the migrator in
 /// `ShifuDatabase`, not this type, for the full schema.
 public struct Activity: Codable, Sendable, FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "activities"
@@ -48,7 +48,7 @@ public struct Activity: Codable, Sendable, FetchableRecord, MutablePersistableRe
     /// tier produces one — nil for every rules-classified block.
     public var topic: String?
     /// The LLM's self-reported confidence, nil outside the LLM tier. Verdicts
-    /// below `AmbiguousClassifier.confidenceFloor` are never applied at all.
+    /// below `CardBuilder.confidenceFloor` are never applied at all.
     public var confidence: Double?
     /// Which tier produced `category`: `"rules"`, `"llm"`, or `"user"`. A free
     /// string rather than an enum; `"user"` outranks the others and is never

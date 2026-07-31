@@ -24,9 +24,9 @@ public struct RulesClassifier: Sendable {
     /// A classification verdict for one block.
     ///
     /// `ambiguous` is not "the classifier is unsure" — it is a routing flag
-    /// meaning *the LLM tier should revisit this block*. `AmbiguousClassifier`
-    /// selects on exactly this, so setting it true on a common mapping puts
-    /// every matching block into the LLM's billable queue.
+    /// meaning *the LLM tier should revisit this block*. `CardBuilder` relabels
+    /// on exactly this, so setting it true on a common mapping puts every
+    /// matching block into the LLM's billable queue.
     public struct Result: Equatable, Sendable {
         public var category: Category
         public var ambiguous: Bool

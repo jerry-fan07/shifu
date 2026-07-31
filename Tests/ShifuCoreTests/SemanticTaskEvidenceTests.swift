@@ -96,6 +96,33 @@ import Testing
             .contains("1.5h over 2d · last 2d ago · united.com, airbnb.com"))
     }
 
+    /// A card-bearing block renders the card's facts and none of the raw
+    /// evidence — the whole point of the card is that the expensive stages
+    /// stop paying for titles and OCR text every run.
+    @Test func cardReplacesTitlesAndTextInTheBlockLine() throws {
+        let card = BlockCard(category: .work, topic: "writing the thesis",
+                             entities: ["doc:thesis.tex"], gist: "revising chapter three")
+        var carded = block()
+        carded.card = try #require(card.json)
+        carded.titles = []
+        carded.textSample = ""
+        let rendered = Grouper.prompt(roster: [], blocks: [carded])
+        #expect(rendered.contains("card=revising chapter three | topic=writing the thesis"
+            + " | doc:thesis.tex"))
+        #expect(!rendered.contains("titles="))
+        #expect(!rendered.contains("text:"))
+        // Same block with raw evidence instead: measurably more tokens.
+        let raw = Grouper.prompt(roster: [], blocks: [block()])
+        let longSample = Grouper.BlockSample(
+            id: 1, startedAt: 0, endedAt: 20 * 60_000, appBundle: "com.apple.Safari",
+            domain: "overleaf.com", topic: nil,
+            titles: ["thesis.tex — Overleaf", "chapter three draft"],
+            textSample: String(repeating: "sampled screen text ", count: 15))
+        let fat = Grouper.prompt(roster: [], blocks: [longSample])
+        #expect(LLMTokens.estimate(rendered) < LLMTokens.estimate(fat))
+        #expect(raw.contains("titles="))
+    }
+
     // MARK: - Stickiness, fenced
 
     @Test func promptShowsNeighborsAndFencesInterruptions() {
