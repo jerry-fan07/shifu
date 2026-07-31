@@ -212,11 +212,11 @@ extension ShifuDatabase {
 
         migrator.registerMigration("v10") { db in
             // Bounds LLM re-billing on blocks that never clear the confidence
-            // floor (design.md §4.2, §12): AmbiguousClassifier skips a block
-            // once it has been attempted this many times, until the block's
-            // text changes (a changed span resets the count via the rebuild
-            // carry). Without this, an unchanged window re-bills the same
-            // low-confidence blocks every run.
+            // floor (design.md §4.2, §12): the tier-2 classifier skipped a block
+            // once it had been attempted this many times. The classifier is
+            // gone (CardBuilder and its v20 `card_attempts` replaced it), so
+            // the column is inert like v4's `extracted` — migrations are
+            // append-only.
             try db.alter(table: "activities") { table in
                 table.add(column: "llm_attempts", .integer).notNull().defaults(to: 0)
             }
@@ -500,6 +500,21 @@ extension ShifuDatabase {
                 table.column("completion_tokens", .integer).notNull()
             }
             try db.create(index: "idx_llm_usage_at", on: "llm_usage", columns: ["at_ms"])
+        }
+
+        migrator.registerMigration("v20-block-cards") { db in
+            // The block card (CardBuilder): one fast-model pass distills each
+            // closed block into compact structured JSON — category, topic,
+            // entities, gist — and every later LLM stage renders the card
+            // into its prompt instead of re-sampling raw OCR text. One JSON
+            // column rather than per-field columns because cards are only
+            // ever rendered, never filtered by SQL; like `signature` (v8) it
+            // is durable derived text that outlives raw-text retention.
+            // Number-and-name, for the reason v19 spells out.
+            try db.alter(table: "activities") { table in
+                table.add(column: "card", .text)
+                table.add(column: "card_attempts", .integer).notNull().defaults(to: 0)
+            }
         }
 
         return migrator

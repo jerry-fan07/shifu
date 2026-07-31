@@ -4,7 +4,7 @@ import Testing
 
 /// CLAUDE.md invariant 7 at its primitive. Every batched prompt in the
 /// analyzer is sized by `LLMTokens.batches`; the stage-level tests
-/// (`AmbiguousClassifierTests`, `SemanticTaskGrouperTests`, `RadarTests`)
+/// (`CardBuilderTests`, `SemanticTaskGrouperTests`, `RadarTests`)
 /// prove each caller uses it, and these prove it is right.
 @Suite struct LLMTokensTests {
     /// A prompt that renders as a fixed preamble plus one line per item — the

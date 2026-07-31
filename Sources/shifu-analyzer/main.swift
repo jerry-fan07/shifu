@@ -89,17 +89,22 @@ let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: data
 let reasoningBackend: (any LLMBackend)? =
     try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
 
-// Tier-2 LLM pass over ambiguous blocks (§4.2) — fast model.
+// Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
+// distills each into a structured card (category, topic, entities, gist);
+// the same card relabels blocks the rules tier marked ambiguous. Every later
+// stage renders cards instead of re-sampling raw text, so this is the one
+// place OCR text meets a prompt on the hourly path.
 if let backend {
     do {
-        let relabeled = try await AmbiguousClassifier.run(
+        let cardSummary = try await CardBuilder.run(
             database: database, backend: backend, from: from, to: nowMs)
-        if relabeled > 0 {
-            print("llm (\(backend.name)): relabeled \(relabeled) ambiguous blocks")
+        if cardSummary.built > 0 {
+            print("cards (\(backend.name)): \(cardSummary.built) built, "
+                + "\(cardSummary.relabeled) ambiguous blocks relabeled")
         }
     } catch {
         // LLM problems never block the ledger (§10); blocks stay queued.
-        print("llm (\(backend.name)) failed, blocks stay queued: \(error)")
+        print("cards (\(backend.name)) failed, blocks stay queued: \(error)")
     }
 }
 

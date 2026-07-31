@@ -53,7 +53,7 @@ extension SemanticTaskGrouper {
         }
 
         lines.append("")
-        lines.append("Blocks, chronological (id, local time, minutes, app, pages, titles, text):")
+        lines.append("Blocks, chronological (id, time, minutes, app, pages, card or titles+text):")
         for block in blocks {
             lines.append(blockLine(block, times: times))
             if !block.textSample.isEmpty { lines.append("  text: \(block.textSample)") }
@@ -104,6 +104,11 @@ extension SemanticTaskGrouper {
         } else if let domain = block.domain {
             desc += " domain=\(domain)"
         }
+        // The card replaces titles and raw text outright — its topic and gist
+        // already are the distilled version of both.
+        if let card = BlockCard.parse(block.card) {
+            return desc + " card=\(card.promptFacts)"
+        }
         if let topic = block.topic { desc += " topic=\(topic)" }
         if !block.titles.isEmpty {
             desc += " titles=\(block.titles.prefix(4).joined(separator: " | "))"
@@ -130,7 +135,7 @@ extension SemanticTaskGrouper {
 
     /// Trims a roster to what a small context window can afford, keeping the
     /// tasks with the most time behind them — the heaviest prior mass — in the
-    /// original (most-recent-first) order.
+    /// original (key) order.
     static func compacted(_ roster: [RosterEntry], limit: Int = compactRosterLimit) -> [RosterEntry] {
         guard roster.count > limit else { return roster }
         let keep = Set(roster.indices
@@ -210,14 +215,14 @@ extension SemanticTaskGrouper {
         let denied = TaskGrouper.notSystemBundleSQL()
         return try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT id, started_at, ended_at, app_bundle, domain, topic
+                SELECT id, started_at, ended_at, app_bundle, domain, topic, card
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
                   AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
                   AND ended_at - started_at >= ?
                   AND \(denied.clause)
-                  AND (topic IS NOT NULL OR EXISTS (
+                  AND (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
                         SELECT 1 FROM observations o WHERE o.session_id = activities.id
                           AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
                 ORDER BY started_at DESC LIMIT ?
@@ -226,18 +231,24 @@ extension SemanticTaskGrouper {
                     + StatementArguments(denied.arguments) + [limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
-                let evidence = try blockEvidence(db, blockID: id)
+                let card: String? = row["card"]
+                // A card-bearing block skips the title/text sampling — the
+                // card is its evidence — but keeps the sanitized pages, which
+                // the card's entities don't reliably duplicate.
+                let evidence = try blockEvidence(
+                    db, blockID: id, textCap: card == nil ? textSampleChars : 0)
                 return BlockSample(
                     id: id, startedAt: row["started_at"], endedAt: row["ended_at"],
                     appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
-                    titles: evidence.titles, urls: evidence.urls, textSample: evidence.text)
+                    card: card, titles: card == nil ? evidence.titles : [],
+                    urls: evidence.urls, textSample: evidence.text)
             }
             .sorted { $0.startedAt < $1.startedAt }
         }
     }
 
     /// What the sampled observations of one block yielded.
-    private struct BlockEvidence {
+    struct BlockEvidence {
         var titles: [String] = []
         var urls: [String] = []
         var text = ""
@@ -245,8 +256,11 @@ extension SemanticTaskGrouper {
 
     /// One block's evidence, sampled across its whole span. Ids are fetched
     /// first (cheap) so only the handful of rows actually sampled pay for
-    /// their OCR text.
-    private static func blockEvidence(_ db: Database, blockID: Int64) throws -> BlockEvidence {
+    /// their OCR text. `textCap` exists for `CardBuilder`, which distills a
+    /// block once and so affords a bigger sample than the per-run stages.
+    static func blockEvidence(
+        _ db: Database, blockID: Int64, textCap: Int = textSampleChars
+    ) throws -> BlockEvidence {
         let ids = try Int64.fetchAll(db, sql: """
             SELECT id FROM observations
             WHERE session_id = ?
@@ -272,11 +286,11 @@ extension SemanticTaskGrouper {
                let token = urlToken(raw), !evidence.urls.contains(token) {
                 evidence.urls.append(token)
             }
-            if sample.count < textSampleChars, let text: String = row["text"] {
+            if sample.count < textCap, let text: String = row["text"] {
                 sample += text.prefix(200) + " "
             }
         }
-        evidence.text = String(sample.prefix(textSampleChars))
+        evidence.text = String(sample.prefix(textCap))
             .trimmingCharacters(in: .whitespaces)
         return evidence
     }
@@ -284,6 +298,13 @@ extension SemanticTaskGrouper {
     /// The most recently active semantic tasks, offered for reuse so ongoing
     /// work keeps landing in the same task across runs and days — each with
     /// the history that makes it a weighted prior rather than a name in a list.
+    ///
+    /// Recency picks *which* tasks make the roster; the returned order is by
+    /// key. Assignments shuffle `last_active_at` every run, so a
+    /// recency-ordered roster renders differently each pass — key order keeps
+    /// an unchanged roster byte-identical, which is what a provider's prompt
+    /// cache and the handle numbering both reward. No signal is lost: each
+    /// line still says "last Nd ago" outright.
     public static func activeRoster(
         database: ShifuDatabase, now: Date = Date()
     ) throws -> [RosterEntry] {
@@ -310,6 +331,7 @@ extension SemanticTaskGrouper {
                     lastActiveDays: Int(max(0, nowMs - lastActive) / 86_400_000),
                     topSources: try topSources(db, taskID: row["id"], since: cutoff))
             }
+            .sorted { $0.key < $1.key }
         }
     }
 

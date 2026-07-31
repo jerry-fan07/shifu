@@ -129,16 +129,17 @@ import Testing
         try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
 
         let videoID = try #require(try videoActivity(db).id)
-        let classifier = CountingBackend(response: #"""
-            [{"id": \#(videoID), "category": "learning", "confidence": 0.9,
-              "topic": "swift actors tutorial"}]
+        let cardBuilder = CountingBackend(response: #"""
+            [{"id": \#(videoID), "cat": "learning", "conf": 0.9,
+              "topic": "swift actors tutorial", "entities": ["site:youtube.com"],
+              "gist": "watching a talk on swift actors"}]
             """#)
-        let relabeled = try await AmbiguousClassifier.run(
-            database: db, backend: classifier, from: 0, to: 1_000_000)
-        #expect(relabeled == 1)
+        let summary = try await CardBuilder.run(
+            database: db, backend: cardBuilder, from: 0, to: 1_000_000)
+        #expect(summary.relabeled == 1)
 
         try TaskGrouper.run(database: db, from: 0, to: 1_000_000)
-        #expect(classifier.calls == 1)
+        #expect(cardBuilder.calls == 1)
 
         // Second analyzer pass over unchanged observations.
         try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
@@ -149,12 +150,18 @@ import Testing
         #expect(video.source == "llm")
         #expect(video.confidence == 0.9)
         #expect(!video.ambiguous)
+        // The card rode the same span-keyed carry — dropping it wouldn't lose
+        // data, it would re-bill every card in the window every hour.
+        let carriedCard = try await db.queue.read {
+            try String.fetchOne($0, sql: "SELECT card FROM activities WHERE domain = 'youtube.com'")
+        }
+        #expect(BlockCard.parse(carriedCard)?.topic == "swift actors tutorial")
 
         // Nothing is pending for the LLM tier: zero new calls.
-        let relabeledAgain = try await AmbiguousClassifier.run(
-            database: db, backend: classifier, from: 0, to: 1_000_000)
-        #expect(relabeledAgain == 0)
-        #expect(classifier.calls == 1)
+        let summaryAgain = try await CardBuilder.run(
+            database: db, backend: cardBuilder, from: 0, to: 1_000_000)
+        #expect(summaryAgain == .init())
+        #expect(cardBuilder.calls == 1)
     }
 
     @Test func rebuildCarriesSemanticAssignmentBySpan() async throws {
@@ -223,12 +230,13 @@ import Testing
         try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
 
         let videoID = try #require(try videoActivity(db).id)
-        let classifier = CountingBackend(response: #"""
-            [{"id": \#(videoID), "category": "learning", "confidence": 0.9,
-              "topic": "swift actors tutorial"}]
+        let cardBuilder = CountingBackend(response: #"""
+            [{"id": \#(videoID), "cat": "learning", "conf": 0.9,
+              "topic": "swift actors tutorial", "entities": [],
+              "gist": "watching a talk on swift actors"}]
             """#)
-        _ = try await AmbiguousClassifier.run(
-            database: db, backend: classifier, from: 0, to: 1_000_000)
+        _ = try await CardBuilder.run(
+            database: db, backend: cardBuilder, from: 0, to: 1_000_000)
 
         // The user later pins youtube.com — the rule outranks the carried verdict.
         try await db.queue.write { sqlite in

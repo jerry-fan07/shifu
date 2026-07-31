@@ -44,7 +44,7 @@ Sources/ShifuCore/
   Storage/     ShifuDatabase (+ migrations), DatabaseKey, EncryptionMigrator, DeletionTools
   Capture/     ObservationRecorder (the write path), SimHash, DHash, BoundedLRUCache
   Privacy/     Redactor, Exclusions
-  Analysis/    Sessionizer, RulesClassifier, AmbiguousClassifier, LedgerBuilder,
+  Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
                SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
                TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
                Radar (+RadarDescriber), DigestGenerator, Embedder
@@ -78,7 +78,7 @@ right of `observations` happens in `shifu-analyzer`.
   [observations] ──▶ Sessionizer ──▶ RulesClassifier ──▶ [activities]
                      (LedgerBuilder orchestrates all three)
                             │
-                            ├──▶ AmbiguousClassifier ──▶ LLM ──▶ [activities] relabeled
+                            ├──▶ CardBuilder ──▶ LLM ──▶ [activities].card (+relabels)
                             │
                             ├──▶ SemanticTaskGrouper ──▶ LLM ──▶ [activities].sem_key
                             │                                    [tasks] created w/ gist
@@ -151,13 +151,17 @@ order, and some of that ordering is load-bearing:
    window (or everything with `--rebuild`). Idempotent: it deletes and
    re-inserts the window every run. Blocks whose *span identity*
    (`started_at`, `ended_at`, `app_bundle`) is reproduced unchanged keep their
-   LLM verdicts, `extracted` flag, and `llm_attempts` counter — this "carry" is
+   LLM verdicts, block cards, and retry counters — this "carry" is
    what stops re-runs from re-billing the LLM tiers.
 2. **`Retention.scrubExpiredText`** — nulls `text` older than 14 days. The
    derived ledger survives; the raw text does not.
-3. **`AmbiguousClassifier.run`** — tier 2. Only blocks the rules layer marked
-   `ambiguous` and that are under `maxAttempts` (3). Batch-prompted, JSON out,
-   applied only above `confidenceFloor` (0.6).
+3. **`CardBuilder.run`** — tier 2. One fast-model pass distills each closed,
+   substantial block into `activities.card` (category, topic, entities, gist);
+   the same card relabels blocks the rules layer marked `ambiguous` (applied
+   only above `confidenceFloor` 0.6, never over `source='user'`). Later stages
+   render the card instead of re-sampling raw text, so this is the one hourly
+   stage that reads OCR. One shot per closed block; `card_attempts` (3) only
+   guards failure paths.
 4. **`SemanticTaskGrouper.run`** — the LLM assigns evidence-bearing blocks to
    intent-level tasks (design.md §5.3): each batch carries a roster of recent
    `sem:` tasks to join — with the history that makes it a weighted prior
@@ -216,7 +220,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 |---|---|
 | Which apps/domains map to which category | [`Analysis/RulesClassifier.swift`](Sources/ShifuCore/Analysis/RulesClassifier.swift) — `seedBundles` / `seedDomains` |
 | The set of categories itself | [`Models/Activity.swift`](Sources/ShifuCore/Models/Activity.swift) — `Category` |
-| When the LLM gets asked, and the prompt | [`Analysis/AmbiguousClassifier.swift`](Sources/ShifuCore/Analysis/AmbiguousClassifier.swift) |
+| When the LLM gets asked, and the block card's prompt | [`Analysis/CardBuilder.swift`](Sources/ShifuCore/Analysis/CardBuilder.swift) |
 | What counts as one continuous block | [`Analysis/Sessionizer.swift`](Sources/ShifuCore/Analysis/Sessionizer.swift) — `gapThresholdMs` |
 | How blocks become the ledger | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) |
 | How activities group into tasks | [`Analysis/TaskGrouper.swift`](Sources/ShifuCore/Analysis/TaskGrouper.swift) — `key(topic:domain:appBundle:)` |
@@ -298,12 +302,14 @@ add a new one (see §7).
 | `extracted` | v4 — knowledge extraction high-water mark |
 | `task_id` | v6 — → `tasks.id`, set by `TaskGrouper` |
 | `signature` | v8 — durable "topic; titles; domain", outlives observation retention |
-| `llm_attempts` | v10 — caps re-billing of stubborn low-confidence blocks at 3 |
+| `llm_attempts` | v10 — the old tier-2 classifier's re-billing cap; inert since `CardBuilder` (v20) replaced that stage, kept because migrations are append-only |
 | `sem_key` | v11 — LLM task assignment (`"sem:<slug>"`), outranks the mechanical key; carried across rebuilds |
 | `sem_attempts` | v11 — caps re-billing of blocks the model declines to place, like `llm_attempts` |
 | `theme_key` | v12 — independent LLM theme assignment (`"thm:<slug>"`); carried like `sem_key` |
 | `theme_attempts` | v12 — the theme pass's re-billing cap |
 | `theme_user_set` | v14 — 1 when a *human* filed this block's task (`TaskStore.assignTheme`), 0 when `ThemeClusterer` did. Prune and auto-merge read it |
+| `card` | v20 — `BlockCard` JSON (category, topic, entities, gist), the block's distilled evidence; built once by `CardBuilder`, rendered by every later LLM stage instead of raw text, carried across rebuilds |
+| `card_attempts` | v20 — the card pass's failure-path cap (3); a *usable* card is one shot, its closed block can't grow better evidence |
 
 **`tasks`** (`key` unique — `sem:` from `SemanticTaskGrouper`, else
 `TaskGrouper.key`; `name` is user-renameable; `gist` v11 — LLM one-liner for
@@ -420,7 +426,7 @@ This is where each is actually enforced, and what would catch a regression.
 | 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ✅ `PixelsNeverPersistedTests` — reflects over `OCRCapture.Result` and the recorder's `Candidate` for image-shaped fields, and asserts `observations` has no BLOB column |
 | 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer. `Daemon.syncCapture` is the only caller of the start/stop pair and every reason capture is down is *queried* there — pause, a locked screen, another session on the console (§3.1) — so no reason can clear another's teardown. A suspension must also be able to *end*: while the window server holds capture down, `syncRecheckTimer` re-asks every 5 s rather than trusting an unlock notification that a real machine never delivered | ✅ `DaemonTeardownTests` over `Daemon.observerState` — including that the analyzer timer *survives* pause; `DaemonSuspensionTests` over an injected `Daemon.SessionProbe`: a wake before the unlock stays down, and `theRecheckTimerFiresOnItsOwn` services a real run loop, so an unscheduled timer fails it (the direct-call test does not) |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
-| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `AmbiguousClassifier.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `AmbiguousClassifierTests.runSplitsAcrossSmallContextWindow`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
+| 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `CardBuilder.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `CardBuilderTests.runSplitsAcrossSmallContextWindowAndAnchorsCoinedTopics`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
 
 All eight now have a guard. Invariants 3–5 got theirs by giving `shifud` a
@@ -490,7 +496,7 @@ valid.
 **Add a category.** Add the case to `Category` in `Models/Activity.swift`
 (raw value = the string stored in SQLite), add seeds to `RulesClassifier`, and
 add a color in `TimePalette.categoryColors` (pick a `Dojo.chartSlots` hue).
-`AmbiguousClassifier.prompt`
+`CardBuilder.prompt`
 derives its category list from `Category.allCases`, so the LLM tier updates
 itself — except `privateTime` and `unclassified`, which it filters out.
 
@@ -550,7 +556,7 @@ and project notes can never enter the review queue.
 - **Idempotent rebuilds over incremental state.** `LedgerBuilder`,
   `TaskGrouper.rebuildLogs`, and `WorkNoteCompiler` all delete-and-recompute
   their window. Derived state that costs money or tokens to recreate (LLM
-  verdicts, `extracted`, `llm_attempts`) is explicitly *carried* across the
+  verdicts, block cards, retry counters) is explicitly *carried* across the
   rebuild by span identity. If you add expensive derived state, add it to
   `LedgerBuilder.CarriedState` or it will be silently recomputed every hour.
 - **Content-hash gates before LLM calls.** `WorkNoteCompiler` and

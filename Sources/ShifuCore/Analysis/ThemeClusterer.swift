@@ -30,7 +30,8 @@ public enum ThemeClusterer {
     public static let keyPrefix = "thm:"
 
     /// One block's evidence. Titles/topic are post-redaction; the task name
-    /// is Shifu's own derived label.
+    /// is Shifu's own derived label. A card-bearing block (v20) drops titles
+    /// for the card's topic and gist — fewer tokens, cleaner signal.
     public struct BlockSample: Sendable {
         public var id: Int64
         public var startedAt: Int64
@@ -38,17 +39,20 @@ public enum ThemeClusterer {
         public var appBundle: String
         public var domain: String?
         public var topic: String?
+        public var card: String?
         public var taskName: String?
         public var titles: [String]
 
         public init(id: Int64, startedAt: Int64, endedAt: Int64, appBundle: String,
-                    domain: String?, topic: String?, taskName: String?, titles: [String]) {
+                    domain: String?, topic: String?, card: String? = nil,
+                    taskName: String?, titles: [String]) {
             self.id = id
             self.startedAt = startedAt
             self.endedAt = endedAt
             self.appBundle = appBundle
             self.domain = domain
             self.topic = topic
+            self.card = card
             self.taskName = taskName
             self.titles = titles
         }
@@ -87,7 +91,8 @@ public enum ThemeClusterer {
             lines.append(line)
         }
         lines.append("")
-        lines.append("Blocks, chronological (id, local time, minutes, app, domain, task, topic, titles):")
+        lines.append("Blocks, chronological (id, time, minutes, app, domain, task, "
+            + "card gist or topic+titles):")
         let times = timeFormatter(calendar)
         for block in blocks {
             let minutes = max(1, (block.endedAt - block.startedAt) / 60_000)
@@ -96,9 +101,15 @@ public enum ThemeClusterer {
             desc += " app=\(SemanticTaskGrouper.shortBundle(block.appBundle))"
             if let domain = block.domain { desc += " domain=\(domain)" }
             if let taskName = block.taskName { desc += " task=\(taskName)" }
-            if let topic = block.topic { desc += " topic=\(topic)" }
-            if !block.titles.isEmpty {
-                desc += " titles=\(block.titles.prefix(2).joined(separator: " | "))"
+            if let card = BlockCard.parse(block.card) {
+                // The card's topic and gist replace titles — coarse clustering
+                // needs the intent, not the window chrome.
+                desc += " topic=\(card.topic) gist=\(card.gist)"
+            } else {
+                if let topic = block.topic { desc += " topic=\(topic)" }
+                if !block.titles.isEmpty {
+                    desc += " titles=\(block.titles.prefix(2).joined(separator: " | "))"
+                }
             }
             lines.append(desc)
         }
@@ -136,7 +147,7 @@ extension ThemeClusterer {
         try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT a.id, a.started_at, a.ended_at, a.app_bundle, a.domain, a.topic,
-                       t.name AS task_name
+                       a.card, t.name AS task_name
                 FROM activities a LEFT JOIN tasks t ON t.id = a.task_id
                 WHERE a.ended_at > ? AND a.started_at < ? AND a.ended_at <= ?
                   AND a.category != 'private'
@@ -147,7 +158,8 @@ extension ThemeClusterer {
                                  maxAttempts, minBlockMs, limit])
             return rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
-                let titles = (try? String.fetchAll(db, sql: """
+                let card: String? = row["card"]
+                let titles = card != nil ? [] : (try? String.fetchAll(db, sql: """
                     SELECT DISTINCT window_title FROM observations
                     WHERE session_id = ? AND window_title IS NOT NULL
                       AND LENGTH(window_title) > 3 LIMIT 2
@@ -155,7 +167,8 @@ extension ThemeClusterer {
                 return BlockSample(
                     id: id, startedAt: row["started_at"], endedAt: row["ended_at"],
                     appBundle: row["app_bundle"], domain: row["domain"],
-                    topic: row["topic"], taskName: row["task_name"], titles: titles)
+                    topic: row["topic"], card: card,
+                    taskName: row["task_name"], titles: titles)
             }
             .sorted { $0.startedAt < $1.startedAt }
         }
@@ -191,19 +204,23 @@ extension ThemeClusterer {
         database: ShifuDatabase, now: Date = Date()
     ) throws -> [SemanticTaskGrouper.RosterEntry] {
         var entries = try activeRoster(database: database, now: now)
-        guard entries.count < rosterLimit else { return entries }
-        let remaining = rosterLimit - entries.count
-        entries += try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT key, name, gist FROM theme_proposals
-                WHERE status = 'new' ORDER BY created_at DESC LIMIT ?
-                """, arguments: [remaining]
-            ).map { row in
-                SemanticTaskGrouper.RosterEntry(key: row["key"], name: row["name"],
-                                                gist: row["gist"])
+        if entries.count < rosterLimit {
+            let remaining = rosterLimit - entries.count
+            entries += try database.queue.read { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT key, name, gist FROM theme_proposals
+                    WHERE status = 'new' ORDER BY created_at DESC LIMIT ?
+                    """, arguments: [remaining]
+                ).map { row in
+                    SemanticTaskGrouper.RosterEntry(key: row["key"], name: row["name"],
+                                                    gist: row["gist"])
+                }
             }
         }
-        return entries
+        // Key order for the same reason the task roster uses it: an unchanged
+        // roster renders byte-identically across runs (recency still decided
+        // which entries made the list).
+        return entries.sorted { $0.key < $1.key }
     }
 
     /// Clusters the window's unassigned blocks. Same batching-and-growing-
