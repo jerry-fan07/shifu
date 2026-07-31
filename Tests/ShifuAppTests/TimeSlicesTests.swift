@@ -146,7 +146,6 @@ import Testing
         #expect(TimeLens.category.counted(8) == "8 categories")
         #expect(TimeLens.theme.counted(1) == "1 theme")
         #expect(TimeLens.theme.counted(3) == "3 themes")
-        #expect(TimeLens.task.counted(2) == "2 tasks")
     }
 }
 

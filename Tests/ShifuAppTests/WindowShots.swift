@@ -36,8 +36,10 @@ import Testing
         store.refresh()
 
         // A crashed run may have left the ledger's persisted Day/Week window
-        // flipped, which would silently turn every day shot into a week shot.
+        // flipped, or its picker parked on Focus — either would silently turn
+        // every Breakdown shot into a different page.
         UserDefaults.standard.removeObject(forKey: "shifu.ledger.week")
+        UserDefaults.standard.removeObject(forKey: "shifu.ledger.lens")
 
         for place in Place.allCases {
             shoot(
@@ -62,6 +64,7 @@ import Testing
         // series — so it is the one thing whose light and dark steps have to
         // be checked against real rails rather than reasoned about.
         shoot(.breakdown, as: "breakdown-week-dark", dark: true, store: store, into: directory)
+        shootFocus(store: store, into: directory)
 
         // The pages that only exist behind a row, so the source list has
         // something to become.
@@ -92,6 +95,22 @@ import Testing
                 store: store, into: directory)
         }
         shootNotes(store: store, into: directory)
+    }
+
+    /// The picker's Focus position is view state the same way Day/Week is — a
+    /// persisted raw — so the session bands and the score head get their own
+    /// pass over both windows. Gold on real rails, both appearances: the warm
+    /// slot is the one hue in the band that is not a series.
+    @MainActor private func shootFocus(store: LedgerStore, into directory: URL) {
+        UserDefaults.standard.set("Focus", forKey: "shifu.ledger.lens")
+        defer { UserDefaults.standard.removeObject(forKey: "shifu.ledger.lens") }
+        UserDefaults.standard.set(true, forKey: "shifu.ledger.week")
+        shoot(.breakdown, as: "breakdown-focus-week", dark: false, store: store, into: directory)
+        shoot(
+            .breakdown, as: "breakdown-focus-week-dark", dark: true,
+            store: store, into: directory)
+        UserDefaults.standard.removeObject(forKey: "shifu.ledger.week")
+        shoot(.breakdown, as: "breakdown-focus", dark: false, store: store, into: directory)
     }
 
     /// The Notes place has three states worth looking at and one page behind a

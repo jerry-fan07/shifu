@@ -4,17 +4,19 @@ import SwiftUI
 /// What the Ledger breaks time down by (design.md §7, §5.3). Breakdown,
 /// Timeline, and Week all read the same lens, so changing place never changes
 /// what a group means — only how much of it you are looking at.
+///
+/// The Breakdown's picker carries a third option, Focus, which is not a lens
+/// at all — it swaps the whole page for the focus-session view (FocusViews) —
+/// so it lives beside this enum in `LedgerView`, not in it.
 enum TimeLens: String, CaseIterable {
     case category = "Category"
     case theme = "Theme"
-    case task = "Task"
 
     /// This lens's group label for one activity block.
     func label(_ activity: LedgerBuilder.LabeledActivity) -> String {
         switch self {
         case .category: return activity.category
         case .theme: return activity.themeName ?? "No theme"
-        case .task: return activity.taskName ?? "No task"
         }
     }
 
@@ -191,7 +193,7 @@ enum TimePalette {
         "private": Instrument.quiet, "unclassified": Instrument.quiet
     ]
 
-    /// Hue order for theme and task groups. Deliberately a *short* fixed list:
+    /// Hue order for theme groups. Deliberately a *short* fixed list:
     /// a sixth group takes slot one again rather than minting a hue, and
     /// anything past the lens's limit folds into "Other".
     static let groupHues: [Color] = Instrument.slots
@@ -201,7 +203,7 @@ enum TimePalette {
 
     /// Colors for one lens's groups, in ranked order.
     ///
-    /// Category names have fixed colors. Theme and task names take a hue from a
+    /// Category names have fixed colors. Theme names take a hue from a
     /// stable hash of the name — color follows the *group*, not its rank, so
     /// flipping Day↔Week or dropping a group doesn't repaint the survivors.
     /// Hash collisions fall forward to the first free hue so two groups on

@@ -207,7 +207,7 @@ import Testing
     @Test func privateTimeIsHatchedRatherThanColouredOrEmpty() {
         let segments = LedgerShapes.ribbon(
             [Fixture.block(from: Fixture.at(9), to: Fixture.at(10), category: "private")],
-            lens: .task, colors: [:], from: Fixture.at(9), to: Fixture.at(10))
+            lens: .theme, colors: [:], from: Fixture.at(9), to: Fixture.at(10))
         #expect(segments.allSatisfy { $0.fill == .hidden })
     }
 
@@ -299,8 +299,8 @@ import Testing
     /// table folds it, rather than minting a colour of its own.
     @Test func aGroupThePaletteDoesNotNameFoldsIntoOther() {
         let stacks = LedgerShapes.bars(
-            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10), task: "stray")],
-            lens: .task, colors: ["Other": Instrument.other],
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10))],
+            lens: .theme, colors: ["Other": Instrument.other],
             order: ["Other"], slots: Self.hourSlots(9..<10))
         #expect(stacks.first?.segments.count == 1)
         #expect(stacks.first?.segments.first?.caption.hasPrefix("Other") == true)
@@ -315,5 +315,67 @@ import Testing
             order: [], slots: Self.hourSlots(9..<10))
         #expect(stacks.first?.totalMs == 3_600_000)
         #expect(stacks.first?.segments.first?.caption == "Work — 1h 0m")
+    }
+}
+
+@Suite struct FocusRibbonTests {
+    typealias Fixture = LedgerClockTests
+
+    private static func ms(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970 * 1_000)
+    }
+
+    private static func session(
+        _ id: Int64, from: Date, to: Date, isLive: Bool = false
+    ) -> FocusReport.Session {
+        FocusReport.Session(
+            id: id, startedAt: ms(from), endedAt: ms(to), isLive: isLive,
+            onTaskMs: 0, offTaskMs: 0)
+    }
+
+    /// The band's three registers: session time gold, tracked time outside a
+    /// session receded, untracked stretches still gaps.
+    @Test func sessionIsGoldTrackedContextRecedesAndGapsStay() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [Self.session(1, from: Fixture.at(9), to: Fixture.at(9, 30))],
+            activities: [Fixture.block(from: Fixture.at(9), to: Fixture.at(10))],
+            from: Fixture.at(9), to: Fixture.at(11))
+        #expect(segments.map(\.fill) == [
+            .series(Instrument.warm), .series(Instrument.quiet), .gap
+        ])
+        #expect(segments.first?.caption.hasPrefix("Focus — ") == true)
+    }
+
+    /// A session over an idle screen is still a session — Focus Mode was on,
+    /// and the log says so even where the tracker has nothing.
+    @Test func aSessionWithNothingTrackedUnderItStillDrawsGold() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [Self.session(1, from: Fixture.at(9), to: Fixture.at(10))],
+            activities: [],
+            from: Fixture.at(9), to: Fixture.at(10))
+        #expect(segments.count == 1)
+        #expect(segments.first?.fill == .series(Instrument.warm))
+    }
+
+    /// Bands merge within one session only, so back-to-back sessions keep
+    /// their own tooltips instead of fusing into one long claim.
+    @Test func adjacentSessionsStaySeparateBands() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [
+                Self.session(1, from: Fixture.at(9), to: Fixture.at(10)),
+                Self.session(2, from: Fixture.at(10), to: Fixture.at(11))
+            ],
+            activities: [],
+            from: Fixture.at(9), to: Fixture.at(11))
+        #expect(segments.count == 2)
+        #expect(segments[0].caption != segments[1].caption)
+    }
+
+    /// An open session names its start and says it is still running, rather
+    /// than pretending to know its end.
+    @Test func aLiveSessionSaysSince() {
+        let live = Self.session(
+            1, from: Fixture.at(9), to: Fixture.at(10), isLive: true)
+        #expect(LedgerShapes.span(live).hasPrefix("since "))
     }
 }
