@@ -127,6 +127,21 @@ import Testing
         #expect(segments.first?.fill == .gap)
     }
 
+    /// A rhythm mark claims a *place* on a rail — "this is where the night
+    /// ended" — so it has to land on the same arithmetic that drew the bands
+    /// under it, and a mark for a night off the end of the rail has to draw
+    /// nowhere rather than clamped to the edge, where it would read as a night
+    /// that ended at breakfast.
+    @Test func aMarkLandsWhereTheRibbonPutItsBands() {
+        let rail = LedgerShapes.Clock(startHour: 6, endHour: 18).on(
+            Fixture.day(), calendar: Fixture.calendar)
+        #expect(LedgerShapes.position(of: Fixture.at(6), on: rail) == 0)
+        #expect(LedgerShapes.position(of: Fixture.at(12), on: rail) == 0.5)
+        #expect(LedgerShapes.position(of: Fixture.at(18), on: rail) == 1)
+        #expect(LedgerShapes.position(of: Fixture.at(5, 59), on: rail) == nil)
+        #expect(LedgerShapes.position(of: Fixture.at(2, day: 1), on: rail) == nil)
+    }
+
     /// Sparklines line up across a table only if every run is the same length,
     /// zeros included.
     @Test func everyWeeklyRunCoversTheFullSpan() {

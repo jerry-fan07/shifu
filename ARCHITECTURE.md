@@ -223,6 +223,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | When the LLM gets asked, and the block card's prompt | [`Analysis/CardBuilder.swift`](Sources/ShifuCore/Analysis/CardBuilder.swift) |
 | What counts as one continuous block | [`Analysis/Sessionizer.swift`](Sources/ShifuCore/Analysis/Sessionizer.swift) — `gapThresholdMs` |
 | How blocks become the ledger | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) |
+| What a *week* of blocks says — sleep/wake drift, and how sure it has to be to say it | [`Analysis/Rhythms.swift`](Sources/ShifuCore/Analysis/Rhythms.swift) — night detection + the thresholds; the marks over the rails are [`ShifuApp/WeekRhythm.swift`](Sources/ShifuApp/WeekRhythm.swift) |
 | How activities group into tasks | [`Analysis/TaskGrouper.swift`](Sources/ShifuCore/Analysis/TaskGrouper.swift) — `key(topic:domain:appBundle:)` |
 | Intent-level (LLM) task grouping, its gates and batching | [`Analysis/SemanticTaskGrouper.swift`](Sources/ShifuCore/Analysis/SemanticTaskGrouper.swift) |
 | What that model is shown — roster prior, stickiness context, block evidence, the prompt | [`Analysis/SemanticTaskEvidence.swift`](Sources/ShifuCore/Analysis/SemanticTaskEvidence.swift) |

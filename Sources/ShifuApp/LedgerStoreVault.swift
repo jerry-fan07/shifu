@@ -74,6 +74,21 @@ extension LedgerStore {
         }
     }
 
+    /// The cards a forecast may count: the shelf, less whatever a paused deck
+    /// holds. A paused deck's cards are out of every queue and count (§5.2), so
+    /// they are not coming due — drawing them as load ahead would put a wall on
+    /// the chart that no amount of reviewing could clear. Same rule the shelf's
+    /// per-deck "due now" column follows, so the band and the rows can't
+    /// disagree.
+    var scheduledCards: [Note] {
+        let paused = Set(decks.filter(\.paused).map(\.key))
+        guard !paused.isEmpty else { return allCards }
+        return allCards.filter { card in
+            guard let deck = card.deck else { return true }
+            return !paused.contains(deck)
+        }
+    }
+
     var reviewsToday: Int {
         reviewsByDay[Calendar.current.startOfDay(for: Date())] ?? 0
     }

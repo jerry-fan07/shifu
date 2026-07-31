@@ -12,11 +12,64 @@ import Foundation
 /// The one thing that does *not* follow is live reload in `shifud` — see
 /// `Daemon.reloadIntervals()`.
 
-/// Groups settings in the UI. A new group is one case.
+/// Groups settings in the UI, and — since the Settings page is a rail of
+/// sections rather than one scroll — *is* the page's navigation. Declaration
+/// order is the order of the rail, so it runs from what Shifu does most often
+/// to what it is: capture, analysis, what it refuses to look at, the one
+/// switch, and the machine's own facts.
+///
+/// A section may exist with no catalog entry in it at all (Privacy's
+/// exclusions live in their own table, About has nothing to store), so the
+/// page decides what a section is worth showing — see `SettingsPanel`.
 public enum SettingsSection: String, CaseIterable, Sendable {
     case capture = "Capture"
     case analysis = "Analysis"
+    case privacy = "Privacy"
     case workMode = "Work Mode"
+    case about = "About"
+
+    /// The one line under the section's title: what the dials below it govern.
+    public var summary: String {
+        switch self {
+        case .capture:
+            return "How often Shifu looks at the frontmost window, and how much "
+                + "it takes when it does."
+        case .analysis:
+            return "How raw captures become tasks, themes and cards — and what "
+                + "leaves this Mac to do it."
+        case .privacy:
+            return "What Shifu refuses to look at. Exclusions are enforced in the "
+                + "daemon before capture, so excluded content never reaches the "
+                + "database at all."
+        case .workMode:
+            return "A gentle glow when a distracting site holds the screen — "
+                + "a nudge, not a block."
+        case .about:
+            return "Where everything lives on disk, and what this build is."
+        }
+    }
+
+    /// The rule that governs this section, for the foot of the rail. Not a
+    /// reassurance — each one is a guarantee stated elsewhere as an invariant,
+    /// repeated here because the screen where you change a dial is the screen
+    /// where you need to know what the dial cannot do.
+    public var promise: String {
+        switch self {
+        case .capture:
+            return "Pixels are never persisted. A screenshot lives in memory for "
+                + "one OCR call."
+        case .analysis:
+            return "Changes reach the running daemon immediately. No restart."
+        case .privacy:
+            return "Exclusions apply to capture, not just display — excluded text "
+                + "is never written."
+        case .workMode:
+            return "The glow only. Nothing listed here changes how your time is "
+                + "classified."
+        case .about:
+            return "Raw observations never leave this Mac."
+        }
+    }
 }
 
 /// An integer setting stored as seconds. `unit` affects display only.
@@ -32,7 +85,7 @@ public struct IntSetting: Identifiable, Sendable {
 
     public var id: String { key }
 
-    public enum Unit: Sendable { case seconds, minutes }
+    public enum Unit: Sendable { case seconds, minutes, days }
 
     public init(
         key: String, section: SettingsSection, title: String, help: String,
@@ -58,6 +111,7 @@ public struct IntSetting: Identifiable, Sendable {
         switch unit {
         case .seconds: return "\(value)s"
         case .minutes: return "\(value / 60) min"
+        case .days: return value == 1 ? "1 day" : "\(value) days"
         }
     }
 }
@@ -186,6 +240,18 @@ public enum SettingsCatalog {
         defaultValue: 3_600, range: 300...21_600, step: 300, unit: .minutes
     )
 
+    /// Design.md §8 promises "raw text 14 days (configurable 1–90)"; the range
+    /// here is that promise, and `Retention.defaultDays` is its default. The
+    /// analyzer reads this on every run, so shortening it takes effect at the
+    /// next scrub rather than at the next release.
+    public static let textRetentionDays = IntSetting(
+        key: "privacy.text_retention_days", section: .privacy,
+        title: "Text retention",
+        help: "Captured text is nulled out of older observations after this long. "
+            + "The derived ledger — blocks, tasks, themes, notes — is kept indefinitely.",
+        defaultValue: Retention.defaultDays, range: 1...90, step: 1, unit: .days
+    )
+
     public static let workModeDistractingDomains = DomainListSetting(
         key: "workmode.distracting_domains", section: .workMode,
         title: "Distracting sites",
@@ -276,7 +342,9 @@ public enum SettingsCatalog {
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
-    public static let ints: [IntSetting] = [heartbeatSeconds, analysisIntervalSeconds]
+    public static let ints: [IntSetting] = [
+        heartbeatSeconds, analysisIntervalSeconds, textRetentionDays
+    ]
     public static let domainLists: [DomainListSetting] = [workModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
