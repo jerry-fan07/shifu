@@ -80,7 +80,13 @@ public enum CardBuilder {
     /// prompt hourly, so it is the amount one card is worth, not what the
     /// window can hold.
     public static let textSampleChars = 700
-    public static let responseTokenReserve = 3_000
+    /// One card is a topic, a category, a gist and a confidence — call it 120
+    /// tokens, so a full `batchLimit` batch needs ~4.8k. The old 3,000 was
+    /// 75 tokens a card and only ever worked because the backend used to floor
+    /// every call at 16k of thinking headroom; the first run without that
+    /// floor truncated the batch mid-JSON and built 0 cards from 40 blocks.
+    /// Sized against `batchLimit` — move them together.
+    public static let responseTokenReserve = 6_000
     /// Topic anchors shown so a block that continues existing work repeats
     /// its wording — task keys only recur if topic wording recurs
     /// (`TaskGrouper.key` slugs the text).

@@ -170,10 +170,11 @@ struct DeepSeekBackend: LLMBackend {
         }
     }
 
-    /// Thrown only by `send`, only for the recoverable case: the response
-    /// budget ran out (finish_reason=length) before any `content` appeared.
-    /// `complete` converts it to `LLMError` once escalation is exhausted, so
-    /// it never crosses the backend boundary.
+    /// Thrown only by `send`, for the recoverable case: the response budget
+    /// ran out (finish_reason=length). Raised whether or not any `content`
+    /// arrived — a truncated JSON answer is not a partial success, it is an
+    /// answer no caller can parse. `complete` converts it to `LLMError` once
+    /// escalation is exhausted, so it never crosses the backend boundary.
     private struct ResponseTruncated: Error {
         let detail: String
     }
@@ -234,17 +235,27 @@ struct DeepSeekBackend: LLMBackend {
         if text == nil, let parts = message["content"] as? [[String: Any]] {
             text = parts.compactMap { $0["text"] as? String }.joined()
         }
-        if let text, !text.isEmpty { return text }
-
-        // finish_reason=length + no content means the response budget ran out
-        // mid-thought. Thrown typed so `complete` can escalate once; any other
-        // empty answer is a protocol problem no bigger cap would fix.
         let finish = choices.first?["finish_reason"] as? String ?? "?"
         let reasoningChars = (message["reasoning_content"] as? String)?.count ?? 0
-        let detail = "no message content (finish_reason=\(finish), "
+
+        // finish_reason=length means the budget ran out mid-answer, and that
+        // is a failure even when some content arrived: every caller parses the
+        // reply as JSON, and half an object yields no verdicts while still
+        // burning each block's attempt. Returning the fragment merely because
+        // it was non-empty cost 40 cards in a single batch and told nobody —
+        // the stage's only log line fires on `built > 0`. Thrown typed so
+        // `complete` can escalate a thinking slot; a non-thinking one surfaces
+        // it, which at least leaves the blocks eligible to try again.
+        if finish == "length" {
+            throw ResponseTruncated(detail:
+                "hit max_tokens=\(maxTokens) (content=\(text?.count ?? 0) chars, "
+                + "reasoning_content=\(reasoningChars) chars)")
+        }
+        if let text, !text.isEmpty { return text }
+
+        throw LLMError.badResponse(
+            "no message content (finish_reason=\(finish), "
             + "keys=\(message.keys.sorted().joined(separator: ",")), "
-            + "reasoning_content=\(reasoningChars) chars, max_tokens=\(maxTokens))"
-        if finish == "length" { throw ResponseTruncated(detail: detail) }
-        throw LLMError.badResponse(detail)
+            + "reasoning_content=\(reasoningChars) chars, max_tokens=\(maxTokens))")
     }
 }
