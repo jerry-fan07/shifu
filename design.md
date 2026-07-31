@@ -70,7 +70,7 @@ Three cooperating pieces, deliberately decoupled so the capture path stays tiny:
                          │
 ┌────────────────────────┴────────────────────────────────────┐
 │  Shifu.app (menu bar UI)                                    │
-│  • status, pause/kill switch, work-mode toggle              │
+│  • status, pause/kill switch, focus-mode toggle              │
 │  • dashboard (time breakdown, trends)                       │
 │  • review mode (spaced repetition over the vault)           │
 │  • settings: exclusions, categories, analysis backend       │
@@ -239,14 +239,14 @@ Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`,
 - **Ledger**: per-block rows in `activities`; rollups by day/week/category/topic power the dashboard.
 - **Daily digest** (generated at a configurable time, default 18:00): time breakdown, top topics, streaks/anomalies ("2.1 h on social, 3× your average"), new notes captured, new automation suggestions. Delivered as a local notification linking into the dashboard.
 
-### 4.4 Work Mode
+### 4.4 Focus Mode
 
 A user-invoked focus contract, toggled from the menu bar (and optionally auto-scheduled, e.g. weekdays 9–12).
 
 - While active, the daemon classifies the *current* block in near-real-time using the rules layer only (no LLM on the hot path). Unknown → treated as neutral, never nagged.
 - If the current block has been non-`work`/non-`learning` for a grace period (default 1 s), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades, with a short translucent motivational line centered on the screen the user is working on (e.g. "Believe in yourself"). Repeats at most every 10 s while off-task. No sound, no modal — a nudge, not a scold.
 - Escalation is configurable: off → glow → glow + haptic (on supported trackpads) → gentle notification. Default is glow only.
-- Work Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
+- Focus Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
 
 ---
 
@@ -466,8 +466,8 @@ Shifu is a full desktop app with a menu bar companion, and it is not a window th
 
 **The Dojo design system** (`ShifuApp/Dojo.swift`, `DojoChrome.swift`) sets everything that isn't the painting: rice-paper surfaces in light, cool slate in dark, and one terracotta accent — the headband. Pages sit on `dojoPanel` — a material with a paper wash over it, so the world's colour and the hour's light reach the room without the landscape ever competing with a column of numbers. Three type registers and no more: SF at display weight (`Dojo.display`) for titles and hero numbers, where weight alone carries the hierarchy; uppercase tracked SF Mono (`Eyebrow`) for section labels, units, and ticks — the terminal register that says "this is a log"; and the plain system face for everything you actually read. The mentor's aphorisms (`Wisdom` — original lines, not quotes) get a system italic. Minimalism still governs (§1, principle 2): generous whitespace, no gamification, badges only where a number is actionable (cards due, radar suggestions), no settings page longer than one screen.
 
-- **Menu bar item** (the always-visible surface): Shifu's own face, rendered from the vector figure rather than an SF Symbol — awake while watching, asleep while paused. Work Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Shifu, Settings, Quit.
-- **Main window**: the mountain, full-bleed under a hidden title bar, with two things over it. There is no sidebar — the places hang in the sky on the left as stations on a dashed switchback (`TrailRail`), lowest first: *Today* at the foot, then **The path** (*Time*, *Themes*, *Task log* — §5.3), **The mind** (*Practice* — §5.2 — and *Scrolls*, vault search — vault-features.md §4), **The watch** (*Radar*) at the summit. No panel behind them, only a wash of the hour's own top-sky colour, which is the one band every palette already guarantees its ink reads against. Shifu's mark heads the trail; capture state, rest, Work Mode, and the door to Settings sit at its foot. Charts native SwiftUI; no web views.
+- **Menu bar item** (the always-visible surface): Shifu's own face, rendered from the vector figure rather than an SF Symbol — awake while watching, asleep while paused. Focus Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Shifu, Settings, Quit.
+- **Main window**: the mountain, full-bleed under a hidden title bar, with two things over it. There is no sidebar — the places hang in the sky on the left as stations on a dashed switchback (`TrailRail`), lowest first: *Today* at the foot, then **The path** (*Time*, *Themes*, *Task log* — §5.3), **The mind** (*Practice* — §5.2 — and *Scrolls*, vault search — vault-features.md §4), **The watch** (*Radar*) at the summit. No panel behind them, only a wash of the hour's own top-sky colour, which is the one band every palette already guarantees its ink reads against. Shifu's mark heads the trail; capture state, rest, Focus Mode, and the door to Settings sit at its foot. Charts native SwiftUI; no web views.
 - **Travel**: picking a station flies the camera along the mountain — pulling back at the midpoint so you see the whole climb, settling on arrival — while the page's scroll rolls up and unfurls again at the destination. It costs about 0.8 s, which is long enough to read as a climb and short enough never to feel like a wait. Every terrace wears its name carved into the cliff under its lip, drawn inside the world so the signs travel with the camera: the place you are heading for is legible from the one you are leaving.
 - Every page except Today rides in a **scroll** — frosted rice paper over the mountain, inset on the right — and wears one `PageScaffold` inside it: region eyebrow, title, one line on what the page is for, and the page's own controls in the header's trailing slot. The camera aims at the middle of the gap the scroll leaves, so the terrace you travelled to is never the thing the scroll is covering.
 - **Today**: the window *is* the hero. The camp terrace and Shifu stand in the open with the hour's sky behind a time-of-day salutation and the day's aphorism laid straight on the painting; a narrower scroll beside them carries the tracked-today total, the counts that want attention, the day's stones, and today's task log.
@@ -514,7 +514,7 @@ This section is load-bearing; a screen watcher lives or dies on trust.
 
 Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `themes` / `task_logs` (§5.3), `decks` / `deck_suggestions` (§5.2), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences), plus the disposable `vault_index` / `vault_fts` / `vault_vectors` search index — rebuildable from the Markdown, which is the source of truth.
 
-User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Work Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched. Raw-text retention is a catalog setting too (`privacy.text_retention_days`, 1–90, default 14) and the analyzer reads it on every run, so shortening it takes effect at the next scrub rather than at the next release.
+User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Focus Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched. Raw-text retention is a catalog setting too (`privacy.text_retention_days`, 1–90, default 14) and the analyzer reads it on every run, so shortening it takes effect at the next scrub rather than at the next release.
 
 **Settings is one place with a rail of its own** (`SettingsView`): the `SettingsSection` cases *are* that rail, in declaration order, and each carries its own summary and the one guarantee that governs it. This is what keeps §7's "no settings page longer than one screen" true now that the analyzer alone has nine dials. Three columns: sections, the section's rows — every control landing on one right-hand edge, so the page reads as a panel of dials rather than a form — and, on a window wide enough for it, a column of **measured** readings (`SettingsDiagnostics`: today's captures split by ladder rung, what the LLM sent, database size). Nothing in that column restates a setting; it exists to answer "is this actually working", which is the one question a settings screen normally cannot. It deliberately does *not* report the daemon's TCC grants: `shifud` is a separate binary with its own identity and this process cannot read them, and a green tick we cannot see would be the one lie on the page whose whole job is to be believed.
 
@@ -543,7 +543,7 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 |---|---|---|
 | **M0 — Watcher** | shifud: events, capture ladder, dedupe, SQLite, exclusions, pause | Runs 8 h under budget (§3.4); `shifu log` CLI shows a sane trace of the day |
 | **M1 — Ledger** | analyzer sessionization + rules classifier; menu bar app with Time tab | Day view matches a hand-kept diary within ~10% |
-| **M2 — Brains** | local LLM classification + topics; daily digest; Work Mode + glow | Ambiguous-block accuracy spot-checked >85%; glow works and is likeable |
+| **M2 — Brains** | local LLM classification + topics; daily digest; Focus Mode + glow | Ambiguous-block accuracy spot-checked >85%; glow works and is likeable |
 | **M3 — Vault** | user-requested decks (suggested + manual), FSRS review UI + CLI | Every deck the user accepts is one they still want after reviewing it. (The predecessor — automatic extraction into a triage inbox — failed this at 1,162 proposals to 1 kept card and was removed.) |
 | **M4 — Radar** | pattern miner + suggestion describer, Radar tab | ≥1 genuinely useful suggestion per week of dogfooding |
 | **M5 — Hardening** | SQLCipher, retention jobs, onboarding, perf test suite, notarized build | Clean install → useful digest with zero config |
@@ -788,7 +788,7 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
     file limit — which is the signal the file wants a real split.
   - ~~The `pause_until` expiry parse exists three times…~~ **Done.** Both
     control files are single-sourced in `ShifuCore/ControlFiles.swift`
-    (`PauseFile`, `WorkModeFile`), each entry point taking an optional `home`
+    (`PauseFile`, `FocusModeFile`), each entry point taking an optional `home`
     so the format is testable without moving `SHIFU_HOME`. Closing it turned up
     a live bug: a file holding `inf` or an overflowing literal parsed to a
     non-finite expiry and pinned capture off forever, which is exactly what the
@@ -815,6 +815,6 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 
 1. Should the heartbeat interval adapt to category (e.g., 30 s during `work` for finer ledger resolution, 5 min during `entertainment`)?
 2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2).
-3. Is glow-pulse enough for Work Mode, or is an optional hard mode (block-list with confirm-to-continue) worth its complexity and adversarial feel?
+3. Is glow-pulse enough for Focus Mode, or is an optional hard mode (block-list with confirm-to-continue) worth its complexity and adversarial feel?
 4. Vault dedupe: how aggressively should near-duplicate knowledge candidates merge across days (same fact re-encountered is itself an SRS signal)?
 5. Should `excluded` time still count toward the ledger as an opaque "private" category (better totals) or vanish entirely (better deniability)? Default proposal: opaque category, toggleable.

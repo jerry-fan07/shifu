@@ -22,7 +22,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 XPC, no message bus. The processes coordinate through shared state on disk:
 
 - `~/Shifu/shifu.db` — one SQLite file, WAL mode, `synchronous = NORMAL`.
-- `~/Shifu/pause_until` and `~/Shifu/work_mode` — two control files the daemon
+- `~/Shifu/pause_until` and `~/Shifu/focus_mode` — two control files the daemon
   watches with a `DispatchSource` on the directory.
 
 That is why `shifu pause` works with the daemon running as a separate process
@@ -127,6 +127,26 @@ right of `observations` happens in `shifu-analyzer`.
    - **Rung 3 — OCR.** Screenshot → dHash gate → Vision OCR. Only reached when
      rung 2 came up short. The dHash gate means a fullscreen video records
      *one* observation, not one per heartbeat.
+
+   The gate's "unchanged" verdict is a claim about the *screen*, never on its
+   own a licence to write nothing. It sits over two dedupe states with
+   different lifetimes — the engine's `lastDHashByKey` (LRU, no TTL) and the
+   recorder's per-window state (below, expires) — so an unchanged screen
+   returned to after a long enough absence hits a gate that still says
+   "unchanged" and a row that is already gone. `touch` reporting **`false` is
+   the seam between them**: it means the observation the gate had in mind has
+   expired, and the capture must be recorded fresh. Swallow it and the window
+   leaves the ledger *permanently*, since a static screen keeps matching that
+   cached hash on every later heartbeat — the bug that
+   `unchangedScreenPastTheDedupeTTLIsLoggedAgain` pins.
+
+   The two must also **name a window identically** — bundle, title *and* URL.
+   The gate only ever acts on its verdict by looking the window up in the
+   recorder, so a coarser key there is a cache slot two windows share: an 8×8
+   dHash cannot tell one page of a site from another, and two tabs of one site
+   share a title, so the gate ends up answering about one tab using the other's
+   pixels. `CaptureEngine.gateKey` is that alignment;
+   `theGateComparesAWindowAgainstItsOwnLastScreen` pins it.
 3. **[ObservationRecorder.swift](Sources/ShifuCore/Capture/ObservationRecorder.swift)**
    is the single write path, and applies in order: drop text for excluded
    kinds → truncate to 8 KB → **`Redactor.redact`** → SimHash near-duplicate
@@ -256,7 +276,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The Notes place and the note page | [`ShifuApp/NotesView.swift`](Sources/ShifuApp/NotesView.swift), [`ShifuApp/NotePage.swift`](Sources/ShifuApp/NotePage.swift) |
 | Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
-| Work Mode nudge behavior | [`shifud/WorkModeController.swift`](Sources/shifud/WorkModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
+| Focus Mode nudge behavior | [`shifud/FocusModeController.swift`](Sources/shifud/FocusModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
 | A user-tunable setting (key, default, bounds, UI copy) | [`Storage/SettingsCatalog.swift`](Sources/ShifuCore/Storage/SettingsCatalog.swift) — see §7 |
 | The Settings place (a page in the main window, not a separate window) | [`ShifuApp/SettingsView.swift`](Sources/ShifuApp/SettingsView.swift), [`ShifuApp/SettingsStore.swift`](Sources/ShifuApp/SettingsStore.swift) — usually you do **not** need to touch these |
 | The database schema | [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift) — `migrator` |
@@ -362,7 +382,7 @@ choices into these.
 `freq:<domain>`; v16 adds `setup_minutes` and `teach`, and `suggestion IS NULL`
 means "mined but not yet judged", which `Radar.active` hides),
 **`srs_reviews`** (review log
-for later FSRS fitting), **`work_mode_sessions`**, **`task_merge_suggestions`**
+for later FSRS fitting), **`focus_mode_sessions`**, **`task_merge_suggestions`**
 (unique ordered pair — keeps dismissals dismissed),
 **`theme_suggestions`** (v13, unique `task_id`; replaced the v9
 `project_suggestions`, dropped in v14).
@@ -421,7 +441,7 @@ screen is blank.
   logs/         daemon logs
   bin/          installed binaries (shifud, shifu-analyzer, shifu)
   pause_until   control file
-  work_mode     control file
+  focus_mode    control file
 ```
 
 All paths resolve through [`ShifuPaths`](Sources/ShifuCore/ShifuPaths.swift),
@@ -461,11 +481,17 @@ about which calls never happen, and only a recording fake can assert that.
 | File | Format | Written by | Watched by |
 |---|---|---|---|
 | `~/Shifu/pause_until` | unix **seconds** expiry, as ASCII digits | `shifu pause`, `LedgerStore.pause` | `PauseController` |
-| `~/Shifu/work_mode` | presence alone; contents ignored | `shifu work on`, `LedgerStore.toggleWorkMode` | `WorkModeController` |
+| `~/Shifu/focus_mode` | presence alone; contents ignored | `shifu focus on`, `LedgerStore.toggleFocusMode` | `FocusModeController` |
 
 Both watchers are a `DispatchSource` on the **home directory** (not the file),
 so creation and deletion both register. An expiry in the past reads as "not
 paused", so a stale file can never wedge capture off.
+
+`focus_mode` was called `work_mode` before v25. Every entry point calls
+`FocusModeFile.adoptLegacyName` before it reads, so it does not matter which
+binary runs first after an upgrade; the file is **moved**, not recreated, so a
+session that is on across the upgrade keeps its `ControlFileToken` and is not
+logged as one session ending and another beginning.
 
 > Note: the `pause_until` parse is currently implemented three times — in
 > `shifu-cli/main.swift`, `shifud/PauseController.swift`, and
