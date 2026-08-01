@@ -315,6 +315,50 @@ private struct TitleBar: View {
         .frame(height: Instrument.titleBarHeight)
         .frame(maxWidth: .infinity)
         .background(Instrument.rail)
+        // A title bar is a handle, and the system only leaves its own 28 pt
+        // strip draggable — ours is 40 pt, so the bottom band of the bar you
+        // can see would refuse the drag. The whole bar takes it instead.
+        // Nothing in here is clickable, so an overlay costs no target, and the
+        // traffic lights live in the window's own title bar view above the
+        // content — they keep their clicks.
+        .overlay(WindowDragArea())
+    }
+}
+
+// MARK: - Dragging the window by its bar
+
+/// Makes whatever it covers a handle for the window: press and move drags it,
+/// double click does what System Settings says a double click on a title bar
+/// does. Put it over a bar, never over a control.
+struct WindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { WindowDragView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Not private: what a press lands on is the whole behaviour, and the test
+/// that checks it asks the window's hit test for this type by name.
+final class WindowDragView: NSView {
+    /// `performDrag` runs its own event loop until the mouse comes up, so the
+    /// press has to reach us rather than being answered by AppKit's own
+    /// move-by-background path — which this window doesn't have anyway.
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        guard event.clickCount < 2 else {
+            doubleClickAction(on: window)
+            return
+        }
+        window.performDrag(with: event)
+    }
+
+    /// Desktop & Dock → "Double-click a window's title bar to". Absent means
+    /// the default, which is zoom.
+    private func doubleClickAction(on window: NSWindow) {
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": window.miniaturize(nil)
+        case "None": break
+        default: window.zoom(nil)
+        }
     }
 }
 

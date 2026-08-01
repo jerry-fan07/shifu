@@ -7,7 +7,7 @@
 #   scripts/release.sh --no-notarize   # local dry run, still Developer ID signed
 #
 # Env overrides:
-#   SHIFU_VERSION         marketing version (default 0.1.0)
+#   SHIFU_VERSION         marketing version (default: the version in ShifuCore)
 #   SHIFU_BUILD           CFBundleVersion (default: git commit count)
 #   SHIFU_NOTARY_PROFILE  notarytool keychain profile (default: shifu)
 set -euo pipefail
@@ -17,10 +17,8 @@ cd "$(dirname "$0")/.."
 NOTARIZE=1
 [ "${1:-}" = "--no-notarize" ] && NOTARIZE=0
 
-VERSION="${SHIFU_VERSION:-0.1.0}"
 PROFILE="${SHIFU_NOTARY_PROFILE:-shifu}"
 APP="dist/Shifu.app"
-DMG="dist/Shifu-$VERSION.dmg"
 
 # Never select an identity positionally: this keychain also holds Apple
 # Development certs, and a release signed with one fails notarization.
@@ -34,6 +32,13 @@ fi
 echo "signing as: $IDENTITY"
 
 scripts/bundle-app.sh "$APP"
+
+# Name the DMG after what the bundle actually says it is, rather than resolving
+# SHIFU_VERSION a second time — the disk image and the About page then can't
+# disagree.
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
+    "$APP/Contents/Info.plist")"
+DMG="dist/Shifu-$VERSION.dmg"
 
 # Sign inside-out, hardened runtime + secure timestamp on everything. No
 # entitlements: the app is not sandboxed, and Accessibility/Screen Recording
