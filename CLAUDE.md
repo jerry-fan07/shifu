@@ -44,3 +44,11 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 
 Cut anything not needed for the current phase's exit criteria (implementation.md).
 Log deferred ideas in design.md §12 instead of building them.
+
+## Parallel workspaces
+
+Several worktrees feed this repo and share one machine-global install
+(/Applications/Shifu.app, the daemon, ~/Shifu). Re-fetch and diff `origin/main` before
+resuming stale work — main moves mid-session and has already landed another workspace's
+version of the same change. "The app looks old" is an install-provenance question before
+it is a code question (skill: `ship`); real-data checks go through a copy (skill: `dogfood`).

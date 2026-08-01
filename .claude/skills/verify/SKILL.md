@@ -68,10 +68,28 @@ It has to activate this process — expect the focus to jump for ten seconds.
 Two such tests can't share a process: each pumps the runloop, and the second
 one never runs. Keep it one test.
 
+## Measuring, not just looking
+
+- **Is a mark at the right place?** Eyeballs miss one-hour offsets. Probe the
+  PNG per-pixel with `NSBitmapImageRep`, calibrate px-per-hour from the pitch
+  of *interior* axis labels (edge labels are inset), and cross-check the
+  answer against a replay over the dogfood copy.
+- **CPU:** `top` reports ~0% for an app that is not truly frontmost — activate
+  the process (as `DropdownShots` does) and measure while it owns the screen,
+  or the number is fiction.
+- **Draw-pass timing:** `ImageRenderer.nsImage` is deferred — timing it times
+  nothing. Render into a `CGContext`, or time `cacheDisplay` itself.
+- **When a pass is slow, suspect layout before logic.** The 120 ms hover of
+  2026-07 was `ViewThatFits` re-laying the block head on every commit, not
+  the body compute; pre-measuring text with `NSFont` cured it
+  (`SummaryLine`).
+
 ## Gotchas
 
 - The harness freezes Core Animation and starves `Task.sleep`, so it cannot
-  verify animation timing — only static layout.
+  verify animation timing — only static layout. (Related, in the live app: a
+  replayed 0→1 `withAnimation` coalesces into no animation at all —
+  retriggered effects need `KeyframeAnimator(trigger:)`.)
 - **The harness rewrites the vault it is pointed at.** `store.refresh()` runs the
   work-note compile, and a day whose blocks differ from the note's
   `content_hash` is rewritten *without* its LLM prose — so the copy's newest
