@@ -1,6 +1,6 @@
 # Shifu
 
-> *Shifu watches you work.*
+> *Shifu lies awake, quiet but observant by your side.*
 
 Most of a working day evaporates. Not the meetings or the milestones — the
 connective tissue between them: the forty minutes that went somewhere, the
