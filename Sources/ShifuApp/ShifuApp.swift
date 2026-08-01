@@ -12,6 +12,16 @@ struct ShifuApp: App {
     /// ⌘, command can point the dashboard at a place before opening it.
     @StateObject private var router = Router()
 
+    init() {
+        // Keep the bundled daemon registered (and migrate a ~/Shifu/bin dev
+        // install) on every launch — but not before onboarding has shown what
+        // capture means. First-run registration happens when onboarding
+        // finishes instead.
+        if UserDefaults.standard.bool(forKey: "shifu.onboarded") {
+            DaemonService.syncRegistration()
+        }
+    }
+
     var body: some Scene {
         Window("Shifu", id: "dashboard") {
             MainWindow(router: router)

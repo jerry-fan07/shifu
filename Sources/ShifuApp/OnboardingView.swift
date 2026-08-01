@@ -123,9 +123,9 @@ struct OnboardingView: View {
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: 14) {
             prose("""
-            The capture daemon runs from `~/Shifu/bin` and needs both, from System \
-            Settings → Privacy & Security. Shifu can't read the daemon's grant state from \
-            here — the ledger filling up is the proof.
+            The capture daemon starts at login (System Settings → Login Items) and needs \
+            both, from System Settings → Privacy & Security. Shifu can't read the daemon's \
+            grant state from here — the ledger filling up is the proof.
             """)
             permission(
                 "Accessibility",
@@ -238,5 +238,7 @@ struct OnboardingView: View {
             }
         }
         onboarded = true
+        // Now — and only now — the daemon may start watching.
+        DaemonService.syncRegistration()
     }
 }
