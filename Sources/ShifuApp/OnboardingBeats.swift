@@ -301,11 +301,23 @@ struct BackendBeat: View {
                     + "in Settings.")
             }
             if backend == "local" {
-                Aside("Nothing leaves this Mac: analysis calls a model server you run "
-                    + "yourself — any OpenAI-compatible endpoint, such as llama-server "
-                    + "with Qwen at " + LocalLLMDefaults.baseURL + ". Point Shifu at it "
-                    + "in Settings → Analysis; calls are paced so the GPU stays quiet "
-                    + "while you work.")
+                // The Qwen edition sets itself up: pick the tier this Mac
+                // gets, fetch it, flip the backend — the panel is the whole
+                // ceremony. Anyone can still point Settings → Analysis at
+                // their own server instead; the standard edition (where
+                // "local" is only that power-user path) keeps the plain copy.
+                if Edition.current == .qwen {
+                    LocalModelSetupPanel()
+                    Aside("Nothing leaves this Mac. Calls are paced so the GPU stays "
+                        + "quiet while you work — and Settings → Analysis can point at "
+                        + "a model server you run yourself instead.")
+                } else {
+                    Aside("Nothing leaves this Mac: analysis calls a model server you run "
+                        + "yourself — any OpenAI-compatible endpoint, such as llama-server "
+                        + "with Qwen at " + LocalLLMDefaults.baseURL + ". Point Shifu at it "
+                        + "in Settings → Analysis; calls are paced so the GPU stays quiet "
+                        + "while you work.")
+                }
             }
             if backend == "deepseek" {
                 SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)

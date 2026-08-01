@@ -203,6 +203,15 @@ private struct SettingsPanel: View {
     @ViewBuilder private var extras: some View {
         if section == .capture { CaptureLadderRow() }
         if section == .about { AboutRows() }
+        // The Qwen edition's model state, under the backend rows it serves:
+        // installed tier, a live download, or the way back in when
+        // onboarding's fetch failed or was skipped. Same panel, same
+        // fetcher as onboarding — a download started there continues here.
+        if section == .analysis, Edition.current == .qwen,
+           store.value(for: SettingsCatalog.analysisBackend) == "local" {
+            LocalModelSetupPanel()
+                .padding(.top, 12)
+        }
     }
 }
 

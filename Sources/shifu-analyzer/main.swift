@@ -58,6 +58,10 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
         print("no LLM backend — deck \(deckKey) stays pending")
         exit(0)
     }
+    // The Qwen edition's server comes up for this build and goes down after
+    // it, same as on the hourly path below — a deck build may be the first
+    // LLM call the install ever makes.
+    let deckServer = await LlamaServer.startIfNeeded(database: database)
     let deckVault = VaultStore(database: database)
     do {
         if let cards = try await DeckBuilder.build(
@@ -70,6 +74,7 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
     } catch {
         print("deck build failed (retries on the next drain): \(error)")
     }
+    deckServer?.stop()
     exit(0)
 }
 
@@ -113,6 +118,10 @@ print("analyzed \(summary.observationsProcessed) observations → "
 let watched = args.contains("--radar") || args.contains("--digest")
 let pacer: LLMPacer? = watched
     ? nil : LLMPacer.ifLocal(database: database, userIsAway: { Presence.userIsAway() })
+// Qwen edition: bring the bundled llama-server up for this run (and only
+// this run) before any stage calls it. Stopped at the bottom of the file —
+// every path between here and there fails soft, never exits.
+let llamaServer = await LlamaServer.startIfNeeded(database: database)
 let backend: DeepSeekBackend? =
     try DeepSeekBackend.ifConfigured(database: database)?.paced(pacer)
 let reasoningBackend: DeepSeekBackend? =
@@ -474,3 +483,6 @@ if spentToday > 0 {
     print(String(format: "llm spend today ≈ $%.3f", spentToday)
         + (spentToday > warnAt ? String(format: " ⚠ (warn at $%.2f)", warnAt) : ""))
 }
+
+// The run is over; the local server's 6 GB goes with it.
+llamaServer?.stop()

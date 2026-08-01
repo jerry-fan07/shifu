@@ -7,7 +7,9 @@
 #
 # Env: SHIFU_VERSION (default: the version in ShifuCore), SHIFU_BUILD (default:
 # git commit count), SHIFU_EDITION (standard | qwen, default standard — which
-# backend choices the bundle offers; see Edition in ShifuCore).
+# backend choices the bundle offers; see Edition in ShifuCore),
+# SHIFU_LLAMA_TAG (qwen edition: the llama.cpp release tag to build the
+# bundled llama-server from).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,6 +37,37 @@ case "$EDITION" in
        exit 1 ;;
 esac
 
+# The qwen edition carries its own model server (design.md §4.2): llama-server,
+# built from a pinned llama.cpp release — never a prebuilt download, so the
+# binary we sign is the source we read. Cached by tag under .build; a tag bump
+# rebuilds, a rerun on the same tag costs a cmake no-op. Built static
+# (BUILD_SHARED_LIBS=OFF) with the Metal shader embedded, so the one
+# executable is the whole server and rides Contents/MacOS like the helpers.
+LLAMA_SERVER=""
+if [ "$EDITION" = "qwen" ]; then
+    LLAMA_TAG="${SHIFU_LLAMA_TAG:-b6420}"
+    LLAMA_SRC=".build/llama.cpp-$LLAMA_TAG"
+    if [ ! -d "$LLAMA_SRC" ]; then
+        git clone --depth 1 --branch "$LLAMA_TAG" \
+            https://github.com/ggml-org/llama.cpp "$LLAMA_SRC"
+    fi
+    cmake -S "$LLAMA_SRC" -B "$LLAMA_SRC/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_METAL=ON \
+        -DGGML_METAL_EMBED_LIBRARY=ON \
+        -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_CURL=OFF
+    cmake --build "$LLAMA_SRC/build" --target llama-server -j "$(sysctl -n hw.ncpu)"
+    LLAMA_SERVER="$LLAMA_SRC/build/bin/llama-server"
+    [ -x "$LLAMA_SERVER" ] || {
+        echo "ERROR: llama.cpp $LLAMA_TAG built no llama-server at $LLAMA_SERVER" >&2
+        exit 1
+    }
+fi
+
 swift build -c release --product ShifuApp
 swift build -c release --product shifud
 swift build -c release --product shifu-analyzer
@@ -57,6 +90,9 @@ for PRODUCT in ShifuApp shifu; do
     }
 done
 cp -R "$BIN_DIR/GRDB.framework" "$APP/Contents/Frameworks/"
+if [ -n "$LLAMA_SERVER" ]; then
+    cp "$LLAMA_SERVER" "$APP/Contents/MacOS/llama-server"
+fi
 cp "Sources/ShifuApp/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "scripts/com.shifu.shifud.bundled.plist" \
    "$APP/Contents/Library/LaunchAgents/com.shifu.shifud.plist"
