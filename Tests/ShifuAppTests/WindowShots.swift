@@ -78,6 +78,12 @@ import Testing
                 .tasks, route: .task(task), as: "task-page", dark: true,
                 store: store, into: directory)
         }
+        shootDecks(store: store, into: directory)
+        shootNotes(store: store, into: directory)
+        shootOnboarding(into: directory)
+    }
+
+    @MainActor private func shootDecks(store: LedgerStore, into directory: URL) {
         if let deck = store.decks.first {
             shoot(
                 .decks, route: .deck(deck.id), as: "deck-page", dark: false,
@@ -94,7 +100,22 @@ import Testing
                 .decks, route: .looseCards, as: "loose-cards", dark: true,
                 store: store, into: directory)
         }
-        shootNotes(store: store, into: directory)
+    }
+
+    /// The consent page (§8) in each of its three states — the one screen
+    /// where wording is the product, and the disclosure blocks only appear
+    /// for the selection they describe.
+    @MainActor private func shootOnboarding(into directory: URL) {
+        for (backend, slug) in [
+            ("off", "onboarding-consent"),
+            ("shifu-cloud", "onboarding-consent-cloud"),
+            ("deepseek", "onboarding-consent-key")
+        ] {
+            shoot(
+                OnboardingView(step: 3, backend: backend),
+                to: directory.appendingPathComponent("\(slug).png"),
+                dark: backend == "shifu-cloud")
+        }
     }
 
     /// The picker's Focus position is view state the same way Day/Week is — a

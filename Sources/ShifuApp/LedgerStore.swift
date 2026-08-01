@@ -177,7 +177,7 @@ final class LedgerStore: ObservableObject {
             themeProposals = (try? ThemeProposals.pending(database: database)) ?? []
             decks = (try? DeckStore.decks(database: database)) ?? []
             deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
-            hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
+            hasLLMBackend = ((try? Settings.llmCredential(database: database)) ?? nil) != nil
         }
         do {
             let now = Date()
@@ -210,10 +210,7 @@ final class LedgerStore: ObservableObject {
     func runAnalysis() {
         if let existing = analyzerProcess, existing.isRunning { return }
         guard Date().timeIntervalSince(lastAnalyzerRun) > 60 else { return }
-        let analyzerURL = ShifuPaths.home
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("shifu-analyzer")
-        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else { return }
+        guard let analyzerURL = ShifuPaths.helper("shifu-analyzer") else { return }
         let process = Process()
         process.executableURL = analyzerURL
         process.arguments = ["--force"]  // user-initiated: don't skip on battery

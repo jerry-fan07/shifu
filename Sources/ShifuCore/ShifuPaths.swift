@@ -23,6 +23,42 @@ public enum ShifuPaths {
     /// Read once at startup by `FocusModeFile.adoptLegacyName`, never written.
     public static var legacyFocusModeFile: URL { home.appendingPathComponent("work_mode") }
 
+    /// Locates a helper executable (shifu-analyzer, shifud, …). Helpers ship
+    /// as siblings of the running binary — Contents/MacOS in the app bundle,
+    /// the build directory in development — so the sibling is checked first.
+    /// Resolved from the executable path rather than Bundle.main because
+    /// shifud is launched by launchd from inside the bundle, where Bundle.main
+    /// is ambiguous. Dev installs that scatter binaries into ~/Shifu/bin
+    /// (install-daemon.sh) are the fallback. Nil when neither location has an
+    /// executable file — callers already treat a missing helper as
+    /// graceful degradation, never an error.
+    public static func helper(_ name: String) -> URL? {
+        let sibling = executable
+            .resolvingSymlinksInPath()
+            .deletingLastPathComponent()
+            .appendingPathComponent(name)
+        let devBin = home
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent(name)
+        return [sibling, devBin].first {
+            FileManager.default.isExecutableFile(atPath: $0.path)
+        }
+    }
+
+    /// The running executable, from the kernel (`_NSGetExecutablePath`) rather
+    /// than argv[0]: launchd starts the bundled daemon with a bare program
+    /// name in argv[0], and Bundle.main is ambiguous for a launchd-launched
+    /// process inside an app bundle.
+    private static var executable: URL {
+        var capacity = UInt32(4 * 1024)
+        var buffer = [CChar](repeating: 0, count: Int(capacity))
+        if _NSGetExecutablePath(&buffer, &capacity) != 0 {
+            buffer = [CChar](repeating: 0, count: Int(capacity))
+            _NSGetExecutablePath(&buffer, &capacity)
+        }
+        return URL(fileURLWithPath: String(cString: buffer))
+    }
+
     public static func ensureHomeExists() throws {
         try FileManager.default.createDirectory(
             at: home, withIntermediateDirectories: true,

@@ -155,7 +155,7 @@ struct DecksView: View {
         if store.hasLLMBackend {
             SolidButton(title: "New deck", glyph: "+") { router.open(.newDeck) }
         } else {
-            Text("A deck needs DeepSeek (Settings)")
+            Text("A deck needs an AI backend (Settings)")
                 .font(Instrument.sans(11.5))
                 .foregroundStyle(Instrument.ghost)
         }
@@ -198,7 +198,7 @@ struct DecksView: View {
                     } else {
                         // Without a key the build could never run, and the deck
                         // would sit "Building…" forever (§5.2).
-                        Text("Needs DeepSeek (Settings)")
+                        Text("Needs an AI backend (Settings)")
                             .font(Instrument.sans(11.5))
                             .foregroundStyle(Instrument.ghost)
                     }

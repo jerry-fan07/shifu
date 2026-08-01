@@ -112,19 +112,33 @@ struct DeepSeekBackend: LLMBackend {
         }
     }
 
-    /// Nil when analysis is off or no key exists. No key ⇒ rules-only and
-    /// nothing ever leaves the machine, so a fresh install stays local until
-    /// the user pastes a key.
+    /// Nil until the user has opted in (§8): pasted their own key, or chosen
+    /// the hosted Shifu Cloud backend (whose device token main.swift
+    /// provisions before any backend is built — a still-missing token means
+    /// registration failed, and the stages skip like a keyless install).
+    /// Either way the wire protocol is identical; the proxy only moves who
+    /// holds the DeepSeek credentials.
     static func ifConfigured(
         database: ShifuDatabase, role: Role = .fast
     ) throws -> DeepSeekBackend? {
-        guard let key = try Settings.llmAPIKey(database: database) else { return nil }
-        let base = (try? Settings.get(Settings.deepseekBaseURLKey, database: database))
-            .flatMap { $0.isEmpty ? nil : $0 } ?? defaultBaseURL
+        let credential: String
+        let base: String
+        switch try Settings.llmCredential(database: database) {
+        case nil:
+            return nil
+        case .deepseek(let key):
+            credential = key
+            base = (try? Settings.get(Settings.deepseekBaseURLKey, database: database))
+                .flatMap { $0.isEmpty ? nil : $0 } ?? defaultBaseURL
+        case .shifuCloud(let token):
+            guard let token else { return nil }
+            credential = token
+            base = ShifuCloud.baseURL(database: database)
+        }
         let model = (try? Settings.get(role.settingsKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
         return DeepSeekBackend(
-            name: model, apiKey: key, model: model,
+            name: model, apiKey: credential, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
             responseHeadroomTokens: role.responseHeadroomTokens,
             thinks: role.thinks, database: database)
