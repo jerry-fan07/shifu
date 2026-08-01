@@ -145,6 +145,12 @@ enum LlamaServer {
             "-ngl", "999",
             "-ub", "256",
             "-b", "512",
+            // Thinking always off on the local tier (§4.2). Enforced at the
+            // server because the wire can't: the analyzer's `thinking:
+            // disabled` field is DeepSeek's dialect, which llama-server
+            // ignores — measured 2026-08-01, a 10-token budget came back all
+            // reasoning and no answer.
+            "--reasoning", "off",
             "--no-webui"
         ]
     }

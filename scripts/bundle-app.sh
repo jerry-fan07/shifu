@@ -45,7 +45,16 @@ esac
 # executable is the whole server and rides Contents/MacOS like the helpers.
 LLAMA_SERVER=""
 if [ "$EDITION" = "qwen" ]; then
-    LLAMA_TAG="${SHIFU_LLAMA_TAG:-b6420}"
+    command -v cmake >/dev/null || {
+        echo "ERROR: the qwen edition builds llama-server from source and needs" >&2
+        echo "cmake (brew install cmake)." >&2
+        exit 1
+    }
+    # b10200 = commit 5f55650a7, the build the 2026-07-31 spike measured
+    # (the homebrew llama-server that served every §12 number reports
+    # "version: 10200 (5f55650a7)") — so the bundled server is the measured
+    # one until a tag bump re-measures.
+    LLAMA_TAG="${SHIFU_LLAMA_TAG:-b10200}"
     LLAMA_SRC=".build/llama.cpp-$LLAMA_TAG"
     if [ ! -d "$LLAMA_SRC" ]; then
         git clone --depth 1 --branch "$LLAMA_TAG" \
