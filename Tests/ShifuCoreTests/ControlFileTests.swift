@@ -171,6 +171,43 @@ import Testing
         #expect(first != second)
     }
 
+    // MARK: - The session start (FocusClock)
+
+    /// The stopwatch's near end. Read from the file rather than from the
+    /// daemon's session row so it starts the instant the switch is flipped,
+    /// and starts at all when no daemon is running.
+    @Test func startedAtIsWhenTheSwitchWasFlipped() throws {
+        let home = try scratch()
+        #expect(FocusModeFile.startedAt(home: home) == nil)
+
+        let before = Date()
+        try FocusModeFile.turnOn(home: home)
+        let startedAt = try #require(FocusModeFile.startedAt(home: home))
+        #expect(startedAt >= before.addingTimeInterval(-1))
+        #expect(startedAt <= Date().addingTimeInterval(1))
+
+        FocusModeFile.turnOff(home: home)
+        #expect(FocusModeFile.startedAt(home: home) == nil)
+    }
+
+    /// The same property `aFastOffOnCyclePresentsANewToken` states for the
+    /// daemon, read as a clock: a new session's stopwatch starts at zero
+    /// rather than continuing the one before it.
+    @Test func aNewSessionGetsANewStart() async throws {
+        let home = try scratch()
+        try FocusModeFile.turnOn(home: home)
+        let first = try #require(FocusModeFile.startedAt(home: home))
+
+        FocusModeFile.turnOff(home: home)
+        // Birth time has whole-nanosecond resolution but HFS/APFS timestamps
+        // are coarser; make sure the second file is unambiguously later.
+        try await Task.sleep(for: .milliseconds(20))
+        try FocusModeFile.turnOn(home: home)
+
+        let second = try #require(FocusModeFile.startedAt(home: home))
+        #expect(second > first)
+    }
+
     // MARK: - Adopting the pre-rename name
 
     /// Upgrading with Focus Mode left on. The state has to survive under the

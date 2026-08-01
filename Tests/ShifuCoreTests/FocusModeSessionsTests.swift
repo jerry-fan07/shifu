@@ -109,4 +109,59 @@ import Testing
         #expect(try FocusModeSessions.closeDangling(database: db) == 2)
         #expect(try sessions(db) == [Span(1_000, 4_000), Span(10_000, 14_000)])
     }
+
+    // MARK: - previousEnd: the far end of the "since" clock (FocusClock)
+
+    /// One minute, the floor a row has to clear to count as a session at all.
+    private var minute: Int64 { FocusModeSessions.minSessionMs }
+
+    @Test func previousEndIsTheLatestSessionToHaveEnded() throws {
+        let db = try ShifuDatabase.inMemory()
+        try closedSession(db, from: 0, to: minute)
+        try closedSession(db, from: 10 * minute, to: 12 * minute)
+        try closedSession(db, from: 5 * minute, to: 7 * minute)
+
+        #expect(try FocusModeSessions.previousEnd(
+            before: 100 * minute, database: db) == 12 * minute)
+    }
+
+    @Test func previousEndIsNilWhenNothingHasEverBeenLogged() throws {
+        let db = try ShifuDatabase.inMemory()
+        #expect(try FocusModeSessions.previousEnd(before: 100 * minute, database: db) == nil)
+    }
+
+    /// The same line `overlapping` holds: a row too short to be a session is a
+    /// switch being flipped, and "last focus 3s ago" after a stray double-click
+    /// is a reading about the mouse, not about focusing.
+    @Test func previousEndIgnoresRowsTooShortToBeASession() throws {
+        let db = try ShifuDatabase.inMemory()
+        try closedSession(db, from: 0, to: 2 * minute)
+        try closedSession(db, from: 50 * minute, to: 50 * minute + 3_000)
+
+        #expect(try FocusModeSessions.previousEnd(
+            before: 100 * minute, database: db) == 2 * minute)
+    }
+
+    /// An open row is either the session running right now or a crashed
+    /// daemon's leftover. Neither is one you were last focusing in.
+    @Test func previousEndIgnoresOpenSessions() throws {
+        let db = try ShifuDatabase.inMemory()
+        try closedSession(db, from: 0, to: 2 * minute)
+        try openSession(db, startedAt: 50 * minute)
+
+        #expect(try FocusModeSessions.previousEnd(
+            before: 100 * minute, database: db) == 2 * minute)
+    }
+
+    /// The cutoff is what makes the gap mean "before *this* session" while one
+    /// is running, rather than "before now" with the running session in the way.
+    @Test func previousEndStopsAtTheCutoff() throws {
+        let db = try ShifuDatabase.inMemory()
+        try closedSession(db, from: 0, to: 2 * minute)
+        try closedSession(db, from: 20 * minute, to: 30 * minute)
+
+        #expect(try FocusModeSessions.previousEnd(
+            before: 10 * minute, database: db) == 2 * minute)
+        #expect(try FocusModeSessions.previousEnd(before: minute, database: db) == nil)
+    }
 }

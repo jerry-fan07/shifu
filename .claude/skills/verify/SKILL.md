@@ -33,6 +33,7 @@ renderer didn't crash, nothing more.
 | Empty install | `SHIFU_HOME=$(mktemp -d)` — blank slates, no counts, no crash |
 | Minimum window | `SHIFU_SHOT_WIDTH=960` — the `minWidth` the shell declares |
 | Below the fold | `SHIFU_SHOT_HEIGHT=2600` — the harness can't scroll; a taller film is the only way to see a long page's tail |
+| Scroll-driven reveals | `SHIFU_SHOT_TRAVEL=<px>` scrubs the theme page's campaign reveal to that scroll offset (0 = the unrevealed opening frame, ~700 = done). Without it a `SHIFU_SHOTS` run films the reveal already finished. |
 | Dark mode | already covered: Timeline and Deck render dark, the rest light |
 
 ## What real data breaks that mock data doesn't
