@@ -31,3 +31,18 @@ public enum ShifuCloudDefaults {
     /// Where the proxy is deployed.
     public static let baseURL = "https://shifu-cloud.shifuapp.workers.dev"
 }
+
+/// The local tier (§4.2): an OpenAI-compatible model server the user runs
+/// themselves. Constants only, for the same reason as `ShifuCloudDefaults` —
+/// the client lives in shifu-analyzer.
+public enum LocalLLMDefaults {
+    /// llama-server's stock address.
+    public static let baseURL = "http://127.0.0.1:8080"
+    /// What the wire's `model` field claims when the user hasn't named one.
+    /// llama-server serves whatever it loaded regardless; routers that pick
+    /// a model by name (Ollama, LM Studio) need the real one typed in.
+    public static let model = "qwen3.5-9b"
+    /// Prompt + response window every stage sizes its batches to (invariant
+    /// 7) — the 16k the 2026-07-31 spike actually served, not DeepSeek's 60k.
+    public static let contextWindowTokens = 16_000
+}

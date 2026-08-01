@@ -94,19 +94,20 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
 
-// One wire protocol, two ways in — the user's own DeepSeek key, or the
-// hosted Shifu Cloud proxy. Without either opt-in (or with backend "off")
-// every LLM stage is skipped and the rules-only ledger stands (§10
-// fallback). Two model slots share the one opt-in (§4.2): the fast model
-// runs everything hourly — cards, grouping, themes, notes — over card
-// evidence; the reasoning model is reserved for the daily roster
-// reconciliation and the weekly radar, the judgment calls where its billed
-// chain-of-thought earns its price.
-// A local endpoint means the GPU doing analysis sits under the user's hands,
+// One wire protocol, three ways in — the user's own DeepSeek key, the
+// hosted Shifu Cloud proxy, or a local server they run themselves. Without
+// an opt-in (or with backend "off") every LLM stage is skipped and the
+// rules-only ledger stands (§10 fallback). Two model slots share the one
+// opt-in (§4.2): the fast model runs everything hourly — cards, grouping,
+// themes, notes — over card evidence; the reasoning model is reserved for
+// the daily roster reconciliation and the weekly radar, the judgment calls
+// where its billed chain-of-thought earns its price. On the local tier both
+// slots are the one model the server has loaded.
+// The local tier means the GPU doing analysis sits under the user's hands,
 // so its calls are paced (LLMPacer): rest between bursts, harder while the
 // user is present, gentler once the screen locks or input goes idle — except
 // when a flag says someone is watching this very run, where sleeping between
-// calls would punish the person who asked. Cloud endpoints get no pacer; the
+// calls would punish the person who asked. Cloud tiers get no pacer; the
 // `--build-deck` path above builds its own backend and stays unpaced for the
 // same someone-is-watching reason.
 let watched = args.contains("--radar") || args.contains("--digest")

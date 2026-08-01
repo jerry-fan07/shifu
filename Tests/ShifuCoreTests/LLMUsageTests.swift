@@ -173,7 +173,7 @@ import Testing
         #expect(byStage.count == 4)
         #expect(byStage.allSatisfy { ["flash", "pro"].contains($0.model) })
         let book = LLMPriceBook(fast: .fastDefault, reasoning: .reasoningDefault,
-                                reasoningModel: "pro")
+                                reasoningModel: "pro", localModel: "qwen")
         // Same tokens, different slot ⇒ different money. If the model were
         // dropped, every stage would price at the fast rate.
         let cards = try #require(byStage.first { $0.stage == "cards" })

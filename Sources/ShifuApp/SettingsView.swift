@@ -159,9 +159,7 @@ private struct SettingsPanel: View {
                 // look at, and opening with "how long text is kept"
                 // answers a question nobody arrived with.
                 if section == .privacy { PrivacyRows() }
-                ForEach(SettingsCatalog.ints.filter { $0.section == section }) {
-                    IntSettingRow(setting: $0)
-                }
+                ForEach(visibleInts) { IntSettingRow(setting: $0) }
                 ForEach(visibleChoices) { ChoiceSettingRow(setting: $0) }
                 ForEach(visibleTexts) { TextSettingRow(setting: $0) }
                 ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
@@ -176,6 +174,10 @@ private struct SettingsPanel: View {
                 }
             }
         }
+    }
+
+    private var visibleInts: [IntSetting] {
+        SettingsCatalog.ints.filter { $0.section == section && store.isVisible($0) }
     }
 
     private var visibleChoices: [ChoiceSetting] {

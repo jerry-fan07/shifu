@@ -4,14 +4,14 @@ import FoundationNetworking
 #endif
 import ShifuCore
 
-/// DeepSeek chat-completions backend (design.md §4.2 tier 2) — the only LLM
-/// backend since the on-device Foundation Models tier was dropped (4k window,
-/// macOS 26+ only, weak labels). Speaks the OpenAI-compatible protocol, so
-/// `deepseek.base_url`/`deepseek.model` can point at any /chat/completions
-/// server. Analyzer-only: this file must never move into ShifuCore, or
-/// network symbols would link into shifud (CLAUDE.md invariant 1). Only
-/// post-exclusion, post-redaction text samples are ever sent, and only once
-/// the user has supplied an API key — the key *is* the opt-in (§8).
+/// Chat-completions backend (design.md §4.2 tier 2) — one wire client for
+/// every tier that speaks the OpenAI-compatible protocol: DeepSeek with the
+/// user's key, the hosted Shifu Cloud proxy, or a local server the user runs
+/// (`analysis.backend = local`, e.g. llama-server with Qwen). Analyzer-only:
+/// this file must never move into ShifuCore, or network symbols would link
+/// into shifud (CLAUDE.md invariant 1). Only post-exclusion, post-redaction
+/// text samples are ever sent, and only after the user's affirmative opt-in
+/// (§8) — a pasted key, or choosing the cloud or local tier outright.
 ///
 /// Thinking mode is stated on every call and never left to the provider:
 /// DeepSeek defaults it to *enabled* on both slots, so a body that merely
@@ -51,11 +51,10 @@ struct DeepSeekBackend: LLMBackend {
     /// interactive runs) means every call fires as soon as its stage asks.
     var pacer: LLMPacer?
 
-    /// Prompt + response budget per call, from `deepseek.context_tokens`.
-    /// Every stage sizes its batches to it (invariant 7), so this one number
-    /// is how a local profile adapts the whole pipeline: point the base URL
-    /// at a llama-server, state the window it actually serves, and every
-    /// prompt shrinks to fit.
+    /// Prompt + response budget per call. Every stage sizes its batches to
+    /// it (invariant 7), so this one number is how the local tier adapts the
+    /// whole pipeline: state the window the server actually serves, and
+    /// every prompt shrinks to fit.
     var contextWindowTokens = DeepSeekBackend.defaultContextWindowTokens
 
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
@@ -63,18 +62,10 @@ struct DeepSeekBackend: LLMBackend {
     /// points the base URL at.
     static let defaultContextWindowTokens = 60_000
 
-    /// What `deepseek.context_tokens` may claim. Below 8k even a compact-
-    /// roster grouping prompt stops fitting; 200k covers any hosted model
-    /// worth pointing the base URL at.
+    /// What `local.context_tokens` may claim. Below 8k even a compact-
+    /// roster grouping prompt stops fitting; 200k covers any server worth
+    /// pointing the base URL at.
     static let contextWindowTokenRange = 8_000...200_000
-
-    /// The prompt budget no configuration may take away: the reasoning
-    /// slot's thinking headroom is clamped so `contextWindowTokens -
-    /// responseHeadroomTokens` never drops below this. Without the clamp, a
-    /// 16k window under the stock 32k headroom turns every reasoning-slot
-    /// budget negative — TaskReconciler sheds its roster to 2 entries and
-    /// the `max(512, …)` stages batch degenerately.
-    static let minPromptBudgetTokens = 4_000
 
     /// The `max_tokens` floor for a *thinking* call: observed reasoning runs
     /// are 2-3k tokens, so this is generous while staying inside the output
@@ -140,12 +131,12 @@ struct DeepSeekBackend: LLMBackend {
         }
     }
 
-    /// Nil until the user has opted in (§8): pasted their own key, or chosen
+    /// Nil until the user has opted in (§8): pasted their own key, chosen
     /// the hosted Shifu Cloud backend (whose device token main.swift
     /// provisions before any backend is built — a still-missing token means
-    /// registration failed, and the stages skip like a keyless install).
-    /// Either way the wire protocol is identical; the proxy only moves who
-    /// holds the DeepSeek credentials.
+    /// registration failed, and the stages skip like a keyless install), or
+    /// chosen the local tier. The wire protocol is identical throughout;
+    /// only who holds the credentials — and whether any exist — moves.
     static func ifConfigured(
         database: ShifuDatabase, role: Role = .fast
     ) throws -> DeepSeekBackend? {
@@ -162,40 +153,50 @@ struct DeepSeekBackend: LLMBackend {
             guard let token else { return nil }
             credential = token
             base = ShifuCloud.baseURL(database: database)
+        case .localServer:
+            return localServer(role: role, database: database)
         }
         let model = (try? Settings.get(role.settingsKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
-        let window = configuredContextWindow(database: database)
-        // Thinking off turns the reasoning slot into a second fast slot — no
-        // chain-of-thought, no headroom reserve. That pairing is the local
-        // profile: at a 16k window the stock 32k headroom otherwise swallows
-        // every reasoning-slot prompt budget.
-        let thinks = role.thinks && reasoningThinkingEnabled(database: database)
-        let headroom = thinks
-            ? min(role.responseHeadroomTokens, window - minPromptBudgetTokens)
-            : 0
         return DeepSeekBackend(
             name: model, apiKey: credential, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
-            responseHeadroomTokens: headroom,
-            thinks: thinks, database: database,
-            contextWindowTokens: window)
+            responseHeadroomTokens: role.responseHeadroomTokens,
+            thinks: role.thinks, database: database)
     }
 
-    /// `deepseek.context_tokens`, clamped to `contextWindowTokenRange`;
-    /// blank, absent or unparseable means the 60k default. Clamped on read
-    /// (like `IntSetting.clamp`) so a hand-edited row can't zero every
-    /// stage's budget.
-    static func configuredContextWindow(database: ShifuDatabase) -> Int {
-        guard let raw = try? Settings.get(Settings.deepseekContextTokensKey, database: database),
+    /// The local tier: one self-hosted model serves both slots — it is one
+    /// server with one model loaded, so the roles differ only in which
+    /// stages call them. Thinking stays off on both: at a local-sized window
+    /// the stock 32k chain-of-thought headroom would turn every
+    /// reasoning-slot prompt budget negative — TaskReconciler sheds its
+    /// roster to 2 entries and the `max(512, …)` stages batch degenerately.
+    /// The window comes from `local.context_tokens` and resizes every
+    /// stage's batches through invariant 7.
+    private static func localServer(role: Role, database: ShifuDatabase) -> DeepSeekBackend {
+        let base = (try? Settings.get(Settings.localBaseURLKey, database: database))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.baseURL
+        let model = (try? Settings.get(Settings.localModelKey, database: database))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.model
+        return DeepSeekBackend(
+            // llama-server ignores auth; the placeholder only fills the header.
+            name: model, apiKey: "local", model: model,
+            baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
+            responseHeadroomTokens: 0,
+            thinks: false, database: database,
+            contextWindowTokens: localContextWindow(database: database))
+    }
+
+    /// `local.context_tokens`, clamped to `contextWindowTokenRange`; blank,
+    /// absent or unparseable means `LocalLLMDefaults.contextWindowTokens`.
+    /// Clamped on read (like `IntSetting.clamp`) so a hand-edited row can't
+    /// zero every stage's budget.
+    static func localContextWindow(database: ShifuDatabase) -> Int {
+        guard let raw = try? Settings.get(Settings.localContextTokensKey, database: database),
               let parsed = Int(raw.trimmingCharacters(in: .whitespaces))
-        else { return defaultContextWindowTokens }
+        else { return LocalLLMDefaults.contextWindowTokens }
         return min(max(parsed, contextWindowTokenRange.lowerBound),
                    contextWindowTokenRange.upperBound)
-    }
-
-    private static func reasoningThinkingEnabled(database: ShifuDatabase) -> Bool {
-        Settings.value(SettingsCatalog.deepseekReasoningThinking, database: database) != "off"
     }
 
     /// A copy of this backend that stamps `stage` on every row it records.

@@ -88,16 +88,19 @@ public actor LLMPacer {
 }
 
 extension LLMPacer {
-    /// The production pacer, or nil when pacing doesn't apply: the endpoint
-    /// is a cloud host (the network round trip is the rest, and sleeping
-    /// between calls would only slow the pipeline without cooling anything)
-    /// or both duties are dialed to 100.
+    /// The production pacer, or nil when pacing doesn't apply: the backend
+    /// is a cloud tier (the network round trip is the rest, and sleeping
+    /// between calls would only slow the pipeline without cooling anything),
+    /// the local server lives on some other machine, or both duties are
+    /// dialed to 100.
     public static func ifLocal(
         database: ShifuDatabase, userIsAway: @escaping @Sendable () -> Bool
     ) -> LLMPacer? {
-        guard let base = try? Settings.get(Settings.deepseekBaseURLKey, database: database),
-              let host = URL(string: base)?.host, isLoopback(host)
+        guard case .localServer = (try? Settings.llmCredential(database: database)) ?? nil
         else { return nil }
+        let base = (try? Settings.get(Settings.localBaseURLKey, database: database))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.baseURL
+        guard let host = URL(string: base)?.host, isLoopback(host) else { return nil }
         let active = Settings.value(SettingsCatalog.llmDutyActive, database: database)
         let idle = Settings.value(SettingsCatalog.llmDutyIdle, database: database)
         guard active < 100 || idle < 100 else { return nil }

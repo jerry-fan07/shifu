@@ -123,22 +123,38 @@ import Testing
 
     // MARK: - ifLocal factory
 
-    @Test func cloudAndUnsetEndpointsGetNoPacer() throws {
+    /// Only the local tier is ever paced — a cloud tier's round trips are
+    /// rest enough, whatever endpoint it points at.
+    @Test func cloudTiersGetNoPacer() throws {
         let database = try ShifuDatabase.inMemory()
+        try Settings.set(Settings.deepseekAPIKeyKey, to: "sk-test", database: database)
         #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
-        try Settings.set(Settings.deepseekBaseURLKey,
-                         to: "https://api.deepseek.com", database: database)
+        try Settings.set(Settings.analysisBackendKey, to: "shifu-cloud", database: database)
         #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
     }
 
-    @Test func aLoopbackEndpointGetsAPacerUnlessDutyIsFull() throws {
+    @Test func theLocalTierGetsAPacerUnlessDutyIsFull() throws {
         let database = try ShifuDatabase.inMemory()
-        try Settings.set(Settings.deepseekBaseURLKey,
+        try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
+        // The blank endpoint default is loopback, so pacing applies out of
+        // the box…
+        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) != nil)
+        try Settings.set(Settings.localBaseURLKey,
                          to: "http://127.0.0.1:8080/v1", database: database)
         #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) != nil)
 
         try Settings.set(SettingsCatalog.llmDutyActive, to: 100, database: database)
         try Settings.set(SettingsCatalog.llmDutyIdle, to: 100, database: database)
+        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
+    }
+
+    /// …but a LAN server's heat is some other machine's problem, local tier
+    /// or not.
+    @Test func aRemoteLocalServerIsNotPaced() throws {
+        let database = try ShifuDatabase.inMemory()
+        try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
+        try Settings.set(Settings.localBaseURLKey,
+                         to: "http://192.168.1.20:8080", database: database)
         #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
     }
 

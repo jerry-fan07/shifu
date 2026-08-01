@@ -126,14 +126,14 @@ public enum Settings {
     /// Reasoning model (default deepseek-v4-pro): semantic task grouping and
     /// theme clustering, where naming the user's intent is the whole job.
     public static let deepseekReasoningModelKey = "deepseek.reasoning_model"
-    /// Context window (prompt + response, in tokens) every stage sizes its
-    /// batches to (invariant 7). Blank means 60k, which suits DeepSeek; a
-    /// local-server profile drops it to what the server actually serves.
-    public static let deepseekContextTokensKey = "deepseek.context_tokens"
-    /// Whether the reasoning slot runs as a thinking model ("on"/"off").
-    /// Off makes it behave like the fast slot — no chain-of-thought, no
-    /// response headroom — which is what makes a 16k local window viable.
-    public static let deepseekReasoningThinkingKey = "deepseek.reasoning_thinking"
+    /// The local tier (§4.2): an OpenAI-compatible server the user runs
+    /// themselves. One model serves both slots — it is one server with one
+    /// model loaded — with thinking always off, so the context window (blank
+    /// means `LocalLLMDefaults.contextWindowTokens`) is spent on prompts, not
+    /// chain-of-thought headroom.
+    public static let localBaseURLKey = "local.base_url"
+    public static let localModelKey = "local.model"
+    public static let localContextTokensKey = "local.context_tokens"
     public static let digestHourKey = "digest.hour"
 
     public static func get(_ key: String, database: ShifuDatabase) throws -> String? {
@@ -168,6 +168,11 @@ public enum Settings {
             // the analyzer on its next run when nil.
             let token = try get(shifuCloudTokenKey, database: database)
             return .shifuCloud(token: (token?.isEmpty ?? true) ? nil : token)
+        case "local":
+            // No credential to hold: the endpoint is a server the user runs,
+            // and choosing it is the whole opt-in. Non-nil so both binaries
+            // read "an LLM backend exists" the same way they do for a key.
+            return .localServer
         default:
             guard let key = try ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]
                 ?? get(deepseekAPIKeyKey, database: database), !key.isEmpty
@@ -178,11 +183,13 @@ public enum Settings {
 }
 
 /// How the analyzer may talk to an LLM once the user has opted in: their own
-/// DeepSeek key, or the hosted Shifu Cloud proxy (whose device token may not
-/// exist yet — the analyzer mints one on first use).
+/// DeepSeek key, the hosted Shifu Cloud proxy (whose device token may not
+/// exist yet — the analyzer mints one on first use), or a local server they
+/// run themselves, which needs no credential at all.
 public enum LLMCredential: Equatable, Sendable {
     case deepseek(key: String)
     case shifuCloud(token: String?)
+    case localServer
 }
 
 // MARK: - Catalog-typed access

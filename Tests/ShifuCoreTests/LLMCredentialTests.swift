@@ -28,6 +28,15 @@ import Testing
         #expect(try Settings.llmCredential(database: database) == .shifuCloud(token: "st-device"))
     }
 
+    /// The local tier needs nothing beyond the choice: no key, no token —
+    /// the endpoint is a server the user runs, and both binaries must read
+    /// "an LLM backend exists" from the choice alone.
+    @Test func localChoiceIsAnOptInWithNoCredentialAtAll() throws {
+        let database = try ShifuDatabase.inMemory()
+        try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
+        #expect(try Settings.llmCredential(database: database) == .localServer)
+    }
+
     @Test func ownKeyIsStillAnOptIn() throws {
         let database = try ShifuDatabase.inMemory()
         try Settings.set(Settings.analysisBackendKey, to: "deepseek", database: database)

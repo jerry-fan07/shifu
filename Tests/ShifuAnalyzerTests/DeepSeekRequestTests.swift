@@ -151,32 +151,71 @@ import Testing
     }
 }
 
-/// The local profile (design.md §4.2): `deepseek.context_tokens` resizes
-/// every stage's batches through invariant 7, and `deepseek.reasoning_thinking
-/// = off` turns the reasoning slot into a second fast slot. The pairing is
-/// what makes a 16k llama-server window viable — at 16k the stock 32k
-/// thinking headroom would otherwise swallow every reasoning-slot prompt
-/// budget whole.
-@Suite struct DeepSeekLocalProfileTests {
+/// The local tier (design.md §4.2): `analysis.backend = local` builds the
+/// same wire client against a self-hosted server, with no credential, one
+/// model on both slots, thinking always off, and `local.context_tokens`
+/// resizing every stage's batches through invariant 7. Thinking-off is what
+/// makes a 16k llama-server window viable — at 16k the stock 32k thinking
+/// headroom would otherwise swallow every reasoning-slot prompt budget whole.
+@Suite struct DeepSeekLocalTierTests {
     private func configured(
         _ role: DeepSeekBackend.Role, settings: [String: String] = [:]
     ) throws -> DeepSeekBackend {
         let database = try ShifuDatabase.inMemory()
-        try Settings.set(Settings.deepseekAPIKeyKey, to: "sk-test", database: database)
+        try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
         for (key, value) in settings {
             try Settings.set(key, to: value, database: database)
         }
         return try #require(try DeepSeekBackend.ifConfigured(database: database, role: role))
     }
 
-    @Test func theWindowDefaultsTo60k() throws {
+    /// The whole point of the tier: no key, no token, and a backend still
+    /// exists — the choice was the opt-in.
+    @Test func theLocalTierNeedsNoKey() throws {
         for role in [DeepSeekBackend.Role.fast, .reasoning] {
             let backend = try configured(role)
-            #expect(backend.contextWindowTokens == 60_000)
+            #expect(backend.baseURL == LocalLLMDefaults.baseURL)
+            #expect(backend.model == LocalLLMDefaults.model)
+            #expect(backend.contextWindowTokens == LocalLLMDefaults.contextWindowTokens)
         }
-        // …and the stock reasoning slot keeps its full thinking headroom:
-        // the clamp below must not disturb the cloud configuration.
-        let reasoning = try configured(.reasoning)
+    }
+
+    /// One server, one model: both slots send the same name, and naming a
+    /// model applies to both — there is no second model to configure.
+    @Test func oneModelServesBothSlots() throws {
+        for role in [DeepSeekBackend.Role.fast, .reasoning] {
+            let backend = try configured(
+                role, settings: [Settings.localModelKey: "qwen3.5-4b"])
+            #expect(backend.model == "qwen3.5-4b")
+        }
+    }
+
+    /// Thinking stays off on both slots — no chain-of-thought requested, no
+    /// headroom reserved, responses capped at what the stage asked for —
+    /// whatever role the stage drew.
+    @Test func neitherSlotThinksLocally() throws {
+        for role in [DeepSeekBackend.Role.fast, .reasoning] {
+            let backend = try configured(role)
+            #expect(!backend.thinks)
+            #expect(backend.responseHeadroomTokens == 0)
+            #expect(backend.responseCap(prompt: "a short prompt", maxTokens: 400) == 400)
+            let body = backend.requestBody(prompt: "hello", maxTokens: 400)
+            #expect((body["thinking"] as? [String: String])?["type"] == "disabled")
+        }
+    }
+
+    /// Meanwhile a keyed DeepSeek install is untouched by the tier's
+    /// existence: 60k window, and the reasoning slot keeps its thinking and
+    /// its full headroom.
+    @Test func theHostedTiersKeepTheirStockShape() throws {
+        let database = try ShifuDatabase.inMemory()
+        try Settings.set(Settings.analysisBackendKey, to: "deepseek", database: database)
+        try Settings.set(Settings.deepseekAPIKeyKey, to: "sk-test", database: database)
+        // A stale local window must not leak into the hosted tiers.
+        try Settings.set(Settings.localContextTokensKey, to: "16000", database: database)
+        let reasoning = try #require(
+            try DeepSeekBackend.ifConfigured(database: database, role: .reasoning))
+        #expect(reasoning.contextWindowTokens == DeepSeekBackend.defaultContextWindowTokens)
         #expect(reasoning.thinks)
         #expect(reasoning.responseHeadroomTokens
             == DeepSeekBackend.reasoningResponseHeadroomTokens)
@@ -185,8 +224,8 @@ import Testing
     @Test func theContextSettingResizesBothSlots() throws {
         for role in [DeepSeekBackend.Role.fast, .reasoning] {
             let backend = try configured(
-                role, settings: [Settings.deepseekContextTokensKey: "16000"])
-            #expect(backend.contextWindowTokens == 16_000)
+                role, settings: [Settings.localContextTokensKey: "32000"])
+            #expect(backend.contextWindowTokens == 32_000)
         }
     }
 
@@ -196,55 +235,31 @@ import Testing
         let range = DeepSeekBackend.contextWindowTokenRange
         for (stored, window) in [
             ("500", range.lowerBound), ("5000000", range.upperBound),
-            ("not a number", DeepSeekBackend.defaultContextWindowTokens),
-            ("", DeepSeekBackend.defaultContextWindowTokens)
+            ("not a number", LocalLLMDefaults.contextWindowTokens),
+            ("", LocalLLMDefaults.contextWindowTokens)
         ] {
             let backend = try configured(
-                .fast, settings: [Settings.deepseekContextTokensKey: stored])
+                .fast, settings: [Settings.localContextTokensKey: stored])
             #expect(backend.contextWindowTokens == window, "stored \(stored)")
         }
     }
 
-    /// The reasoning-thinking toggle, off: no chain-of-thought requested, no
-    /// headroom reserved, response caps at what the stage asked for — the
-    /// fast slot's behavior, on the reasoning slot's model.
-    @Test func thinkingOffTurnsTheReasoningSlotIntoAFastSlot() throws {
-        let backend = try configured(
-            .reasoning, settings: [Settings.deepseekReasoningThinkingKey: "off"])
-        #expect(!backend.thinks)
-        #expect(backend.responseHeadroomTokens == 0)
-        #expect(backend.model == DeepSeekBackend.defaultReasoningModel)
-        #expect(backend.responseCap(prompt: "a short prompt", maxTokens: 400) == 400)
-        let body = backend.requestBody(prompt: "hello", maxTokens: 400)
-        #expect((body["thinking"] as? [String: String])?["type"] == "disabled")
-    }
-
-    /// The toggle names the reasoning slot only; the fast slot never thinks,
-    /// whatever the setting says.
-    @Test func theFastSlotIgnoresTheThinkingToggle() throws {
-        let backend = try configured(
-            .fast, settings: [Settings.deepseekReasoningThinkingKey: "on"])
-        #expect(!backend.thinks)
-        #expect(backend.responseHeadroomTokens == 0)
-    }
-
-    /// The Phase 1 bug class: at a 16k window the stock 32k headroom makes
-    /// `contextWindowTokens - responseReserve(…)` negative, TaskReconciler
-    /// sheds its roster to 2 entries, and every `max(512, …)` stage batches
-    /// degenerately. No combination of the two settings may reproduce it.
-    @Test func noConfigurationProducesANegativePromptBudget() throws {
+    /// The Phase 1 bug class: a window smaller than a slot's response
+    /// reserve makes `contextWindowTokens - responseReserve(…)` negative,
+    /// TaskReconciler sheds its roster to 2 entries, and every `max(512, …)`
+    /// stage batches degenerately. With thinking pinned off, no window a
+    /// user can store may reproduce it.
+    @Test func noConfiguredWindowProducesANegativePromptBudget() throws {
         for window in ["1", "8000", "12000", "16000", "60000", "200000", "99999999"] {
-            for thinking in ["on", "off"] {
-                for role in [DeepSeekBackend.Role.fast, .reasoning] {
-                    let backend = try configured(role, settings: [
-                        Settings.deepseekContextTokensKey: window,
-                        Settings.deepseekReasoningThinkingKey: thinking
-                    ])
-                    let budget = backend.contextWindowTokens
-                        - backend.responseReserve(TaskReconciler.responseTokens)
-                    #expect(budget >= DeepSeekBackend.minPromptBudgetTokens,
-                            "window \(window), thinking \(thinking), \(role)")
-                }
+            for role in [DeepSeekBackend.Role.fast, .reasoning] {
+                let backend = try configured(
+                    role, settings: [Settings.localContextTokensKey: window])
+                let budget = backend.contextWindowTokens
+                    - backend.responseReserve(TaskReconciler.responseTokens)
+                #expect(budget >= DeepSeekBackend.contextWindowTokenRange.lowerBound
+                            - TaskReconciler.responseTokens,
+                        "window \(window), \(role)")
+                #expect(budget > 0, "window \(window), \(role)")
             }
         }
     }

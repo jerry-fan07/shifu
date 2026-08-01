@@ -270,7 +270,8 @@ struct BackendBeat: View {
                 options: [
                     ("Rules only", "off"),
                     ("Shifu Cloud", "shifu-cloud"),
-                    ("Own API key", "deepseek")
+                    ("Own API key", "deepseek"),
+                    ("Local model", "local")
                 ],
                 selection: $backend)
             if backend == "off" {
@@ -293,6 +294,13 @@ struct BackendBeat: View {
                     + "based in China — and holds the credentials. Never pixels, never "
                     + "raw captures. Choosing this is the switch; flip it back anytime "
                     + "in Settings.")
+            }
+            if backend == "local" {
+                Aside("Nothing leaves this Mac: analysis calls a model server you run "
+                    + "yourself — any OpenAI-compatible endpoint, such as llama-server "
+                    + "with Qwen at " + LocalLLMDefaults.baseURL + ". Point Shifu at it "
+                    + "in Settings → Analysis; calls are paced so the GPU stays quiet "
+                    + "while you work.")
             }
             if backend == "deepseek" {
                 SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)

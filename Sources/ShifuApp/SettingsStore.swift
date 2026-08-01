@@ -239,6 +239,10 @@ final class SettingsStore: ObservableObject {
         isVisible(gate: setting.visibleWhen)
     }
 
+    func isVisible(_ setting: IntSetting) -> Bool {
+        isVisible(gate: setting.visibleWhen)
+    }
+
     private func isVisible(gate: (key: String, value: String)?) -> Bool {
         guard let gate else { return true }
         let current = SettingsCatalog.choices.first { $0.key == gate.key }
