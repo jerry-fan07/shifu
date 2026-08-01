@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // The page furniture of the Instrument look: rules, eyebrows, figures, heads,
@@ -241,6 +242,77 @@ struct PageBody<Content: View>: View {
                 .padding(.bottom, 18)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // A click that lands on none of the rows — the padding, the blank
+        // run under the last row — still has to let go of whatever field
+        // held the cursor. A background click-sink can't do it: the
+        // `ScrollView`'s clip view fills the same bounds and claims every
+        // mouseDown inside them, blank or not, before a sibling behind it
+        // ever sees the event. `FocusReliever` watches at the window level
+        // instead.
+        .background(FocusReliever())
+    }
+}
+
+/// Resigns first responder when a click lands outside whatever view holds
+/// it. AppKit only gives up a field's first-responder status when another
+/// view claims it — a text field's cursor otherwise blinks forever once you
+/// click empty space, because empty space claims nothing.
+///
+/// A local event monitor rather than a click-sink view: `NSScrollView`'s
+/// clip view (every page body is one) hit-tests before any view behind it
+/// gets a chance, so nothing placed *in* the view hierarchy ever sees a
+/// blank-space click. A monitor sees every mouse-down before dispatch, no
+/// matter which view AppKit was going to route it to.
+private struct FocusReliever: NSViewRepresentable {
+    final class Coordinator {
+        var monitor: Any?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        // Zero-sized and never hit-tested — it exists only to learn which
+        // window it ended up in, the same trick `WindowCloseGuard` plays.
+        let view = FocusReliefAnchorView()
+        view.windowFound = { [weak view, coordinator = context.coordinator] _ in
+            guard coordinator.monitor == nil else { return }
+            coordinator.monitor = NSEvent.addLocalMonitorForEvents(
+                matching: .leftMouseDown
+            ) { [weak view] event in
+                if let view, event.window === view.window { FocusReliever.releaseIfOutside(event) }
+                return event
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    /// Resigns only when the click missed the currently focused view
+    /// entirely — a click inside the field it already belongs to (moving
+    /// the cursor, selecting text) must not be treated as "elsewhere."
+    private static func releaseIfOutside(_ event: NSEvent) {
+        guard let window = event.window,
+            let responder = window.firstResponder as? NSView,
+            responder !== window.contentView
+        else { return }
+        let point = responder.convert(event.locationInWindow, from: nil)
+        if !responder.bounds.contains(point) { window.makeFirstResponder(nil) }
+    }
+}
+
+private final class FocusReliefAnchorView: NSView {
+    var windowFound: ((NSWindow) -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window { windowFound?(window) }
     }
 }
 
