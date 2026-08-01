@@ -234,9 +234,18 @@ public enum WorkNoteCompiler {
             // in text a light prompt never sees.
             var samples: [Int64: String] = [:]
             for row in rows {
+                // Ordered by id, not `started_at`: id order is what the
+                // `idx_observations_session` walk already returns, so this
+                // states today's bytes rather than changing them — every
+                // work note's `contentHash` is a hash of these samples, and
+                // a different order would re-hash all 400-odd of them and
+                // re-bill their prose. It has to be *stated*, though: the
+                // prompt's cacheable prefix is now these bytes (see
+                // `WorkNoteCompiler.rules`), and an unordered query is a
+                // silent licence for SQLite to break it later.
                 let texts = try String.fetchAll(db, sql: """
                     SELECT text FROM observations
-                    WHERE session_id = ? AND text IS NOT NULL LIMIT 8
+                    WHERE session_id = ? AND text IS NOT NULL ORDER BY id LIMIT 8
                     """, arguments: [row.id])
                 if !texts.isEmpty {
                     samples[row.id] = String(

@@ -384,14 +384,21 @@ extension ThemeClusterer {
         }
     }
 
+    /// Name and gist last, day entries first: the entries only gain a line at
+    /// the end between runs, so putting the initiative's identity above them
+    /// ended the byte-identical prefix 40 bytes in and cached nothing (see
+    /// `WorkNoteCompiler.rules` for the mechanism).
     static func narrativePrompt(name: String, gist: String?, dayLines: [String]) -> String {
         """
-        Write the running story of the initiative "\(name)"\(gist.map { " — \($0)" } ?? "").
+        Write the running story of one initiative, from its day entries.
+        3-5 sentences: what this initiative is, what has happened so far, and where
+        it stands now. Plain prose, no headers or bullets. Respond with ONLY the text.
+
         Day entries, oldest first:
         \(dayLines.joined(separator: "\n"))
 
-        3-5 sentences: what this initiative is, what has happened so far, and where
-        it stands now. Plain prose, no headers or bullets. Respond with ONLY the text.
+        The initiative: "\(name)"\(gist.map { " — \($0)" } ?? "")
+        Now write its running story.
         """
     }
 

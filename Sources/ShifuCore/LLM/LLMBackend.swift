@@ -50,6 +50,32 @@ public enum LLMTokens {
         text.utf8.count / 3 + 1
     }
 
+    /// Bytes two prompts share from the front — the only part of a prompt a
+    /// provider's context cache can discount, since the cache is keyed on the
+    /// longest byte-identical *prefix* and quantized to a block (128 tokens on
+    /// DeepSeek, measured: every non-zero `cached_prompt_tokens` ever recorded
+    /// is a multiple of 128, and none is smaller).
+    ///
+    /// Deliberately bytes rather than `estimate`: this is the one measurement
+    /// where the estimator's deliberate over-count would lie in the dangerous
+    /// direction. `estimate` divides by 3 while real prompts of this content
+    /// measure ~3.9 bytes/token, so a 192-byte header reads as 65 "tokens" and
+    /// would satisfy a token-denominated floor while the provider sees ~49 and
+    /// caches nothing. `PromptPrefixTests` asserts a byte floor for that
+    /// reason, and `estimate` stays what invariant 7 sizes batches with.
+    public static func sharedPrefixBytes(_ first: String, _ second: String) -> Int {
+        var count = 0
+        var left = first.utf8.makeIterator()
+        var right = second.utf8.makeIterator()
+        while let lhs = left.next(), let rhs = right.next(), lhs == rhs { count += 1 }
+        return count
+    }
+
+    /// A byte floor that guarantees one whole 128-token cache block even at a
+    /// pessimistic 4 bytes per token. A prompt family sharing less than this
+    /// is billed as if it shared nothing.
+    public static let cacheBlockBytes = 512
+
     /// Greedy token-sized batching, shared by every batched prompt: grow a
     /// batch, render the *real* prompt, and split when the render exceeds
     /// `budget`. Sizing by the rendered prompt rather than by item count is

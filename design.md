@@ -586,20 +586,42 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
   would spread them, but the closed-block gate plus the cap already bound the
   waste to two extra calls per stubborn block; not worth a timestamp column.
-- **Cross-run prompt-cache alignment as its own effort (§4.2)** — the ordering
-  wins are taken: rosters render in stable key order, `CardBuilder.ongoingTopics`
-  in slug order, and the task-overview prompt puts the overview it is revising
-  *after* the day notes rather than ahead of them (it is rewritten every pass,
-  so anything behind it was a guaranteed miss). What is left is the part that
-  costs something to keep: the roster's per-task counters (`2.4h over 3d · last
-  2d ago`) move hourly and sit inline with the names, so the byte-identical
-  prefix still ends at the instruction header — splitting them into their own
-  section after the stable name/gist block is the fix. Alongside it, the
-  grouping and clustering prompts append their output-format spec *after* the
-  block list, where it can never be cached. Measure both against the per-stage
-  attribution below before spending anything on them; note also that input is
-  only worth chasing once thinking mode is off the fast slot — with
-  chain-of-thought billed as output, input was under a fifth of the bill.
+- **Cross-run prompt-cache alignment (§4.2) — half shipped 2026-08-01, half
+  still deferred.** The revisit condition below was met and acted on: on
+  2026-08-01 misses were 95% of input and input was 88% of the bill.
+  - **Measured, so it is not re-derived.** DeepSeek's cache is prefix-only and
+    quantized to **128 tokens** — every one of the 101 non-zero
+    `cached_prompt_tokens` rows ever recorded is a multiple of 128, none is
+    smaller, while `prompt_tokens` are not quantized at all. So the only
+    discountable bytes are the ones before the first byte that differs from a
+    recent request, and a shared prefix under 128 tokens is billed as if there
+    were none. TTL is comfortable: a 512-token prefix hit 6 h 52 min after it
+    was last written.
+  - **Shipped: prompts are assembled back-to-front.** `WorkNoteCompiler`,
+    `TaskOverviewCompiler`, `ThemeClusterer.narrativePrompt` and `DeckBuilder`
+    all opened with the value that changes between calls, so two calls of one
+    stage shared 25 bytes and the stage measured *exactly* zero cached on
+    every call. Static rules now lead, append-only evidence follows, and
+    identity plus the operative instruction close. Nothing was added or
+    removed. Replayed over 425 dogfood task-days, day notes move 0% → ~48%.
+    `PromptPrefixTests` pins the property; it is invisible in output and only
+    a column in `llm_usage` ever reports it.
+  - **Not done, deliberately.** *Quantizing roster stats* is a coin flip: the
+    roster is key-sorted, so the one task worked this hour truncates the
+    prefix at an arbitrary index, and a task minted mid-run gets inserted
+    mid-list and renumbers every later `t<n>` handle anyway. *Sorting
+    `CardBuilder.ongoingTopics` by slug* is a correctness regression — the
+    anchor list is a recency LRU (`insert(at: 0)` / `removeLast()`), so
+    alphabetical order would evict the newest anchors. *Padding
+    `TaskReconciler`'s header past a block* is one call a day at ~2.2k tokens;
+    the minimalism rule wins.
+  - **Watch instead:** `WorkNoteCompiler`'s detailed tier pins at
+    `max_tokens` on dense task-days. On 2026-08-01 that was 11 calls,
+    477,290 input tokens and 45.6% of the day's spend for answers that
+    `finish_reason=length` made unparseable and `run`'s `try?` discarded —
+    while `gather` still advanced `contentHash`, erasing the day's previous
+    prose. That is a bigger line item than the cache work, and it is a
+    response-budget bug, not a prompt-layout one.
 - **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
   recorded what each response cost but never what it bought, so "which stage
   is expensive?" could only be answered by lining rows up against the order
