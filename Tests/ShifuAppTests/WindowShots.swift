@@ -81,6 +81,38 @@ import Testing
         shootDecks(store: store, into: directory)
         shootNotes(store: store, into: directory)
         shootOnboarding(into: directory)
+        shootNudgeDemo(into: directory)
+    }
+
+    /// The nudge demonstration (§4.4) at the peak of its pulse, over a stand-in
+    /// desktop. It is the one surface the app draws that is never inside the
+    /// app's window, so a shot of the window can't catch it — and the whole
+    /// point of the screen is what the vignette leaves readable, which is a
+    /// judgement nothing but a picture can settle.
+    @MainActor private func shootNudgeDemo(into directory: URL) {
+        let size = CGSize(width: 1_280, height: 800)
+        for dark in [false, true] {
+            let demo = NudgeDemo()
+            demo.vignette = 1
+            demo.message = 1
+            shoot(
+                ZStack {
+                    // Whatever the user was working on, as a flat tone: the
+                    // question is how much of it survives the vignette.
+                    Rectangle().fill(Color(light: 0xE9E8E4, dark: 0x24242A))
+                    NudgePulse(
+                        demo: demo,
+                        messageSize: size.width * FocusNudge.messageWidthFraction,
+                        carriesMessage: true)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        NudgeDemoBar(demo: demo, again: {}, done: {}).frame(height: 80)
+                    }
+                },
+                to: directory.appendingPathComponent(
+                    "nudge-demo\(dark ? "-dark" : "").png"),
+                dark: dark, size: size)
+        }
     }
 
     @MainActor private func shootDecks(store: LedgerStore, into directory: URL) {
@@ -102,10 +134,18 @@ import Testing
         }
     }
 
-    /// The consent page (§8) in each of its three states — the one screen
-    /// where wording is the product, and the disclosure blocks only appear
-    /// for the selection they describe.
+    /// First run: every beat once, so the rail's ticks and its changing foot
+    /// are visible as a sequence rather than reasoned about — plus the consent
+    /// page (§8) in each of its three states, the one screen where wording is
+    /// the product and the disclosure blocks only appear for the selection
+    /// they describe.
     @MainActor private func shootOnboarding(into directory: URL) {
+        for step in 0..<6 {
+            shoot(
+                OnboardingView(step: step),
+                to: directory.appendingPathComponent("onboarding-\(step + 1).png"),
+                dark: step == 4)
+        }
         for (backend, slug) in [
             ("off", "onboarding-consent"),
             ("shifu-cloud", "onboarding-consent-cloud"),
