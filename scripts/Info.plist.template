@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>Shifu</string>
+    <!-- Named ShifuApp, not Shifu: the CLI ships beside it as `shifu`, and on
+         a case-insensitive filesystem Shifu and shifu are the same file — the
+         v0.1.0 bundle shipped with the CLI silently overwriting the app. -->
+    <key>CFBundleExecutable</key><string>ShifuApp</string>
     <key>CFBundleIdentifier</key><string>com.shifu.app</string>
     <key>CFBundleName</key><string>Shifu</string>
     <key>CFBundlePackageType</key><string>APPL</string>
