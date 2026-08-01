@@ -140,7 +140,10 @@ extension WorkNoteCompiler {
             samples = String(samples.prefix(samples.count * 2 / 3))
             text = render()
         }
-        let response = try await backend.complete(
+        // Prose, so a day that outgrows its reserve is trimmed to its last
+        // whole bullet rather than thrown away — and `split` already degrades
+        // a fragment that never reached `## Notes` into the light shape.
+        let response = try await backend.completeProse(
             prompt: text, maxTokens: pending.tier.responseTokens)
         return split(response)
     }

@@ -76,14 +76,14 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
 }
 
 @Suite struct WorkNoteCompilerTests {
-    private let calendar = Calendar.current
-    private var day1: Date { calendar.startOfDay(for: Date(timeIntervalSince1970: 1_760_000_000)) }
-    private var day2: Date { calendar.date(byAdding: .day, value: 1, to: day1)! }
-    private var day3: Date { calendar.date(byAdding: .day, value: 2, to: day1)! }
+    let calendar = Calendar.current
+    var day1: Date { calendar.startOfDay(for: Date(timeIntervalSince1970: 1_760_000_000)) }
+    var day2: Date { calendar.date(byAdding: .day, value: 1, to: day1)! }
+    var day3: Date { calendar.date(byAdding: .day, value: 2, to: day1)! }
 
-    private func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1_000) }
+    func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1_000) }
 
-    private func makeVault(_ database: ShifuDatabase) throws -> VaultStore {
+    func makeVault(_ database: ShifuDatabase) throws -> VaultStore {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("shifu-worknotes-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -91,7 +91,7 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
     }
 
     @discardableResult
-    private func insertActivity(
+    func insertActivity(
         _ database: ShifuDatabase, start: Date, minutes: Double,
         app: String = "com.apple.dt.Xcode", domain: String? = nil,
         topic: String? = "debugging capture daemon",
@@ -114,7 +114,7 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         }
     }
 
-    private func compile(
+    func compile(
         _ database: ShifuDatabase, _ vault: VaultStore,
         backend: (any LLMBackend)? = nil, from: Date, to: Date
     ) async throws -> WorkNoteCompiler.Summary {

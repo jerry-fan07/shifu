@@ -615,13 +615,28 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
     alphabetical order would evict the newest anchors. *Padding
     `TaskReconciler`'s header past a block* is one call a day at ~2.2k tokens;
     the minimalism rule wins.
-  - **Watch instead:** `WorkNoteCompiler`'s detailed tier pins at
-    `max_tokens` on dense task-days. On 2026-08-01 that was 11 calls,
-    477,290 input tokens and 45.6% of the day's spend for answers that
-    `finish_reason=length` made unparseable and `run`'s `try?` discarded —
-    while `gather` still advanced `contentHash`, erasing the day's previous
-    prose. That is a bigger line item than the cache work, and it is a
-    response-budget bug, not a prompt-layout one.
+  - **The bigger line item was next door, and is fixed.** `WorkNoteCompiler`'s
+    detailed tier pinned at `max_tokens` on dense task-days: on 2026-08-01,
+    13 calls and 565,816 input tokens — **46% of the day's spend** — for
+    answers `finish_reason=length` discarded. Three defects stacked, and each
+    is now closed:
+    - *The reserve was too low.* 1,200 tokens, flat. The answer barely tracks
+      the evidence (19 labelled calls over 1.3k-16.6k prompts answered in
+      137-950 tokens, uncorrelated), so this is a ceiling on a bounded
+      artifact, not a budget — but the ceiling was under it. Now 2,500.
+    - *A truncated prose answer was thrown away.* `LLMError.truncated` now
+      carries the partial and `LLMBackend.completeProse` trims it to its last
+      whole line. Which of `complete`/`completeProse` a stage calls states
+      what its answer is: half a JSON batch is nothing (`CardBuilder` once
+      built 0 cards from 40 blocks that way), half a day note is most of one.
+    - *A failed narrative erased the prose already on disk.* `gather` wrote
+      the new `contentHash` before the call was attempted, so a failure left
+      the day stamped as described and blank — and a completed day's evidence
+      never changes again, so it could never retry. The hash now moves with
+      the prose, never ahead of it, and a substantial note whose hash says
+      described while carrying no prose is read as changed, which heals the
+      days already blanked. The same write also erased prose on any run made
+      with the backend off.
 - **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
   recorded what each response cost but never what it bought, so "which stage
   is expensive?" could only be answered by lining rows up against the order

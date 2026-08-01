@@ -260,19 +260,23 @@ struct DeepSeekBackend: LLMBackend {
             do {
                 return try await send(prompt: prompt, maxTokens: remainder)
             } catch let again as ResponseTruncated {
-                throw LLMError.badResponse("after escalated retry: \(again.detail)")
+                throw LLMError.truncated(
+                    partial: again.partial, detail: "after escalated retry: \(again.detail)")
             }
         } catch let truncated as ResponseTruncated {
-            throw LLMError.badResponse(truncated.detail)
+            throw LLMError.truncated(partial: truncated.partial, detail: truncated.detail)
         }
     }
 
     /// Thrown only by `send`, for the recoverable case: the response budget
     /// ran out (finish_reason=length). Raised whether or not any `content`
     /// arrived — a truncated JSON answer is not a partial success, it is an
-    /// answer no caller can parse. `complete` converts it to `LLMError` once
-    /// escalation is exhausted, so it never crosses the backend boundary.
+    /// answer no caller can parse. `complete` converts it to
+    /// `LLMError.truncated` once escalation is exhausted, so it never crosses
+    /// the backend boundary; whatever *was* written rides along for the prose
+    /// stages, which can use it (see `LLMText.salvage`).
     private struct ResponseTruncated: Error {
+        let partial: String
         let detail: String
     }
 
@@ -353,9 +357,10 @@ struct DeepSeekBackend: LLMBackend {
         // `complete` can escalate a thinking slot; a non-thinking one surfaces
         // it, which at least leaves the blocks eligible to try again.
         if finish == "length" {
-            throw ResponseTruncated(detail:
-                "hit max_tokens=\(maxTokens) (content=\(text?.count ?? 0) chars, "
-                + "reasoning_content=\(reasoningChars) chars)")
+            throw ResponseTruncated(
+                partial: text ?? "",
+                detail: "hit max_tokens=\(maxTokens) (content=\(text?.count ?? 0) chars, "
+                    + "reasoning_content=\(reasoningChars) chars)")
         }
         if let text, !text.isEmpty { return text }
 

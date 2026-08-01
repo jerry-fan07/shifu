@@ -447,8 +447,10 @@ extension ThemeClusterer {
                 lines.removeFirst()
                 text = narrativePrompt(name: item.name, gist: item.gist, dayLines: lines)
             }
+            // Prose, so a story that runs past 320 tokens keeps its whole
+            // sentences instead of throwing the theme's summary away.
             let summary = try await backend
-                .complete(prompt: text, maxTokens: narrativeResponseTokens)
+                .completeProse(prompt: text, maxTokens: narrativeResponseTokens)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !summary.isEmpty else { continue }
             try await database.queue.write { db in

@@ -338,8 +338,13 @@ do {
         LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
     }
     if workSummary.notesWritten > 0 {
+        // Failures are printed, not just counted: this stage swallows them
+        // with `try?` so one bad day can't take the rest of the vault down,
+        // and for three days that silence hid every call it was making.
         print("work notes: \(workSummary.notesWritten) compiled, "
-            + "\(workSummary.narrativesGenerated) narratives")
+            + "\(workSummary.narrativesGenerated) narratives"
+            + (workSummary.narrativesFailed > 0
+                ? "; \(workSummary.narrativesFailed) failed, retried next run" : ""))
     }
 } catch {
     print("work notes failed (retries next run): \(error)")

@@ -222,7 +222,13 @@ public enum TaskOverviewCompiler {
         for candidate in try candidates(database: database, vault: vault,
                                         now: now, calendar: calendar) {
             let previous = vault.taskOverview(taskKey: candidate.taskKey)
-            let body = try await backend.complete(
+            // Prose, like the day notes: an overview that outgrows its
+            // reserve keeps whatever whole lines it wrote. This document is
+            // a *replacement*, so throwing the answer away leaves the task
+            // showing the previous one until the next change — and this
+            // stage has been bitten by silent truncation before (see
+            // `responseTokens`).
+            let body = try await backend.completeProse(
                 prompt: budgeted(candidate, previous: previous?.body, backend: backend),
                 maxTokens: responseTokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)
