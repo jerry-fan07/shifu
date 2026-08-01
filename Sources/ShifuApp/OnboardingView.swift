@@ -56,6 +56,12 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Instrument.ground)
+        // First run has no title bar of its own, but it is still a window, and
+        // one you can't move is a trap. It gets the same handle along the top
+        // as the shell it hands you — over ground, well clear of the panel.
+        .overlay(alignment: .top) {
+            WindowDragArea().frame(height: Instrument.titleBarHeight)
+        }
     }
 
     // MARK: - The rail
