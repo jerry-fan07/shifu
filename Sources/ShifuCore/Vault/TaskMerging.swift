@@ -78,6 +78,16 @@ extension TaskStore {
             for fold in folds {
                 try db.execute(sql: "UPDATE activities SET task_id = ? WHERE task_id = ?",
                                arguments: [fold.survivor, fold.absorbed])
+                // `task_id` alone does not survive: TaskGrouper re-derives it
+                // from keys every pass, so blocks still wearing the absorbed
+                // `sem_key` would re-mint the dead task (under its humanized
+                // slug) and pull their time back out of the survivor. Follow
+                // the key too — before the DELETE below, while both
+                // subqueries still resolve.
+                try db.execute(sql: """
+                    UPDATE activities SET sem_key = (SELECT key FROM tasks WHERE id = ?)
+                    WHERE sem_key = (SELECT key FROM tasks WHERE id = ?)
+                    """, arguments: [fold.survivor, fold.absorbed])
                 try db.execute(sql: """
                     UPDATE tasks SET last_active_at = MAX(last_active_at,
                         COALESCE((SELECT last_active_at FROM tasks WHERE id = ?), 0))

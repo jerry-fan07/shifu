@@ -161,6 +161,43 @@ private struct StubEmbedder: Embedder {
         #expect(try TaskMerges.suggest(database: database, embedder: stub, now: day2) == 0)
     }
 
+    /// `merge` must move `sem_key` along with `task_id`: the grouper
+    /// re-derives `task_id` from keys every pass, so blocks still wearing the
+    /// absorbed key would re-mint the dead task under its humanized slug
+    /// ("booking flights sf") and pull their time back out of the survivor.
+    @Test func mergeRewritesSemKeySoTheAbsorbedTaskStaysDead() throws {
+        let database = try ShifuDatabase.inMemory()
+        try database.queue.write { db in
+            for (key, name) in [("sem:booking-flights", "Booking flights"),
+                                ("sem:booking-flights-sf", "Booking flights SF")] {
+                var task = WorkTask(key: key, name: name, createdAt: 0, lastActiveAt: 99)
+                try task.insert(db)
+            }
+            for (index, key) in ["sem:booking-flights", "sem:booking-flights-sf"].enumerated() {
+                var activity = Activity(
+                    startedAt: ms(day1) + Int64(index) * 3_600_000,
+                    endedAt: ms(day1) + Int64(index) * 3_600_000 + 600_000,
+                    appBundle: "com.apple.Safari", domain: "united.com", category: .admin)
+                try activity.insert(db)
+                try db.execute(
+                    sql: "UPDATE activities SET sem_key = ?, task_id = ? WHERE id = ?",
+                    arguments: [key, index + 1, activity.id])
+            }
+        }
+
+        try TaskStore.merge(survivorID: 1, absorbedID: 2, database: database,
+                            calendar: calendar)
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2), calendar: calendar)
+
+        let state = try database.queue.read { db in
+            (keys: try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key"),
+             semKeys: try String.fetchAll(
+                db, sql: "SELECT DISTINCT sem_key FROM activities ORDER BY sem_key"))
+        }
+        #expect(state.keys == ["sem:booking-flights"])
+        #expect(state.semKeys == ["sem:booking-flights"])
+    }
+
     // MARK: - Auto-merge (§5.2)
 
     /// Forces every open suggestion to the given score, so a test can put a

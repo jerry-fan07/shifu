@@ -12,10 +12,33 @@ public enum TaskGrouper {
     /// domain, a topic worded once — stay unassigned instead of minting a
     /// permanent task; the idempotent window re-runs grouping, so a key that
     /// keeps accruing time mints and picks up its earlier blocks
-    /// retroactively. Keys with an existing task always attach, however small
-    /// the block, and `sem:` keys are exempt — SemanticTaskGrouper already
-    /// gates them by block length and model confidence.
+    /// retroactively. Under `.always`, keys with an existing task attach
+    /// however small the block; under `.lastResort` a *container* key must
+    /// clear this same floor in semantically-declined time even to attach —
+    /// see the gate in `run`. `sem:` keys are exempt everywhere —
+    /// SemanticTaskGrouper already gates them by block length and model
+    /// confidence.
     public static let minNewTaskMs: Int64 = 5 * 60_000
+
+    /// Whether mechanical container keys may mint and attach freely
+    /// (`.always`, the no-backend §10 fallback) or only once the semantic
+    /// pass has finished declining enough of their time (`.lastResort`).
+    ///
+    /// Callers must derive this from *configuration* — is a backend set up —
+    /// never from whether this pass's LLM calls succeeded. Gating on success
+    /// would let one network timeout mint container rows that the next pass
+    /// has to prune, and the roster would flap with the connection.
+    public enum MechanicalMinting: Sendable {
+        case always
+        case lastResort
+    }
+
+    /// `domain:`/`app:` — the namespaces that name where time went rather
+    /// than what it was for. `topic:` is deliberately not one: it is the
+    /// classifier's own words for what the block was about.
+    public static func isContainerKey(_ key: String) -> Bool {
+        key.hasPrefix("domain:") || key.hasPrefix("app:")
+    }
 
     /// macOS shell surfaces that are never the user's own work: the lock
     /// screen, the Dock, one-shot system dialogs. They carry no topic and no
@@ -193,6 +216,7 @@ public enum TaskGrouper {
         var domain: String?
         var topic: String?
         var semKey: String?
+        var semAttempts: Int
     }
 
     private struct GroupedItems {
@@ -206,7 +230,8 @@ public enum TaskGrouper {
     ) throws -> GroupedItems {
         let items: [Item] = try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, started_at, ended_at, app_bundle, domain, topic, sem_key
+                SELECT id, started_at, ended_at, app_bundle, domain, topic,
+                       sem_key, sem_attempts
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND category != 'private'
                 ORDER BY started_at
@@ -214,7 +239,7 @@ public enum TaskGrouper {
             ).map { row in
                 Item(id: row["id"], startedAt: row["started_at"], endedAt: row["ended_at"],
                      appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
-                     semKey: row["sem_key"])
+                     semKey: row["sem_key"], semAttempts: row["sem_attempts"])
             }
         }
         var groups: [String: [Item]] = [:]
@@ -235,7 +260,8 @@ public enum TaskGrouper {
     @discardableResult
     public static func run(
         database: ShifuDatabase, from: Int64, to: Int64,
-        now: Date = Date(), calendar: Calendar = .current
+        now: Date = Date(), calendar: Calendar = .current,
+        minting: MechanicalMinting = .always
     ) throws -> Summary {
         let res = try fetchAndGroupItems(database: database, from: from, to: to)
         guard !res.items.isEmpty else { return Summary(tasksTouched: 0, logsWritten: 0) }
@@ -248,6 +274,32 @@ public enum TaskGrouper {
             var tasksTouched = 0
             for itemKey in res.order {
                 guard let group = res.groups[itemKey] else { continue }
+                // Under `.lastResort` a container key earns the window's time
+                // only from blocks the semantic pass has *finished declining*
+                // (attempts exhausted): "Instagram" is real once the model has
+                // said three times that scrolling it serves no intent task,
+                // while a 40-second message check just stays task-less.
+                //
+                // Sits above the existing-row lookup on purpose — the bypass
+                // below ("keys with an existing task always attach") is
+                // exactly how a container task, once minted, went on
+                // swallowing every later glance. `continue` means no mint, no
+                // `last_active_at` bump, no `task_id` write. And once a
+                // container does clear the floor the *whole* group attaches,
+                // not just the declined members — splitting would drop time
+                // out of `task_logs` and leave the ledger unexplainable.
+                //
+                // A group holding any explicit `sem_key` is exempt: the model
+                // can only write `sem:` keys, so a container-shaped `sem_key`
+                // is a merge the user (or reconciler) made into that task —
+                // gating it would quietly undo the merge on the next rebuild.
+                if minting == .lastResort, isContainerKey(itemKey),
+                   group.allSatisfy({ $0.semKey == nil }) {
+                    let declinedMs = group
+                        .filter { $0.semAttempts >= SemanticTaskGrouper.maxAttempts }
+                        .reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
+                    guard declinedMs >= minNewTaskMs else { continue }
+                }
                 let lastActive = group.map(\.endedAt).max() ?? nowMs
                 let taskID: Int64
                 if let existing = try Int64.fetchOne(

@@ -413,6 +413,118 @@ import Testing
         #expect(dayLogs.map(\.taskName) == ["short afternoon task", "long morning task"])
         #expect(dayLogs.map(\.themeKey) == [key, nil])
     }
+
+    // MARK: - Last-resort minting (design.md §5.3)
+
+    /// The gate's whole point: the existing-row bypass ("keys with an
+    /// existing task always attach") is exactly how a container task, once
+    /// minted, went on swallowing every later glance. Under `.lastResort` an
+    /// existing container neither attaches new unplaced blocks nor advances
+    /// its recency off them.
+    @Test func existingContainerTaskStopsSwallowingShortBlocks() throws {
+        let database = try makeDB()
+        try database.queue.write { db in
+            var task = WorkTask(key: "app:com.apple.mobilesms", name: "Messages",
+                                createdAt: 500, lastActiveAt: 500)
+            try task.insert(db)
+        }
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 0.7,
+                   app: "com.apple.MobileSMS", category: .communication)
+
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2),
+                            calendar: calendar, minting: .lastResort)
+
+        let state = try database.queue.read { db in
+            (attached: try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM activities WHERE task_id IS NOT NULL") ?? -1,
+             lastActive: try Int64.fetchOne(
+                db, sql: "SELECT last_active_at FROM tasks") ?? -1)
+        }
+        #expect(state.attached == 0)
+        #expect(state.lastActive == 500)
+    }
+
+    @Test func containerKeysDoNotMintUnderLastResort() throws {
+        let database = try makeDB()
+        // 10 minutes on a domain — over the substance gate, but never yet
+        // declined by the semantic pass, so not yet the fallback's to name.
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 10,
+                   app: "com.apple.Safari", domain: "github.com")
+        let summary = try TaskGrouper.run(database: database, from: 0, to: ms(day2),
+                                          calendar: calendar, minting: .lastResort)
+        #expect(summary.tasksTouched == 0)
+        let tasks = try database.queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks") ?? -1
+        }
+        #expect(tasks == 0)
+    }
+
+    @Test func declinedContainerTimeStillMintsAsTheFloor() throws {
+        let database = try makeDB()
+        // Three 2-min visits the model declined to place three times each
+        // (6 min ≥ the floor), plus a fresh half-minute glance.
+        for hour in [9.0, 12.0, 15.0] {
+            try insert(database, start: day1.addingTimeInterval(hour * 3_600), minutes: 2,
+                       app: "com.instagram.desktop", category: .social)
+        }
+        try insert(database, start: day1.addingTimeInterval(17 * 3_600), minutes: 0.5,
+                   app: "com.instagram.desktop", category: .social)
+        try database.queue.write { db in
+            try db.execute(sql: """
+                UPDATE activities SET sem_attempts = ?
+                WHERE ended_at - started_at >= 120000
+                """, arguments: [SemanticTaskGrouper.maxAttempts])
+        }
+
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2),
+                            calendar: calendar, minting: .lastResort)
+
+        // The container is honest now — and the *whole* group attached, not
+        // just the declined members, so the day log explains all its time.
+        let state = try database.queue.read { db in
+            (keys: try String.fetchAll(db, sql: "SELECT key FROM tasks"),
+             unattached: try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM activities WHERE task_id IS NULL") ?? -1)
+        }
+        #expect(state.keys == ["app:com.instagram.desktop"])
+        #expect(state.unattached == 0)
+    }
+
+    @Test func topicKeysAreUnaffectedByLastResort() throws {
+        let database = try makeDB()
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 10,
+                   topic: "booking flights to tokyo")
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2),
+                            calendar: calendar, minting: .lastResort)
+        let keys = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT key FROM tasks")
+        }
+        #expect(keys == ["topic:booking-flights-to-tokyo"])
+    }
+
+    /// Only a merge writes a container-shaped `sem_key` (the model can only
+    /// write `sem:` keys), so a group carrying one is a filing into that
+    /// task — exempt from the gate, or the next rebuild would quietly undo
+    /// the merge.
+    @Test func mergeRewrittenSemKeysStillAttachUnderLastResort() throws {
+        let database = try makeDB()
+        try database.queue.write { db in
+            var task = WorkTask(key: "app:com.apple.mobilesms", name: "Messages",
+                                createdAt: 500, lastActiveAt: 500)
+            try task.insert(db)
+        }
+        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 2,
+                   app: "com.apple.MobileSMS", category: .communication)
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE activities SET sem_key = 'app:com.apple.mobilesms'")
+        }
+        try TaskGrouper.run(database: database, from: 0, to: ms(day2),
+                            calendar: calendar, minting: .lastResort)
+        let attached = try database.queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM activities WHERE task_id IS NOT NULL") ?? -1
+        }
+        #expect(attached == 1)
+    }
 }
 
 @Suite struct TaskDetailTests {
