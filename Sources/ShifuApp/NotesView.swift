@@ -39,11 +39,18 @@ struct NotesView: View {
                     facets
                 }
             }
-            PageBody {
-                if isSearching {
-                    results
-                } else {
-                    shelf
+            // One measurement for the whole table: every row is the same
+            // width, and the only question they ask of it is whether there is
+            // room to keep provenance in its own column (`NoteRow.compact`).
+            GeometryReader { geometry in
+                PageBody {
+                    let compact = geometry.size.width - Instrument.gutter * 2
+                        < NoteRow.columnsMinWidth
+                    if isSearching {
+                        results(compact: compact)
+                    } else {
+                        shelf(compact: compact)
+                    }
                 }
             }
         }
@@ -144,7 +151,7 @@ struct NotesView: View {
     /// The library with nothing typed: newest first, under the day it belongs
     /// to. Days are the grouping because a note's day is the thing you
     /// actually remember — "that Tuesday" beats any folder.
-    @ViewBuilder private var shelf: some View {
+    @ViewBuilder private func shelf(compact: Bool) -> some View {
         if store.vaultShelf.isEmpty {
             // An empty vault is not an over-tight filter, and telling a new
             // install to loosen one is the wrong instruction twice over: the
@@ -161,7 +168,9 @@ struct NotesView: View {
                 DayHeading(day: day)
                 ForEach(day.entries) { entry in
                     Rule()
-                    NoteRow(entry: entry) { router.open(.note(entry.noteID)) }
+                    NoteRow(entry: entry, compact: compact) {
+                        router.open(.note(entry.noteID))
+                    }
                 }
             }
         }
@@ -169,7 +178,7 @@ struct NotesView: View {
 
     // MARK: - Results
 
-    @ViewBuilder private var results: some View {
+    @ViewBuilder private func results(compact: Bool) -> some View {
         if store.vaultHits.isEmpty {
             BlankSlate(
                 store.vaultCensus.total == 0
@@ -179,13 +188,22 @@ struct NotesView: View {
                         : "Nothing answers that. Try fewer words — search reads meaning "
                             + "as well as spelling.")
         } else {
-            ColumnHead {
+            // A stacked row has no provenance column, so its heading has to go
+            // too — a head naming a column that isn't there is worse than none.
+            ColumnHead(spacing: NoteRow.columnGap) {
                 Text("Match").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Where it came from").frame(width: 210, alignment: .leading)
-                Text("Captured").frame(width: 78, alignment: .trailing)
+                if !compact {
+                    Text("Where it came from")
+                        .frame(width: NoteRow.provenanceWidth, alignment: .leading)
+                }
+                Text("Captured")
+                    .frame(width: NoteRow.capturedWidth, alignment: .trailing)
             }
             ForEach(store.vaultHits) { hit in
-                NoteRow(entry: hit.entry, snippet: hit.snippet, showsDate: true) {
+                NoteRow(
+                    entry: hit.entry, snippet: hit.snippet, showsDate: true,
+                    compact: compact
+                ) {
                     router.open(.note(hit.noteID))
                 }
                 Rule()
@@ -253,6 +271,14 @@ private struct DayHeading: View {
 /// One note on the shelf or in a result list: what it is, what it says, and
 /// which effort it came out of. The provenance column is the point — a title
 /// and a date can't tell you whether this is the memory you were reaching for.
+///
+/// Its column lives to the right of the title, and it used to be the only
+/// thing in the row that knew that: the summary underneath ran the full width
+/// of the table and passed straight under the kind, the tag and the strand of
+/// work, so at a small window the two readings collided into one block of
+/// text. The summary now shares the title's column and stops where it stops,
+/// and below `columnsMinWidth` the columns give up and stack instead — the
+/// same trade the Settings page makes with its readings rail.
 struct NoteRow: View {
     let entry: VaultLibrary.Entry
     /// The query-aware snippet, when there is a query. Falls back to the
@@ -262,35 +288,81 @@ struct NoteRow: View {
     /// spend the last column on how long the day was instead. Results have no
     /// heading to lean on and need the date.
     var showsDate = false
+    /// Set by the table, which measures itself once for all its rows: below
+    /// `columnsMinWidth` provenance drops onto its own line under the title.
+    var compact = false
     var action: () -> Void
+
+    static let provenanceWidth: CGFloat = 210
+    static let capturedWidth: CGFloat = 78
+    /// Wide enough that a truncated title can't touch the word beside it.
+    static let columnGap: CGFloat = 18
+
+    /// Three columns and two gaps cost 324 points before the note has said a
+    /// word. Under this the summary would be left a measure too narrow to read
+    /// two lines of, which is the whole reason the row is two lines tall — so
+    /// the columns stack and the summary gets the table's full width instead.
+    /// The window's own 960 minimum lands below it, on purpose: the columns are
+    /// a reward for a larger window, not something a small one must live with.
+    static let columnsMinWidth: CGFloat =
+        430 + provenanceWidth + capturedWidth + columnGap * 2
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    Text(entry.title)
-                        .font(Instrument.sans(13, .medium))
-                        .foregroundStyle(Instrument.ink)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if compact {
+                    HStack(alignment: .firstTextBaseline, spacing: Self.columnGap) {
+                        title
+                        captured
+                    }
                     provenance
-                        .frame(width: 210, alignment: .leading)
-                    Figure(whenLabel, size: 11, color: Instrument.faint)
-                        .frame(width: 78, alignment: .trailing)
-                }
-                if let gist {
-                    Text(gist)
-                        .font(Instrument.sans(12.5))
-                        .foregroundStyle(Instrument.secondary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: 700, alignment: .leading)
+                    summary
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: Self.columnGap) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            title
+                            summary
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        provenance
+                            .frame(width: Self.provenanceWidth, alignment: .leading)
+                        captured
+                            .frame(width: Self.capturedWidth, alignment: .trailing)
+                    }
                 }
             }
             .padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var title: some View {
+        Text(entry.title)
+            .font(Instrument.sans(13, .medium))
+            .foregroundStyle(Instrument.ink)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Empty on most shelf rows — a note with no measured day has nothing to
+    /// say here — so a stacked row leaves it out rather than reserving a
+    /// column's worth of nothing beside the title.
+    @ViewBuilder private var captured: some View {
+        if !whenLabel.isEmpty || !compact {
+            Figure(whenLabel, size: 11, color: Instrument.faint)
+        }
+    }
+
+    @ViewBuilder private var summary: some View {
+        if let gist {
+            Text(gist)
+                .font(Instrument.sans(12.5))
+                .foregroundStyle(Instrument.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: 700, alignment: .leading)
+        }
     }
 
     /// The query's own match when there is one, the note's summary line
@@ -313,26 +385,45 @@ struct NoteRow: View {
 
     /// Kind, depth and the strand of work — in the width of one column,
     /// because they answer three different questions and the row has room for
-    /// exactly one column of them.
-    private var provenance: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Text(entry.kindLabel)
-                    .font(Instrument.sans(11.5))
-                    .foregroundStyle(Instrument.muted)
-                if entry.depth == .trace {
-                    Tag("trace", dashed: true)
-                } else if entry.depth == .document {
-                    Tag("document", tinted: true)
+    /// exactly one column of them. Stacked, the column becomes a line: it has
+    /// the table's whole width to spend and no reason to be two rows tall.
+    @ViewBuilder private var provenance: some View {
+        if compact {
+            HStack(spacing: 6) {
+                kind
+                if !belonging.isEmpty {
+                    Text("·")
+                        .font(Instrument.sans(11))
+                        .foregroundStyle(Instrument.ghost)
+                    strand
                 }
             }
-            if !belonging.isEmpty {
-                Text(belonging)
-                    .font(Instrument.sans(11))
-                    .foregroundStyle(Instrument.ghost)
-                    .lineLimit(1)
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                kind
+                if !belonging.isEmpty { strand }
             }
         }
+    }
+
+    private var kind: some View {
+        HStack(spacing: 5) {
+            Text(entry.kindLabel)
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.muted)
+            if entry.depth == .trace {
+                Tag("trace", dashed: true)
+            } else if entry.depth == .document {
+                Tag("document", tinted: true)
+            }
+        }
+    }
+
+    private var strand: some View {
+        Text(belonging)
+            .font(Instrument.sans(11))
+            .foregroundStyle(Instrument.ghost)
+            .lineLimit(1)
     }
 
     /// Task and theme, minus whatever the title already said. A compiled note

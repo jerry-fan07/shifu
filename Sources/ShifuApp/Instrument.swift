@@ -35,6 +35,18 @@ enum Instrument {
     static let well = Color(
         light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.07)
 
+    /// The only ground the app fills rather than rules: the theme page's title
+    /// banner and the story panel under it, both printed white on rust.
+    ///
+    /// Its own token rather than `overdue`, which these two used to borrow.
+    /// `overdue` is a *mark* colour, and its dark step is a salmon lifted to
+    /// carry as a figure on a near-black ground — the opposite of what a
+    /// filled panel needs. At banner scale that step is a glare, and white on
+    /// it clears 3:1: enough for a 46 pt name, nowhere near it for the mono
+    /// figures underneath. Deepening in dark instead keeps the panel a panel
+    /// and puts every line on it past 7:1.
+    static let banner = Color(light: 0x9C3D1E, dark: 0x7A2F15)
+
     // MARK: - Ink
 
     /// Titles, figures, the row you are reading.
@@ -77,6 +89,11 @@ enum Instrument {
 
     /// The capture indicator: watching.
     static let live = Color(light: 0x3F7D4F, dark: 0x6AA87C)
+    /// The running Focus session's own row — a gold wash across the whole
+    /// line, standing in for the `StatusDot` a wide table row is too easy to
+    /// glance past.
+    static let liveTint = Color(
+        light: 0xC9A227, dark: 0xD9BB5E, lightAlpha: 0.16, darkAlpha: 0.2)
     /// A count that wants attention — cards due, a theme gone quiet.
     static let alert = Color(light: 0xA8551F, dark: 0xE0A06A)
     /// Past due. One step hotter than `alert`, and always beside a word.

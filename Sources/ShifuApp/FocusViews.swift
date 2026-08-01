@@ -20,6 +20,11 @@ struct FocusPage<Controls: View>: View {
     let isWeek: Bool
     @ViewBuilder var controls: Controls
 
+    /// For the one fact the sessions in this window can't supply: how long it
+    /// had been since the previous session, which is routinely one that fell
+    /// outside the window (`FocusClock`).
+    @EnvironmentObject private var store: LedgerStore
+
     var body: some View {
         let sessions = FocusReport.sessions(
             raw, activities: blocks,
@@ -29,10 +34,17 @@ struct FocusPage<Controls: View>: View {
             head(sessions)
             if !sessions.isEmpty {
                 Band {
-                    if isWeek {
-                        FocusWeekBand(sessions: sessions, blocks: blocks, window: window)
-                    } else {
-                        dayBand(sessions)
+                    VStack(spacing: 14) {
+                        if isWeek {
+                            FocusWeekBand(sessions: sessions, blocks: blocks, window: window)
+                        } else {
+                            dayBand(sessions)
+                        }
+                        // While a session runs: its focus index as one bare
+                        // line under the ribbon that places it in the day.
+                        if let live = sessions.first(where: \.isLive) {
+                            FocusSessionLine(session: live, blocks: blocks)
+                        }
                     }
                 }
             }
@@ -66,7 +78,9 @@ struct FocusPage<Controls: View>: View {
     /// them from the tail when the head runs out of room.
     private func summaryParts(_ sessions: [FocusReport.Session]) -> [(String, Color)] {
         guard !sessions.isEmpty else {
-            return [("no sessions logged", Instrument.muted)]
+            // A window with no sessions in it still has the other clock to
+            // report, and on an empty page that clock is the whole story.
+            return [("no sessions logged", Instrument.muted)] + awayPart()
         }
         let total = sessions.reduce(0) { $0 + $1.durationMs }
         var parts: [(String, Color)] = [(
@@ -76,6 +90,7 @@ struct FocusPage<Controls: View>: View {
         if sessions.contains(where: \.isLive) {
             parts.append(("in focus now", Instrument.live))
         }
+        parts += awayPart()
         if sessions.count > 1, let longest = sessions.map(\.durationMs).max() {
             parts.append(("longest \(TimeBreakdown.duration(longest))", Instrument.muted))
         }
@@ -84,6 +99,24 @@ struct FocusPage<Controls: View>: View {
             parts.append(("\(TimeBreakdown.duration(offTask)) off-task", Instrument.faint))
         }
         return parts
+    }
+
+    /// The other clock the switch carries (`FocusClock`), as a summary part:
+    /// while a session runs, the gap it broke; otherwise, the gap you are in.
+    /// Empty when nothing has ever been logged to be away from.
+    ///
+    /// Stated in minutes and hours rather than ticked — the head measures its
+    /// own text to decide what fits, and re-measuring that once a second to
+    /// move a digit nobody reads at this size is exactly the cost that page
+    /// can't take. The ticking copy lives at the rail's foot.
+    private func awayPart() -> [(String, Color)] {
+        let reading = store.focusClock()
+        guard let away = reading.away else { return [] }
+        return [(
+            reading.isRunning
+                ? "after \(FocusClock.since(away)) away"
+                : "last focus \(FocusClock.since(away)) ago",
+            Instrument.muted)]
     }
 
     // MARK: - Band
@@ -120,13 +153,29 @@ struct FocusPage<Controls: View>: View {
 
     private func row(_ session: FocusReport.Session) -> some View {
         HStack(spacing: 14) {
-            HStack(spacing: 9) {
-                if session.isLive { StatusDot(color: Instrument.live, size: 6) }
-                Figure(label(session))
+            Text(label(session))
+                .font(Instrument.sans(13, session.isLive ? .medium : .regular))
+                .foregroundStyle(Instrument.ink)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if session.isLive {
+                    // The running session's own stopwatch, ticking in the
+                    // column the finished sessions state their length in. A
+                    // logged duration and a live one shouldn't read the same:
+                    // this one is still being decided, and the seconds say so.
+                    FocusTick { now in
+                        Figure(
+                            FocusClock.stopwatch(
+                                now.timeIntervalSince1970
+                                    - Double(session.startedAt) / 1_000),
+                            weight: .medium, color: Instrument.live)
+                    }
+                } else {
+                    Figure(TimeBreakdown.duration(session.durationMs), color: Instrument.ink)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Figure(TimeBreakdown.duration(session.durationMs), color: Instrument.ink)
-                .frame(width: 76, alignment: .trailing)
+            .frame(width: 76, alignment: .trailing)
             Figure(Self.percent(session.score), color: Instrument.muted)
                 .frame(width: 54, alignment: .trailing)
             Group {
@@ -146,6 +195,9 @@ struct FocusPage<Controls: View>: View {
             .frame(width: 148, alignment: .leading)
         }
         .padding(.vertical, 7)
+        .background(
+            (session.isLive ? Instrument.liveTint : Color.clear)
+                .padding(.horizontal, -Instrument.gutter))
     }
 
     /// "10:05 – 11:40 AM", with the weekday in front when the table spans one.

@@ -211,11 +211,14 @@ struct Band<Content: View>: View {
 /// A table's column heads: mono, tracked, over a rule. Takes the same cells
 /// the rows below it use, so a column can't drift from its heading.
 struct ColumnHead<Content: View>: View {
+    /// Has to match the gap the rows below put between the same cells, or the
+    /// heading sits a few points off the column it names.
+    var spacing: CGFloat = 14
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) { content }
+            HStack(spacing: spacing) { content }
                 .font(Instrument.eyebrow())
                 .tracking(1)
                 .foregroundStyle(Instrument.ghost)

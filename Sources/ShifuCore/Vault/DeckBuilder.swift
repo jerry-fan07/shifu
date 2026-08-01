@@ -28,15 +28,20 @@ public enum DeckBuilder {
 
     // MARK: - Prompt (pure, testable)
 
+    /// One deck build issues several batches over one unchanging preamble, so
+    /// the deck's title, task, brief and running card count all belong at the
+    /// end: everything above the first byte that differs between two batches
+    /// bills at the cache rate (see `WorkNoteCompiler.rules`). `written` moves
+    /// on every batch, which is what used to end the shared prefix on line 3.
     static func prompt(
         title: String, taskName: String, instructions: String?,
         range: DeckStore.CardRange? = nil, written: Int = 0, blocks: [BlockText]
     ) -> String {
         let brief = instructionLines(instructions, written: written)
         return """
-        Create spaced-repetition flashcards for the deck "\(title)", built from the
-        user's work on the task "\(taskName)".
-        \(brief)Look for: definitions, facts, how-tos, error→fix pairs, shortcuts, new terms.
+        Create spaced-repetition flashcards from the screen text below, for one deck
+        built from one task. The deck and the card budget come after the excerpts.
+        Look for: definitions, facts, how-tos, error→fix pairs, shortcuts, new terms.
         Write cards that teach, not clippings: combine what the screen text shows with
         your own knowledge of the subject — define the terms involved, explain how or
         why it works, and add a concrete example or gotcha where you know one. Every
@@ -50,11 +55,14 @@ public enum DeckBuilder {
           "question": "recall question that names its subject",
           "answer": "answer, 2-4 sentences: the direct answer plus the why",
           "confidence": 0.8}]
-        \(budgetLine(instructions, range: range, written: written)) Only genuinely
-        reusable knowledge — no UI chrome, no navigation text, no user's own writing.
+        Only genuinely reusable knowledge — no UI chrome, no navigation text, no
+        user's own writing.
 
         Screen text excerpts:
         \(blocks.map(\.text).joined(separator: "\n---\n"))
+
+        The deck: "\(title)", from the user's work on the task "\(taskName)".
+        \(brief)\(budgetLine(instructions, range: range, written: written))
         """
     }
 

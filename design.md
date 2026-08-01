@@ -247,6 +247,7 @@ A user-invoked focus contract, toggled from the menu bar (and optionally auto-sc
 - If the current block has been non-`work`/non-`learning` for a grace period (default 1 s), Shifu shows the **glow pulse**: a full-screen, click-through overlay window (`NSWindow` at `.screenSaver` level, `ignoresMouseEvents = true`) that breathes a soft colored vignette at the screen edges for ~2 s, then fades, with a short translucent motivational line centered on the screen the user is working on (e.g. "Believe in yourself"). Repeats at most every 10 s while off-task. No sound, no modal — a nudge, not a scold.
 - Escalation is configurable: off → glow → glow + haptic (on supported trackpads) → gentle notification. Default is glow only.
 - Focus Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
+- **The switch carries two clocks** (`FocusClock`), drawn wherever the switch is drawn — the rail's foot, the menu bar panel, the Focus page, and `shifu focus` in the terminal. The stopwatch alone goes one place further, to the **menu bar item itself** (§7), which is the only surface that is not a switch: it is also the only one visible without opening anything, and a session length you have to click to see is one you stop checking. The first is the running session's stopwatch (`12:04`, seconds and all, because a live reading should look live). The second is the gap: while a session runs it is the time that passed *before* it started, frozen — a gap that grew while you focused would read as punishment for focusing — and while Focus Mode is off it is the time since the last session ended, and it runs. Neither is a counter the app keeps: the stopwatch is measured from the **control file's birth time**, so it starts the instant the switch is flipped, survives a relaunch, and works with no daemon running; the gap is measured from the newest closed `focus_mode_sessions` row long enough to count as a session, with the app's own observation standing in for the moment between switching off and the daemon writing `ended_at`.
 
 ---
 
@@ -333,7 +334,7 @@ The vault is a work database, not just flashcards:
 - **The Task log page** shows today's compiled log (most recently worked task first) and the task list with its latest log line. Themes get their own page beside it, and vault search a third (*Scrolls*) — the old Vault tab's segmented toggle became three stations on the trail (§7).
 - **Task log filters**: a filter bar pinned above the log — range (today / 7 days / 30 days / all time), minimum time spent (default 5 min+), order (most recent / most time), and theme (all / one / unfiled). The range doubles as the window the time column counts, so a row's hours always match the range on screen. The section header carries "N of M" because the list is capped at 50 rows: a roster runs to hundreds of tasks, most of them a stray minute, and a capped recency-sorted list looks identical under every range without it. Minimum time and theme also scope the *Today* day log; range and sort don't — that log is already a single day, and its most-recent-first order is part of what makes it a log rather than a task list. The *Cards* deck picker still reads the unfiltered roster. Session state, not persisted.
 - **Task detail page**: every task row opens as a full dashboard page (`TaskDetailView`): the LLM gist of what the task *is*, the **Overview** document above the history, day-by-day history with the work-note narratives and their `## Notes` sections (§2.1 of vault-features.md) expandable inline, where the time went per source, the knowledge notes captured under the task, recent activity blocks, inline rename, theme assignment (including creating a new theme in place), and the **Create flashcard deck** button (§5.2) — or the deck's live card count once one exists.
-- **Themes — the second clustering mode**: `ThemeClusterer` runs an *independent* LLM clustering of the same blocks into 3–8 broad initiatives spanning weeks ("YC Startup School", "Shifu development", "Travel") — one level above tasks, assigned per block (`activities.theme_key`, `"thm:"` namespace), so a task's blocks may straddle themes. Same engine discipline as semantic tasks: roster reuse (30-day window), confidence floor, `theme_attempts` cap, rebuild carry, fail-soft. Each theme keeps an LLM **running narrative** ("the story so far"), regenerated only when the hash of its *completed* days changes — at most one generation per active theme per day. Themes get their own page on the trail, beside the Task log (§7); a theme's page shows the narrative, computed per-day history (no parallel log table — days derive from `theme_key` on read), the tasks its time flowed through (linking to their pages), and recent activity. **Themes are authored by the user, suggested by the model** *(revised 2026-07-28, v17)*: the clusterer files blocks into themes that exist but can no longer found one — an initiative it invents lands in `theme_proposals` and renders in a **Suggested themes** section below the grid, with the hours and block count behind it, as Add / Dismiss. Accepting mints the theme *and* files the recorded blocks, so it is never a named empty box; dismissing is permanent (unique `key`), and so is deleting, which unfiles the theme's blocks, burns their `theme_attempts`, and records the key as dismissed so it can't be proposed straight back — the time itself stays in the ledger. Themes are renameable and their gist editable in place; the key never moves, so renames keep the history. The original design let the clusterer mint themes silently: the grid then filled with the model's carve-up of the user's life faster than anyone could correct it, which is exactly backwards for the one layer that is supposed to be the user's own.
+- **Themes — the second clustering mode**: `ThemeClusterer` runs an *independent* LLM clustering of the same blocks into 3–8 broad initiatives spanning weeks ("YC Startup School", "Shifu development", "Travel") — one level above tasks, assigned per block (`activities.theme_key`, `"thm:"` namespace), so a task's blocks may straddle themes. Same engine discipline as semantic tasks: roster reuse (30-day window), confidence floor, `theme_attempts` cap, rebuild carry, fail-soft. Each theme keeps an LLM **running narrative** ("the story so far"), regenerated only when the hash of its *completed* days changes — at most one generation per active theme per day. Themes get their own page on the trail, beside the Task log (§7); a theme's page opens on **its own title screen** — the theme's name as the largest type on the page, over its gist and headline figures, printed white on a full-bleed rust banner (`Instrument.banner`, the one ground the app fills rather than rules, shared with the story panel), sized off the window so the campaign's heading always peeks under the fold and the scroll it asks for is discoverable; the type drifts and fades as that scroll starts while the banner leaves at scroll speed — and under it **the campaign**: thirty days of its blocks stacked by hour of day, coloured by task, revealed by a scroll-driven pass (the chart pins and wipes in, the task roster rises row by row; Reduce Motion shows it settled) — then the narrative and where the time went; everything derives from `theme_key` on read (no parallel log table), and the task rows link to their pages. **Themes are authored by the user, suggested by the model** *(revised 2026-07-28, v17)*: the clusterer files blocks into themes that exist but can no longer found one — an initiative it invents lands in `theme_proposals` and renders in a **Suggested themes** section below the grid, with the hours and block count behind it, as Add / Dismiss. Accepting mints the theme *and* files the recorded blocks, so it is never a named empty box; dismissing is permanent (unique `key`), and so is deleting, which unfiles the theme's blocks, burns their `theme_attempts`, and records the key as dismissed so it can't be proposed straight back — the time itself stays in the ledger. Themes are renameable and their gist editable in place; the key never moves, so renames keep the history. The original design let the clusterer mint themes silently: the grid then filled with the model's carve-up of the user's life faster than anyone could correct it, which is exactly backwards for the one layer that is supposed to be the user's own.
 
 ---
 
@@ -466,7 +467,8 @@ Shifu is a full desktop app with a menu bar companion, and it is not a window th
 
 **The Dojo design system** (`ShifuApp/Dojo.swift`, `DojoChrome.swift`) sets everything that isn't the painting: rice-paper surfaces in light, cool slate in dark, and one terracotta accent — the headband. Pages sit on `dojoPanel` — a material with a paper wash over it, so the world's colour and the hour's light reach the room without the landscape ever competing with a column of numbers. Three type registers and no more: SF at display weight (`Dojo.display`) for titles and hero numbers, where weight alone carries the hierarchy; uppercase tracked SF Mono (`Eyebrow`) for section labels, units, and ticks — the terminal register that says "this is a log"; and the plain system face for everything you actually read. The mentor's aphorisms (`Wisdom` — original lines, not quotes) get a system italic. Minimalism still governs (§1, principle 2): generous whitespace, no gamification, badges only where a number is actionable (cards due, radar suggestions), no settings page longer than one screen.
 
-- **Menu bar item** (the always-visible surface): Shifu's own face, rendered from the vector figure rather than an SF Symbol — awake while watching, asleep while paused. Focus Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Shifu, Settings, Quit.
+- **Menu bar item** (the always-visible surface): Shifu's own face, rendered from the vector figure rather than an SF Symbol — awake while watching, asleep while paused. While Focus Mode is on the face is joined by the running session's stopwatch (§4.4), so the one reading a focus contract is kept by is legible without opening anything; with it off the item is the mark alone, exactly as before. Face and figures are drawn into **one template image**, not set as a label beside the mark: AppKit tints a template, so the digits invert with the ridge when the item is pressed and hold up on a dark bar and over a wallpaper. Figures are tabular, so a rolling second doesn't shove every other menu bar item sideways. Then the panel: Focus Mode toggle, "Review · N due", "Today: 4.2 h work · 1.1 h learning", Pause 1h / until tomorrow, Open Shifu, Settings, Quit.
+  - The item's stopwatch is the **one clock that can't be a `TimelineView`**. A `MenuBarExtra` label is built once and never re-proposed on a schedule of its own — the timeline fires and nothing redraws, so the item would wear the reading it was born with for the rest of the launch, and nothing about that fails a build. It ticks off an object it observes instead (`FocusStopwatch`), started and stopped from the one place that learns a session began (`LedgerStore.refreshFocusClock`). Deliberately not a `@Published` value *on the store*: that would re-run every body in the app once a second, tables and all. An idle Shifu keeps no timer at all.
 - **Main window**: the mountain, full-bleed under a hidden title bar, with two things over it. There is no sidebar — the places hang in the sky on the left as stations on a dashed switchback (`TrailRail`), lowest first: *Today* at the foot, then **The path** (*Time*, *Themes*, *Task log* — §5.3), **The mind** (*Practice* — §5.2 — and *Scrolls*, vault search — vault-features.md §4), **The watch** (*Radar*) at the summit. No panel behind them, only a wash of the hour's own top-sky colour, which is the one band every palette already guarantees its ink reads against. Shifu's mark heads the trail; capture state, rest, Focus Mode, and the door to Settings sit at its foot. Charts native SwiftUI; no web views.
 - **Travel**: picking a station flies the camera along the mountain — pulling back at the midpoint so you see the whole climb, settling on arrival — while the page's scroll rolls up and unfurls again at the destination. It costs about 0.8 s, which is long enough to read as a climb and short enough never to feel like a wait. Every terrace wears its name carved into the cliff under its lip, drawn inside the world so the signs travel with the camera: the place you are heading for is legible from the one you are leaving.
 - Every page except Today rides in a **scroll** — frosted rice paper over the mountain, inset on the right — and wears one `PageScaffold` inside it: region eyebrow, title, one line on what the page is for, and the page's own controls in the header's trailing slot. The camera aims at the middle of the gap the scroll leaves, so the terrace you travelled to is never the thing the scroll is covering.
@@ -585,20 +587,57 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
   would spread them, but the closed-block gate plus the cap already bound the
   waste to two extra calls per stubborn block; not worth a timestamp column.
-- **Cross-run prompt-cache alignment as its own effort (§4.2)** — the ordering
-  wins are taken: rosters render in stable key order, `CardBuilder.ongoingTopics`
-  in slug order, and the task-overview prompt puts the overview it is revising
-  *after* the day notes rather than ahead of them (it is rewritten every pass,
-  so anything behind it was a guaranteed miss). What is left is the part that
-  costs something to keep: the roster's per-task counters (`2.4h over 3d · last
-  2d ago`) move hourly and sit inline with the names, so the byte-identical
-  prefix still ends at the instruction header — splitting them into their own
-  section after the stable name/gist block is the fix. Alongside it, the
-  grouping and clustering prompts append their output-format spec *after* the
-  block list, where it can never be cached. Measure both against the per-stage
-  attribution below before spending anything on them; note also that input is
-  only worth chasing once thinking mode is off the fast slot — with
-  chain-of-thought billed as output, input was under a fifth of the bill.
+- **Cross-run prompt-cache alignment (§4.2) — half shipped 2026-08-01, half
+  still deferred.** The revisit condition below was met and acted on: on
+  2026-08-01 misses were 95% of input and input was 88% of the bill.
+  - **Measured, so it is not re-derived.** DeepSeek's cache is prefix-only and
+    quantized to **128 tokens** — every one of the 101 non-zero
+    `cached_prompt_tokens` rows ever recorded is a multiple of 128, none is
+    smaller, while `prompt_tokens` are not quantized at all. So the only
+    discountable bytes are the ones before the first byte that differs from a
+    recent request, and a shared prefix under 128 tokens is billed as if there
+    were none. TTL is comfortable: a 512-token prefix hit 6 h 52 min after it
+    was last written.
+  - **Shipped: prompts are assembled back-to-front.** `WorkNoteCompiler`,
+    `TaskOverviewCompiler`, `ThemeClusterer.narrativePrompt` and `DeckBuilder`
+    all opened with the value that changes between calls, so two calls of one
+    stage shared 25 bytes and the stage measured *exactly* zero cached on
+    every call. Static rules now lead, append-only evidence follows, and
+    identity plus the operative instruction close. Nothing was added or
+    removed. Replayed over 425 dogfood task-days, day notes move 0% → ~48%.
+    `PromptPrefixTests` pins the property; it is invisible in output and only
+    a column in `llm_usage` ever reports it.
+  - **Not done, deliberately.** *Quantizing roster stats* is a coin flip: the
+    roster is key-sorted, so the one task worked this hour truncates the
+    prefix at an arbitrary index, and a task minted mid-run gets inserted
+    mid-list and renumbers every later `t<n>` handle anyway. *Sorting
+    `CardBuilder.ongoingTopics` by slug* is a correctness regression — the
+    anchor list is a recency LRU (`insert(at: 0)` / `removeLast()`), so
+    alphabetical order would evict the newest anchors. *Padding
+    `TaskReconciler`'s header past a block* is one call a day at ~2.2k tokens;
+    the minimalism rule wins.
+  - **The bigger line item was next door, and is fixed.** `WorkNoteCompiler`'s
+    detailed tier pinned at `max_tokens` on dense task-days: on 2026-08-01,
+    13 calls and 565,816 input tokens — **46% of the day's spend** — for
+    answers `finish_reason=length` discarded. Three defects stacked, and each
+    is now closed:
+    - *The reserve was too low.* 1,200 tokens, flat. The answer barely tracks
+      the evidence (19 labelled calls over 1.3k-16.6k prompts answered in
+      137-950 tokens, uncorrelated), so this is a ceiling on a bounded
+      artifact, not a budget — but the ceiling was under it. Now 2,500.
+    - *A truncated prose answer was thrown away.* `LLMError.truncated` now
+      carries the partial and `LLMBackend.completeProse` trims it to its last
+      whole line. Which of `complete`/`completeProse` a stage calls states
+      what its answer is: half a JSON batch is nothing (`CardBuilder` once
+      built 0 cards from 40 blocks that way), half a day note is most of one.
+    - *A failed narrative erased the prose already on disk.* `gather` wrote
+      the new `contentHash` before the call was attempted, so a failure left
+      the day stamped as described and blank — and a completed day's evidence
+      never changes again, so it could never retry. The hash now moves with
+      the prose, never ahead of it, and a substantial note whose hash says
+      described while carrying no prose is read as changed, which heals the
+      days already blanked. The same write also erased prose on any run made
+      with the backend off.
 - **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
   recorded what each response cost but never what it bought, so "which stage
   is expensive?" could only be answered by lining rows up against the order

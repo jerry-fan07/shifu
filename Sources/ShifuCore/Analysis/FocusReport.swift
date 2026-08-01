@@ -47,6 +47,18 @@ public enum FocusReport {
         }
     }
 
+    /// Which way a raw category string pulls a focus reading: +1 on-task,
+    /// -1 off-task, 0 neutral. The one place the split is decided — `sessions`
+    /// and `FocusCandles` both score through it, so they cannot drift apart.
+    /// A category string the enum doesn't know is neutral too, the way the
+    /// live controller treats it: never punished.
+    public static func leaning(_ rawCategory: String) -> Int {
+        guard let category = Category(rawValue: rawCategory),
+              !neutral.contains(category)
+        else { return 0 }
+        return onTask.contains(category) ? 1 : -1
+    }
+
     /// `raw` sessions scored against `activities`, both clipped to [from, to),
     /// oldest first. A session clipped to nothing drops out.
     public static func sessions(
@@ -63,15 +75,10 @@ public enum FocusReport {
             for activity in activities {
                 let overlap = min(activity.endedAt, end) - max(activity.startedAt, start)
                 guard overlap > 0 else { continue }
-                // A category string the enum doesn't know is neutral too, the
-                // way the live controller treats it: never punished.
-                guard let category = Category(rawValue: activity.category),
-                      !neutral.contains(category)
-                else { continue }
-                if onTask.contains(category) {
-                    onTaskMs += overlap
-                } else {
-                    offTaskMs += overlap
+                switch leaning(activity.category) {
+                case 1: onTaskMs += overlap
+                case -1: offTaskMs += overlap
+                default: break
                 }
             }
             return Session(

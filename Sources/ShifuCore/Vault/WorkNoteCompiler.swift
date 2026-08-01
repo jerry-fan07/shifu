@@ -17,10 +17,17 @@ public enum WorkNoteCompiler {
     public struct Summary: Equatable, Sendable {
         public var notesWritten: Int
         public var narrativesGenerated: Int
+        /// Days that wanted prose and didn't get it. Counted and reported
+        /// because the alternative is what happened on 2026-07-30..08-01: a
+        /// `try?` swallowed every failure, the only log line fired on
+        /// success, and thirteen calls a day bought nothing in silence.
+        public var narrativesFailed: Int
 
-        public init(notesWritten: Int = 0, narrativesGenerated: Int = 0) {
+        public init(notesWritten: Int = 0, narrativesGenerated: Int = 0,
+                    narrativesFailed: Int = 0) {
             self.notesWritten = notesWritten
             self.narrativesGenerated = narrativesGenerated
+            self.narrativesFailed = narrativesFailed
         }
     }
 
@@ -65,13 +72,37 @@ public enum WorkNoteCompiler {
         }
     }
 
-    static let detailedResponseTokens = 1_200
+    /// What a documented day is allowed to cost in answer tokens.
+    ///
+    /// Flat, not scaled to the day's evidence, because the measurement says
+    /// the answer barely tracks the evidence: across 19 stage-labelled calls
+    /// spanning 1.3k-16.6k-token prompts, completions ran 137-950 tokens with
+    /// no useful correlation — a 16.6k prompt answered in 184, a 9.5k one in
+    /// 950. The prompt asks for a bounded artifact (at most six bullets and
+    /// three sub-headings), so a reserve is a ceiling on that artifact, not a
+    /// budget proportional to the day.
+    ///
+    /// 1,200 was nonetheless too low: on 2026-08-01 thirteen calls stopped
+    /// exactly on it, all on 36k+ prompts, while other calls on 37-39k
+    /// prompts finished naturally at 790 and 907. So the overflow is real but
+    /// small — the answers wanted somewhat more than 1,200, not multiples of
+    /// it. 2,500 is ~2.6x the largest complete answer ever measured here, and
+    /// the headroom costs $0.0007 per call at the fast slot's output rate.
+    /// A day that still overflows this is salvaged rather than discarded
+    /// (`narrative`), so the ceiling stops being a cliff either way.
+    static let detailedResponseTokens = 2_500
     static let detailedSampleChars = 2_000
     /// The categories that earn the detailed tier.
     static let detailCategories: Set<Category> = [.work, .learning]
 
     struct Pending {
         var note: WorkNote
+        /// The hash of *this* compile's evidence. Held here rather than
+        /// written into `note` up front: for a day that is owed prose the
+        /// note carries the previous pass's hash until the prose lands, so
+        /// the hash means "this evidence has been described", never "this
+        /// evidence was attempted" (see `gather` and `run`).
+        var freshHash: Int64
         var needsNarrative: Bool
         var tier: Tier
         var samples: String
@@ -114,12 +145,20 @@ public enum WorkNoteCompiler {
                 day: day, database: database, vault: vault, calendar: calendar,
                 minMs: minMs, throttleNarratives: !regenerateOpenDay && day.end > to)
             for var pending in pendings {
-                if pending.needsNarrative, let backend,
-                   let prose = try? await narrative(for: pending, backend: backend),
-                   !prose.sessions.isEmpty {
-                    pending.note.sessionsProse = prose.sessions
-                    pending.note.detailProse = prose.detail
-                    summary.narrativesGenerated += 1
+                if pending.needsNarrative, let backend {
+                    // The hash moves with the prose, never ahead of it: a day
+                    // is recorded as described only once it has been. A
+                    // failure here leaves the note exactly as the last good
+                    // pass left it, which keeps it eligible for the next one.
+                    if let prose = try? await narrative(for: pending, backend: backend),
+                       !prose.sessions.isEmpty {
+                        pending.note.sessionsProse = prose.sessions
+                        pending.note.detailProse = prose.detail
+                        pending.note.contentHash = pending.freshHash
+                        summary.narrativesGenerated += 1
+                    } else {
+                        summary.narrativesFailed += 1
+                    }
                 }
                 try vault.saveWork(pending.note)
                 summary.notesWritten += 1
@@ -234,9 +273,18 @@ public enum WorkNoteCompiler {
             // in text a light prompt never sees.
             var samples: [Int64: String] = [:]
             for row in rows {
+                // Ordered by id, not `started_at`: id order is what the
+                // `idx_observations_session` walk already returns, so this
+                // states today's bytes rather than changing them — every
+                // work note's `contentHash` is a hash of these samples, and
+                // a different order would re-hash all 400-odd of them and
+                // re-bill their prose. It has to be *stated*, though: the
+                // prompt's cacheable prefix is now these bytes (see
+                // `WorkNoteCompiler.rules`), and an unordered query is a
+                // silent licence for SQLite to break it later.
                 let texts = try String.fetchAll(db, sql: """
                     SELECT text FROM observations
-                    WHERE session_id = ? AND text IS NOT NULL LIMIT 8
+                    WHERE session_id = ? AND text IS NOT NULL ORDER BY id LIMIT 8
                     """, arguments: [row.id])
                 if !texts.isEmpty {
                     samples[row.id] = String(
@@ -313,16 +361,36 @@ public enum WorkNoteCompiler {
             guard let agg = perTask[taskID] else { return nil }
             let hash = contentHash(entries: agg.entries)
             let old = vault.workNote(day: dayStr, taskKey: agg.taskKey)
-            // Both prose sections carry on a hash match, not just the first.
-            // Carrying only `sessionsProse` would silently delete `## Notes`
-            // on every unchanged-day rebuild — and the hash gate would then
-            // never regenerate it, because the day is by definition unchanged.
-            let unchanged = old?.contentHash == hash
-            let deferred = !unchanged && throttleNarratives
             let tier = agg.tier
             let samples = agg.samples
                 .map { String($0.prefix(tier.sampleChars)) }
                 .joined(separator: "\n---\n")
+            let substantial = agg.durationMs >= minMs && !samples.isEmpty
+            // Both prose sections carry on a hash match, not just the first.
+            // Carrying only `sessionsProse` would silently delete `## Notes`
+            // on every unchanged-day rebuild — and the hash gate would then
+            // never regenerate it, because the day is by definition unchanged.
+            //
+            // A substantial day whose hash says "described" but which carries
+            // no prose was never described: the hash is a receipt for prose,
+            // so the two disagreeing means the receipt is wrong. Reading it
+            // as changed is what heals the days blanked while a failed
+            // narrative still stamped the hash — nothing else ever would,
+            // because a completed day's evidence never changes again.
+            let described = old?.sessionsProse?.isEmpty == false
+            let unchanged = old?.contentHash == hash && (described || !substantial)
+            let deferred = !unchanged && throttleNarratives
+            // A day that has earned prose this pass is in exactly the same
+            // position as a throttled one until that prose exists: the old
+            // text is the best record there is, and the old hash is what
+            // keeps the day eligible. Writing the new hash here was the
+            // silent failure — a narrative that then failed left the day
+            // stamped as described and its previous prose deleted, and
+            // because a *completed* day's evidence never changes again, it
+            // could never be retried. Three of the densest days in the
+            // dogfood vault lost their notes that way.
+            let owed = !unchanged && substantial && !throttleNarratives
+            let carry = unchanged || deferred || owed
             let note = WorkNote(
                 id: old?.id ?? Note.ulid(),
                 taskKey: agg.taskKey,
@@ -331,14 +399,12 @@ public enum WorkNoteCompiler {
                 durationMs: agg.durationMs,
                 sources: agg.sources,
                 sessions: sessions(from: agg.spans, formatter: times),
-                contentHash: deferred ? (old?.contentHash ?? 0) : hash,
+                contentHash: deferred || owed ? (old?.contentHash ?? 0) : hash,
                 summary: TaskGrouper.summaryLine(sources: agg.sources, topics: agg.topics),
-                sessionsProse: unchanged || deferred ? old?.sessionsProse : nil,
-                detailProse: unchanged || deferred ? old?.detailProse : nil,
+                sessionsProse: carry ? old?.sessionsProse : nil,
+                detailProse: carry ? old?.detailProse : nil,
                 capturedLinks: wikiLinks(fetched.linksByTask[taskID] ?? []))
-            let substantial = agg.durationMs >= minMs && !samples.isEmpty
-            return Pending(note: note,
-                           needsNarrative: !unchanged && substantial && !throttleNarratives,
+            return Pending(note: note, freshHash: hash, needsNarrative: owed,
                            tier: tier, samples: samples)
         }
     }

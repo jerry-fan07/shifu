@@ -107,6 +107,26 @@ public enum FocusModeFile {
         return FileManager.default.fileExists(atPath: file(in: home).path)
     }
 
+    /// When the switch was flipped on, or nil when Focus Mode is off.
+    ///
+    /// The control file's *birth time* is the session start — the file is
+    /// created by the flip and nothing rewrites it, so this is the same moment
+    /// the daemon stamps into `focus_mode_sessions.started_at` when it notices,
+    /// minus the noticing. Read from the file rather than from that row on
+    /// purpose: the row appears a filesystem event later, and doesn't appear at
+    /// all when the daemon isn't running — a stopwatch that needs a healthy
+    /// daemon to start is a stopwatch that stays at zero exactly when the user
+    /// is watching it.
+    ///
+    /// Survives the `work_mode` rename for the reason `adoptLegacyName`
+    /// documents: `rename(2)` keeps the birth time, so a session left on across
+    /// an upgrade keeps its start too.
+    public static func startedAt(home: URL? = nil) -> Date? {
+        adoptLegacyName(home: home)
+        guard let token = ControlFileToken(at: file(in: home)) else { return nil }
+        return Date(timeIntervalSince1970: Double(token.createdAt) / 1_000_000_000)
+    }
+
     public static func turnOn(home: URL? = nil) throws {
         if home == nil { try ShifuPaths.ensureHomeExists() }
         adoptLegacyName(home: home)

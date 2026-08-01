@@ -1,6 +1,6 @@
 # Shifu
 
-> *Shifu lies awake, quiet but observant by your side.*
+> *All quiet in the night, Shifu lies awake in deep observance.*
 
 Most of a working day evaporates. Not the meetings or the milestones — the
 connective tissue between them: the forty minutes that went somewhere, the

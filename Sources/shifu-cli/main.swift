@@ -196,8 +196,8 @@ func commandStatus() throws {
         print("capture: active (if shifud is running)")
     }
 
-    if FocusModeFile.isOn() {
-        print("focus mode: ON")
+    if let startedAt = FocusModeFile.startedAt() {
+        print("focus mode: ON for \(FocusClock.stopwatch(Date().timeIntervalSince(startedAt)))")
     }
 
     let db = try openDatabase()
@@ -463,7 +463,23 @@ func commandFocus(_ toggle: String?) throws {
         FocusModeFile.turnOff()
         print("focus mode off")
     default:
-        print("focus mode: \(FocusModeFile.isOn() ? "ON" : "off")")
+        // With no argument this is a reading, so it reads both clocks — the
+        // same two the app draws under the switch (design.md §4.4).
+        let startedAt = FocusModeFile.startedAt()
+        let previousEnd = try? FocusModeSessions.previousEnd(
+            before: Int64((startedAt ?? Date()).timeIntervalSince1970 * 1_000),
+            database: openDatabase())
+        let reading = FocusClock.reading(
+            now: Date(), startedAt: startedAt,
+            previousEnd: previousEnd.map { Date(timeIntervalSince1970: Double($0) / 1_000) })
+        if let elapsed = reading.elapsed {
+            let after = reading.away.map { ", after \(FocusClock.since($0)) away" } ?? ""
+            print("focus mode: ON for \(FocusClock.stopwatch(elapsed))\(after)")
+        } else if let away = reading.away {
+            print("focus mode: off — last focus \(FocusClock.since(away)) ago")
+        } else {
+            print("focus mode: off")
+        }
     }
 }
 

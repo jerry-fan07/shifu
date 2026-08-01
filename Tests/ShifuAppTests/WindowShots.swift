@@ -79,6 +79,13 @@ import Testing
             shoot(
                 .themes, route: .theme(theme.id), as: "theme-page", dark: false,
                 store: store, into: directory)
+            // Twice: the title banner is the one full-bleed field of colour
+            // the app fills, and white type on it is a contrast question that
+            // has to be looked at against both grounds rather than reasoned
+            // about — `overdue` is a deep rust in light and a salmon in dark.
+            shoot(
+                .themes, route: .theme(theme.id), as: "theme-page-dark", dark: true,
+                store: store, into: directory)
         }
         if let task = Self.unrollableTask(store) {
             shoot(

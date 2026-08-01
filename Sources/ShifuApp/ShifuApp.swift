@@ -55,12 +55,7 @@ struct ShifuApp: App {
                 .environmentObject(store)
                 .environmentObject(router)
         } label: {
-            if let mark = MenuBarMark.image(paused: store.isPaused) {
-                Image(nsImage: mark)
-                    .accessibilityLabel(store.isPaused ? "Shifu, resting" : "Shifu, watching")
-            } else {
-                Image(systemName: store.isPaused ? "pause" : "chart.bar.xaxis")
-            }
+            MenuBarLabel(store: store)
         }
         // A window rather than a menu: the panel leads with two lines of
         // figures, and an NSMenu can only render them as disabled menu items.
@@ -187,6 +182,10 @@ private struct MenuBarPanel: View {
 /// The Focus Mode line wears the switch itself — the same control as the rail's
 /// foot and the Settings page, so the state looks the same everywhere it can
 /// be flipped. The whole row stays the target, like every other line here.
+///
+/// It wears the clock too, and this is the surface that most needs it: the menu
+/// bar is reachable without the window, so "how long have I been at this" is
+/// one click from anywhere.
 private struct FocusModeMenuLine: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var hovering = false
@@ -195,12 +194,15 @@ private struct FocusModeMenuLine: View {
         Button {
             store.toggleFocusMode()
         } label: {
-            HStack(spacing: 8) {
-                Text("Focus Mode")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.ink)
-                Spacer(minLength: 0)
-                ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("Focus Mode")
+                        .font(Instrument.sans(13))
+                        .foregroundStyle(Instrument.ink)
+                    Spacer(minLength: 0)
+                    ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
+                }
+                FocusTimerLine(size: 11)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 4)
