@@ -76,6 +76,63 @@ import Testing
             click(Self.pill, in: window)
             #expect(window.childWindows?.isEmpty ?? true, "clicking the pill again closes it")
         }
+
+        try pickingCommits(into: directory)
+    }
+
+    /// Picking a row writes the selection back. Settings' choice rows are this
+    /// panel now — `ChoiceSettingRow` wraps the same `FilterMenu` the ledger
+    /// heads wear — and a picker that opens beautifully but doesn't commit is
+    /// a failure this app has already met once, in menu-style `Picker`.
+    @MainActor private func pickingCommits(into directory: URL) throws {
+        let backend = Selection(value: "shifu-cloud")
+        let window = hostWindow(ChoiceBench(backend: backend), dark: false)
+        defer { window.orderOut(nil) }
+
+        click(Self.pill, in: window)
+        let panel = try #require(window.childWindows?.first, "the row's pill opens a panel")
+        shoot(window, to: directory.appendingPathComponent("dropdown-setting.png"))
+
+        // "Rules only" — the third row, counted down from the panel's top.
+        let rows = CGFloat(2) + 0.5
+        click(
+            CGPoint(
+                x: 40,
+                y: panel.frame.height - DropdownMetrics.endPadding
+                    - rows * DropdownMetrics.rowHeight),
+            in: panel)
+        #expect(backend.value == "off", "picking a row commits the choice")
+        #expect(window.childWindows?.isEmpty ?? true, "and closes the panel behind it")
+    }
+
+    /// The picked value, somewhere a test can read it — `@State` inside the
+    /// bench would be sealed in the view tree.
+    @MainActor private final class Selection {
+        var value: String
+        init(value: String) { self.value = value }
+    }
+
+    /// The AI backend row's control, on its own: the settings row around it is
+    /// a title, a paragraph and a `SettingsStore`, none of which the click
+    /// travels through.
+    private struct ChoiceBench: View {
+        let backend: Selection
+
+        var body: some View {
+            HStack(spacing: 8) {
+                FilterMenu(
+                    options: [
+                        ("Shifu Cloud", "shifu-cloud"), ("DeepSeek", "deepseek"),
+                        ("Rules only", "off")
+                    ],
+                    selection: Binding(
+                        get: { backend.value }, set: { backend.value = $0 }))
+                Spacer()
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Instrument.ground)
+        }
     }
 
     // MARK: - Driving a real window

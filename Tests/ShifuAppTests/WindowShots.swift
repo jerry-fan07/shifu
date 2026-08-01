@@ -223,6 +223,39 @@ import Testing
                 to: directory.appendingPathComponent("settings-\(slug).png"),
                 dark: section == .privacy)
         }
+
+        // The AI backend row describes the backend you picked, so the section
+        // has three faces and the shot of whichever one this Mac happens to be
+        // set to says nothing about the other two. These are consent copy —
+        // the one place where an unreadable paragraph is a privacy problem and
+        // not a cosmetic one — so each gets looked at.
+        for option in SettingsCatalog.analysisBackend.options {
+            let settings = SettingsStore()
+            settings.load()
+            settings.set(SettingsCatalog.analysisBackend, to: option.value)
+            settings.section = .analysis
+            let router = Router()
+            router.go(to: .settings)
+            shoot(
+                MainWindow(router: router, settings: settings).environmentObject(store),
+                to: directory.appendingPathComponent("settings-analysis-\(option.value).png"),
+                dark: false)
+        }
+
+        // The Save bar exists only while an edit is staged, so it needs its
+        // own frame: nudge one dial off its stored value and don't save.
+        let unsaved = SettingsStore()
+        unsaved.load()
+        let heartbeat = SettingsCatalog.heartbeatSeconds
+        let target = unsaved.value(for: heartbeat) == heartbeat.range.upperBound
+            ? heartbeat.range.lowerBound : heartbeat.range.upperBound
+        unsaved.set(heartbeat, to: target)
+        let router = Router()
+        router.go(to: .settings)
+        shoot(
+            MainWindow(router: router, settings: unsaved).environmentObject(store),
+            to: directory.appendingPathComponent("settings-unsaved.png"),
+            dark: false)
     }
 
     /// One shot: the window pointed at `place`, optionally with a pushed

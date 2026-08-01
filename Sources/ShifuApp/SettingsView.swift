@@ -1,3 +1,4 @@
+import AppKit
 import ShifuCore
 import SwiftUI
 
@@ -141,34 +142,39 @@ private struct SettingsPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHead(section.rawValue, subtitle: section.summary)
-            PageBody {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Focus Mode's switch is live state, not a stored setting,
-                    // so it stands at the head of its section: the dials under
-                    // it read as what the switch does.
-                    if section == .focusMode { FocusModeRow() }
-                    // Privacy's exclusions come *before* its one catalog
-                    // setting: the section is about what Shifu refuses to
-                    // look at, and opening with "how long text is kept"
-                    // answers a question nobody arrived with.
-                    if section == .privacy { PrivacyRows() }
-                    ForEach(SettingsCatalog.ints.filter { $0.section == section }) {
-                        IntSettingRow(setting: $0)
-                    }
-                    ForEach(SettingsCatalog.choices.filter { $0.section == section }) {
-                        ChoiceSettingRow(setting: $0)
-                    }
-                    ForEach(visibleTexts) { TextSettingRow(setting: $0) }
-                    ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
-                        DomainListRow(setting: $0)
-                    }
-                    extras
-                    if let error = store.lastError {
-                        Text(error)
-                            .font(Instrument.sans(11.5))
-                            .foregroundStyle(Instrument.overdue)
-                            .padding(.top, 12)
-                    }
+            panelBody
+            if store.hasUnsavedChanges { SaveBar() }
+        }
+    }
+
+    private var panelBody: some View {
+        PageBody {
+            VStack(alignment: .leading, spacing: 0) {
+                // Focus Mode's switch is live state, not a stored setting,
+                // so it stands at the head of its section: the dials under
+                // it read as what the switch does.
+                if section == .focusMode { FocusModeRow() }
+                // Privacy's exclusions come *before* its one catalog
+                // setting: the section is about what Shifu refuses to
+                // look at, and opening with "how long text is kept"
+                // answers a question nobody arrived with.
+                if section == .privacy { PrivacyRows() }
+                ForEach(SettingsCatalog.ints.filter { $0.section == section }) {
+                    IntSettingRow(setting: $0)
+                }
+                ForEach(SettingsCatalog.choices.filter { $0.section == section }) {
+                    ChoiceSettingRow(setting: $0)
+                }
+                ForEach(visibleTexts) { TextSettingRow(setting: $0) }
+                ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
+                    DomainListRow(setting: $0)
+                }
+                extras
+                if let error = store.lastError {
+                    Text(error)
+                        .font(Instrument.sans(11.5))
+                        .foregroundStyle(Instrument.overdue)
+                        .padding(.top, 12)
                 }
             }
         }
@@ -185,6 +191,74 @@ private struct SettingsPanel: View {
     @ViewBuilder private var extras: some View {
         if section == .capture { CaptureLadderRow() }
         if section == .about { AboutRows() }
+    }
+}
+
+/// The bar the panel grows the moment a dial differs from what's stored, and
+/// loses the moment it doesn't — dialling a setting back disarms it, as does
+/// Save itself. Pinned under the scroll rather than in it, so a staged edit
+/// three sections away can't hide its own Save button.
+///
+/// Save writes the staged edits and re-reads the store; the daemon reloads
+/// saved values on its own within a heartbeat (`Daemon.reloadIntervals()`).
+/// The list gestures — exclusions, Focus Mode's sites — never arm this bar,
+/// because their Add/remove already committed.
+private struct SaveBar: View {
+    @EnvironmentObject private var store: SettingsStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Rule(weight: .section)
+            HStack(alignment: .center, spacing: 12) {
+                Text("Changes staged, not yet applied — Save writes them, "
+                    + "and the daemon reloads within a heartbeat.")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                OutlineButton(title: "Discard") { store.discardChanges() }
+                SolidButton(title: "Save") { store.save() }
+            }
+            .padding(.horizontal, Instrument.gutter)
+            .padding(.vertical, 11)
+        }
+        .background(Instrument.rail.opacity(0.55))
+    }
+}
+
+/// The question asked when something would carry the user away from staged
+/// edits — clicking another place, or quitting. One shape for both, which is
+/// why it is app-modal (`runModal`) rather than a sheet: navigation needs a
+/// synchronous answer to cancel itself, and `applicationShouldTerminate`
+/// cannot return until it has one. System chrome on purpose — this is the
+/// one dialog in the app, and a warning that looks like macOS is a warning
+/// the user has already learned to read.
+@MainActor
+enum UnsavedSettingsAlert {
+    static func ask() -> SettingsStore.DepartureChoice {
+        let alert = NSAlert()
+        alert.messageText = "Save your settings changes?"
+        alert.informativeText =
+            "You have settings edits that aren't saved. Unsaved changes never "
+            + "reach the daemon; discarding puts the dials back as they were."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .save
+        case .alertSecondButtonReturn: return .discard
+        default: return .stay
+        }
+    }
+}
+
+extension SettingsStore {
+    /// The gate every way out shares — another place (`Router.departureGuard`),
+    /// the window's close button (`WindowCloseGuard`), quitting (`AppDelegate`).
+    /// Free when nothing is staged; otherwise the three-way question.
+    func confirmDeparture() -> Bool {
+        guard hasUnsavedChanges else { return true }
+        return resolveDeparture(UnsavedSettingsAlert.ask())
     }
 }
 

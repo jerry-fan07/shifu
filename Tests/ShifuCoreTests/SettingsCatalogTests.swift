@@ -64,6 +64,19 @@ import Testing
 
     // MARK: - Choice & text settings (AI backend config)
 
+    /// The row shows the picked option's own `detail` and nothing else, so an
+    /// option that ships without one is a backend the user can select with no
+    /// statement of where their text goes. The AI backend is the setting §8
+    /// hangs consent on — an empty string here is a privacy regression, not a
+    /// copy oversight.
+    @Test func everyChoiceOptionSaysWhatPickingItMeans() {
+        for setting in SettingsCatalog.choices {
+            for option in setting.options {
+                #expect(!option.detail.isEmpty, "\(setting.key) → \(option.value)")
+            }
+        }
+    }
+
     @Test func choiceNormalizesUnknownValuesToDefault() throws {
         let backend = SettingsCatalog.analysisBackend
         #expect(backend.normalize("off") == "off")
