@@ -445,22 +445,41 @@ private struct FocusedBars: View {
     let lens: TimeLens
     let endTick: String?
 
-    /// The legend row the pointer is on — the group the chart holds lit.
+    /// The group the pointer is on — the one the chart holds lit. Either end
+    /// of the pair sets it: a legend row, or one of that group's own bands.
     @State private var hovered: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            StackedBars(stacks: stacks, endTick: endTick, highlight: highlight)
+            StackedBars(
+                stacks: stacks, endTick: endTick, highlight: highlight, onHoverBand: hover)
             legend
         }
     }
 
-    /// What to light up: `hovered`, but only while it still names a series on
-    /// show. Flipping the lens under a resting pointer would otherwise leave a
-    /// name nothing in the chart matches — and every column dimmed at once —
-    /// until the mouse moved again.
+    /// What to light up: `hovered`, but only while it still names something
+    /// drawn — a legend row, or a band. Flipping the lens under a resting
+    /// pointer would otherwise leave a name nothing in the chart matches — and
+    /// every column dimmed at once — until the mouse moved again.
+    ///
+    /// A band is checked as well as a row because the two sets aren't equal:
+    /// private time is pulled out of whatever the lens groups by and stacked
+    /// on top as its own hatched band, so under the theme lens it is a series
+    /// you can point at with no row of its own to point at it.
     private var highlight: String? {
-        slices.contains { $0.name == hovered } ? hovered : nil
+        guard let hovered else { return nil }
+        let drawn = slices.contains { $0.name == hovered }
+            || stacks.contains { stack in stack.segments.contains { $0.name == hovered } }
+        return drawn ? hovered : nil
+    }
+
+    /// One group entered or left, from either surface. Leaving only clears the
+    /// highlight if that group is still the one holding it — SwiftUI doesn't
+    /// promise the leave of the band you came off arrives before the enter of
+    /// the one you came onto, and a late leave would otherwise blank a
+    /// highlight the pointer is sitting on.
+    private func hover(_ name: String, _ inside: Bool) {
+        hovered = inside ? name : (hovered == name ? nil : hovered)
     }
 
     /// The strip is a breakdown rather than a color key: the block list below
@@ -495,9 +514,7 @@ private struct FocusedBars: View {
                 // leading-aligned, so filling it moves nothing.
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
-                .onHover { inside in
-                    hovered = inside ? slice.name : (hovered == slice.name ? nil : hovered)
-                }
+                .onHover { inside in hover(slice.name, inside) }
             }
         }
         .padding(.top, 12)
