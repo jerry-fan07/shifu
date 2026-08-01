@@ -81,8 +81,7 @@ public enum TaskOverviewCompiler {
     ) -> String {
         let intro = gist.map { "What it is about: \($0)\n" } ?? ""
         let prior = previous.map {
-            "\nThe current overview, to revise — supersede it wherever the notes above "
-                + "have moved on:\n\($0)\n"
+            "\nThe current overview, to revise:\n\($0)\n"
         } ?? "\nThere is no current overview yet; write the first one.\n"
         return """
         Maintain the living overview document for one task, from its day notes.
@@ -97,8 +96,7 @@ public enum TaskOverviewCompiler {
         "## Timeline" — bullets of the phases it went through, not a day-by-day replay.
         "## Key knowledge" — what was learned that outlives the task, with the why.
         "## Open threads" — what is unfinished, unanswered, or waiting.
-        Use ONLY the day notes and the current overview as evidence. Respond with ONLY
-        the document.
+        Use ONLY the day notes and the current overview as evidence. Respond with ONLY the document.
 
         Day notes, oldest first:
         \(days.map(\.rendered).joined(separator: "\n\n"))
