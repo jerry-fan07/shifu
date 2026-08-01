@@ -52,10 +52,7 @@ extension LedgerStore {
     /// object only knows about the launches it made itself.
     func buildDeck(key: String) {
         if let existing = deckBuildProcess, existing.isRunning { return }
-        let analyzerURL = ShifuPaths.home
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("shifu-analyzer")
-        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else { return }
+        guard let analyzerURL = ShifuPaths.helper("shifu-analyzer") else { return }
         let process = Process()
         process.executableURL = analyzerURL
         process.arguments = ["--force", "--build-deck", key]

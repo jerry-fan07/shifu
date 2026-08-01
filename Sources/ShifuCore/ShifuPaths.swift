@@ -23,6 +23,28 @@ public enum ShifuPaths {
     /// Read once at startup by `FocusModeFile.adoptLegacyName`, never written.
     public static var legacyFocusModeFile: URL { home.appendingPathComponent("work_mode") }
 
+    /// Locates a helper executable (shifu-analyzer, shifud, …). Helpers ship
+    /// as siblings of the running binary — Contents/MacOS in the app bundle,
+    /// the build directory in development — so the sibling is checked first.
+    /// Resolved from the executable path rather than Bundle.main because
+    /// shifud is launched by launchd from inside the bundle, where Bundle.main
+    /// is ambiguous. Dev installs that scatter binaries into ~/Shifu/bin
+    /// (install-daemon.sh) are the fallback. Nil when neither location has an
+    /// executable file — callers already treat a missing helper as
+    /// graceful degradation, never an error.
+    public static func helper(_ name: String) -> URL? {
+        let sibling = URL(fileURLWithPath: CommandLine.arguments[0])
+            .resolvingSymlinksInPath()
+            .deletingLastPathComponent()
+            .appendingPathComponent(name)
+        let devBin = home
+            .appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent(name)
+        return [sibling, devBin].first {
+            FileManager.default.isExecutableFile(atPath: $0.path)
+        }
+    }
+
     public static func ensureHomeExists() throws {
         try FileManager.default.createDirectory(
             at: home, withIntermediateDirectories: true,
