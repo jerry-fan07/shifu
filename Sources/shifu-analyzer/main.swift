@@ -132,6 +132,21 @@ if let backend {
     }
 }
 
+// The free half of semantic grouping (§5.3), before the model pass so the
+// sliver pool it sweeps is already smaller: an unplaced glance with the same
+// task running on both sides of it, inside one sitting, adopts that task —
+// zero tokens. Outside `if let backend` on purpose: the claim rests on the
+// neighbours, not on a model being configured.
+do {
+    let inherited = try SemanticTaskGrouper.inheritFromNeighbors(
+        database: database, from: from, to: nowMs)
+    if inherited > 0 {
+        print("semantic tasks: \(inherited) blocks inherited from neighbours")
+    }
+} catch {
+    print("semantic inheritance failed (retries next run): \(error)")
+}
+
 // Semantic task grouping (§5.3): the LLM assigns the window's blocks to
 // intent-level tasks before the mechanical grouper runs, so `sem_key` exists
 // when TaskGrouper picks keys. Fast slot, hourly: with card evidence the
