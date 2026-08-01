@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import CoreImage
 import ScreenCaptureKit
+import ShifuCore
 
 /// The glow pulse (design.md §4.4): a full-screen, click-through overlay that
 /// breathes a soft colored vignette at the edges of every screen for ~2 s,
@@ -30,14 +31,13 @@ import ScreenCaptureKit
 /// misaligned.
 @MainActor
 final class GlowOverlay: NSObject {
-    static let message = "Believe in yourself"
-
-    // Breathe in, hold at peak, breathe out — the hold is what makes the
-    // velocity reversal read as a breath, not a corner.
-    private static let breatheIn: TimeInterval = 1.6
-    private static let hold: TimeInterval = 0.4
-    private static let breatheOut: TimeInterval = 2.4
-    private static let messageFade: TimeInterval = 0.8
+    // The breath itself is `FocusNudge` (ShifuCore): the app replays these
+    // exact numbers during first run, and a second copy of them here would
+    // make that demonstration a lie the first time either was tuned.
+    private static let breatheIn = FocusNudge.breatheIn
+    private static let hold = FocusNudge.hold
+    private static let breatheOut = FocusNudge.breatheOut
+    private static let messageFade = FocusNudge.messageFade
     /// Teardown slack past the last animation frame, so cleanup never races
     /// the fade it follows.
     private static let teardownSlack: TimeInterval = 0.2
@@ -215,10 +215,9 @@ final class GlowOverlay: NSObject {
     }
 
     private func makeMessageLabel(for screen: NSScreen) -> NSTextField {
-        let label = NSTextField(labelWithString: Self.message)
-        // ≈84 pt on a 14" MacBook Pro, scaling with the display instead of
-        // overflowing small screens or shrinking into large ones.
-        label.font = .systemFont(ofSize: screen.frame.width / 18, weight: .medium)
+        let label = NSTextField(labelWithString: FocusNudge.message)
+        label.font = .systemFont(
+            ofSize: screen.frame.width * FocusNudge.messageWidthFraction, weight: .medium)
         label.textColor = .white   // provisional; the sampled shade lands before reveal
         label.alignment = .center
         label.sizeToFit()
@@ -404,9 +403,10 @@ private final class LuminanceRelay {
 /// Amber vignette: transparent center, bold color at the edges.
 private final class VignetteView: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        let edge = NSColor.systemOrange.withAlphaComponent(0.55)
+        let edge = NSColor.systemOrange.withAlphaComponent(FocusNudge.edgeAlpha)
         guard let gradient = NSGradient(
-            colorsAndLocations: (.clear, 0.0), (.clear, 0.15), (edge, 1.0)
+            colorsAndLocations:
+                (.clear, 0.0), (.clear, CGFloat(FocusNudge.clearStop)), (edge, 1.0)
         ) else { return }
         gradient.draw(in: bounds, relativeCenterPosition: .zero)
     }
