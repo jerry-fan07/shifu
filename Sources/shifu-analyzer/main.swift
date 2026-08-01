@@ -158,9 +158,17 @@ if let backend {
     do {
         let semSummary = try await SemanticTaskGrouper.run(
             database: database, backend: backend, from: from, to: nowMs)
-        if semSummary.assigned > 0 {
+        // Printed whenever the stage had anything to judge, declines
+        // included: gating this on `assigned > 0` made the two failures
+        // that matter — a model placing nothing, and a model that was
+        // never asked — look identical from the outside, which is most of
+        // why "the LLM isn't inferring my tasks" was unanswerable from the
+        // logs. Each decline also burns one of `maxAttempts`, so the count
+        // is the early warning that blocks are about to give up for good.
+        if semSummary.assigned > 0 || semSummary.declined > 0 {
             print("semantic tasks (\(backend.name)): \(semSummary.assigned) "
-                + "blocks assigned, \(semSummary.tasksCreated) tasks created")
+                + "blocks assigned, \(semSummary.tasksCreated) tasks created, "
+                + "\(semSummary.declined) declined")
         }
     } catch {
         print("semantic grouping failed, blocks stay mechanically grouped: \(error)")
@@ -245,13 +253,19 @@ do {
     print("auto-merge failed (retries next run): \(error)")
 }
 
-// Daily reconciliation (§5.3): the reasoning model's one scheduled call —
+// Roster reconciliation (§5.3): the reasoning model's one scheduled call —
 // it audits the roster the fast-model stages built (duplicate efforts,
 // missing gists) instead of paying its chain-of-thought hourly. Merge
 // proposals join the suggestion queue and its gates. Stamped only on
 // success, like every LLMStageGate caller.
+//
+// Every six hours rather than daily (v27): this is the only pass that can
+// undo a duplicate mint, and at 24 h a second name for today's work outlived
+// the day it was minted in — long enough to collect blocks, a work note and
+// a place in the Task log. Four calls a day on the reasoning slot is the
+// one place its chain-of-thought measurably earns its price.
 if let reasoningBackend,
-   LLMStageGate.due("reconcile.last_ran", everyMs: 24 * 3_600_000,
+   LLMStageGate.due("reconcile.last_ran", everyMs: 6 * 3_600_000,
                     now: nowMs, database: database) {
     do {
         let reconciled = try await TaskReconciler.run(

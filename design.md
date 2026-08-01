@@ -230,7 +230,7 @@ Contiguous observations are folded into **activity blocks**: same app/domain, ga
 ### 4.2 Classification (tiered, cheap-first)
 
 1. **Rules layer** (instant, covers ~80%): a user-editable mapping of bundle IDs and URL domains → categories. Ships with sensible defaults (`Xcode → work`, `youtube.com → entertainment*`, `mail → admin`, …). `*` marks *ambiguous* defaults that always escalate.
-2. **LLM layer (DeepSeek)**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by DeepSeek; prompt returns `{category, confidence, topic}`. Two model slots share one key and endpoint (`deepseek.base_url` accepts any OpenAI-compatible server): the **fast slot** (`deepseek.model`, default `deepseek-v4-flash` — cheap, non-reasoning) runs the high-volume stages — this classification, knowledge extraction, work-note narratives, radar descriptions; the **reasoning slot** (`deepseek.reasoning_model`, default `deepseek-v4-pro`, a thinking model) runs semantic task grouping and theme clustering (§5.3), where naming the user's intent is the whole job. Only redacted, post-exclusion text samples are sent, and only once the user has opted in — their own API key, or the hosted **Shifu Cloud** proxy (`analysis.backend = shifu-cloud`, no user key; the analyzer mints a device token from `shifu_cloud.base_url` and speaks the identical wire protocol through it). Without either opt-in this layer is skipped and rules-only output stands. *(Revised 2026-07: this tier was originally an on-device model — Apple Foundation Models or bundled MLX — with cloud as an opt-in third tier. The 4k combined window forced tiny batches, labels were weak, and Foundation Models needs macOS 26+; the on-device tier was dropped and DeepSeek promoted to the sole LLM backend.)*
+2. **LLM layer (DeepSeek)**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by DeepSeek; prompt returns `{category, confidence, topic}`. Two model slots share one key and endpoint (`deepseek.base_url` accepts any OpenAI-compatible server): the **fast slot** (`deepseek.model`, default `deepseek-v4-flash` — cheap, non-reasoning) runs the high-volume stages — this classification, knowledge extraction, work-note narratives, radar descriptions; the **reasoning slot** (`deepseek.reasoning_model`, default `deepseek-v4-pro`, a thinking model) runs the roster reconciliation and the weekly radar (§5.3) — the judgement calls, made once over a whole roster rather than per block. *(Corrected 2026-08-01: this line claimed the reasoning slot ran semantic task grouping and theme clustering, which stopped being true when the cost pass moved every hourly stage to the fast slot; both had been on the fast slot for two days by then. The claim mattered because it pointed at the wrong fix — see §12's note on what the fast slot actually costs in grouping quality.)* Only redacted, post-exclusion text samples are sent, and only once the user has opted in — their own API key, or the hosted **Shifu Cloud** proxy (`analysis.backend = shifu-cloud`, no user key; the analyzer mints a device token from `shifu_cloud.base_url` and speaks the identical wire protocol through it). Without either opt-in this layer is skipped and rules-only output stands. *(Revised 2026-07: this tier was originally an on-device model — Apple Foundation Models or bundled MLX — with cloud as an opt-in third tier. The 4k combined window forced tiny batches, labels were weak, and Foundation Models needs macOS 26+; the on-device tier was dropped and DeepSeek promoted to the sole LLM backend.)*
 
 Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`, `communication`, `admin`, `idle`. Every block also gets a free-text `topic` ("debugging shifu capture daemon", "watching F1 highlights") used by the knowledge and automation stages.
 
@@ -742,6 +742,35 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   snapshots), and *the ability to ask*. Shipped 2026-07-28 in §5.3: the
   weighted roster, fenced stickiness, spread evidence sampling, and page
   identities. Still deferred, roughly in value order:
+  - **Measured 2026-08-01, so it is not re-derived.** Three things were
+    established against the dogfood DB while chasing "the model isn't
+    inferring my tasks", and two of them close off obvious-looking fixes.
+    (a) *The slot is not the lever.* The prompt shipped here was verified on
+    the fast slot — the reasoning slot did not exist until #8, seven minutes
+    after #7 — and the two days grouping *did* spend on `deepseek-v4-pro`
+    produced the same duplicate mints (`m5 design spec expansion coding` and
+    `shifu app development and task log features` were both minted on
+    07-28 against a roster already holding `Shifu Development`). Moving
+    grouping back to the thinking model buys ~12× the cost and no measured
+    quality. (b) *Prevention at mint time is a dead end.* Over all 1,326
+    NLEmbedding pairs of the 52 semantic task names, no pair reaches 0.90;
+    the true duplicate pair scores 0.727 while unrelated "Checking terminal
+    login status" ↔ "Checking western blot automation status" scores 0.842.
+    A title-similarity gate at mint time would have caught at most 2 of 12
+    duplicates. Retroactive folding is the live path, which is what
+    `v27-merge-source` opens. (c) *Stickiness has never fired for most of a
+    batch.* `assignedNeighbors` anchors once per batch on its first block
+    inside a ±6 h window, while the median batch spans 33.8 h because
+    `candidateLimit` (an item count, not a token budget) binds in 52% of
+    windows — so 67% of candidates get their "what was happening around
+    this" context from a different day. Fixing that is the open item below.
+  - **Window-wide assigned context** — replace the once-per-batch neighbour
+    anchor with assigned spans interleaved chronologically into the block
+    list, and let `LLMTokens.estimate` rather than `candidateLimit` cut the
+    batch (invariant 7 says exactly this). The response side needs the same
+    treatment first: `complete(maxTokens:)` is handed a fixed 2 000 while the
+    answer grows with the batch, and the fast slot gets no escalation retry,
+    so a truncated answer throws away the whole pass.
   - **Dormant-task recall** — candidate-driven retrieval past the 14-day
     roster cliff: match a batch's domains/topics against all-time task sources
     (SQL join, or generalize `TaskMerges.activeTaskData`) and inject the top-k

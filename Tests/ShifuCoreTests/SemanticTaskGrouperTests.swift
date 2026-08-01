@@ -227,7 +227,7 @@ private struct TaskRowSnapshot: Sendable {
             """#)
         let summary = try await SemanticTaskGrouper.run(
             database: db, backend: backend, from: 0, to: 10_000_000)
-        #expect(summary == .init(assigned: 0, tasksCreated: 0))
+        #expect(summary == .init(assigned: 0, tasksCreated: 0, declined: 2))
 
         let rows = try await db.queue.read { sqlite -> [(String?, Int)] in
             try Row.fetchAll(sqlite, sql: "SELECT sem_key, sem_attempts FROM activities")
@@ -312,13 +312,13 @@ private struct TaskRowSnapshot: Sendable {
                           title: "window \(index)",
                           text: String(repeating: "dense screen text ", count: 30))
         }
-        let backend = GroupingBackend(contextWindowTokens: 2_600)
+        let backend = GroupingBackend(contextWindowTokens: 2_700)
         let summary = try await SemanticTaskGrouper.run(
             database: db, backend: backend, from: 0, to: 100_000_000)
         #expect(backend.prompts.count > 1)
         for prompt in backend.prompts {
             #expect(LLMTokens.estimate(prompt)
-                <= 2_600 - SemanticTaskGrouper.responseTokenReserve)
+                <= 2_700 - SemanticTaskGrouper.responseTokenReserve)
         }
         // The task created by batch 1 is offered (and reused) in batch 2.
         #expect(backend.prompts.last!.contains("t1: Planning the SF trip — Flights and lodging."))
@@ -341,14 +341,14 @@ private struct TaskRowSnapshot: Sendable {
                           text: String(repeating: "dense screen text ", count: 30))
         }
         let headroom = SemanticTaskGrouper.responseTokenReserve + 600
-        let backend = GroupingBackend(contextWindowTokens: 3_200,
+        let backend = GroupingBackend(contextWindowTokens: 3_300,
                                       responseHeadroomTokens: headroom)
         let summary = try await SemanticTaskGrouper.run(
             database: db, backend: backend, from: 0, to: 100_000_000)
         #expect(summary.assigned == 8)
         #expect(backend.prompts.count > 1)
         for prompt in backend.prompts {
-            #expect(LLMTokens.estimate(prompt) <= 3_200 - headroom)
+            #expect(LLMTokens.estimate(prompt) <= 3_300 - headroom)
         }
     }
 
@@ -427,7 +427,7 @@ extension SemanticTaskGrouperTests {
             """#)
         let summary = try await SemanticTaskGrouper.run(
             database: db, backend: backend, from: 0, to: 10_000_000)
-        #expect(summary == .init(assigned: 1, tasksCreated: 0))
+        #expect(summary == .init(assigned: 1, tasksCreated: 0, declined: 1))
         let assigned = try await db.queue.read { sqlite in
             try Row.fetchAll(sqlite, sql: "SELECT sem_key FROM activities ORDER BY started_at")
                 .map { $0["sem_key"] as String? }

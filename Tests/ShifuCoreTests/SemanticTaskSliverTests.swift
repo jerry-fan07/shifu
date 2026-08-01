@@ -117,7 +117,7 @@ private func seedBlock(
         let backend = StubBackend(response: #"{"assignments": [], "new_tasks": []}"#)
         let summary = try await SemanticTaskGrouper.run(
             database: db, backend: backend, from: 0, to: 10_000_000)
-        #expect(summary == .init(assigned: 0, tasksCreated: 0))
+        #expect(summary == .init(assigned: 0, tasksCreated: 0, declined: 1))
         let attempts = try await db.queue.read { sqlite in
             try Int.fetchAll(sqlite, sql: "SELECT sem_attempts FROM activities")
         }

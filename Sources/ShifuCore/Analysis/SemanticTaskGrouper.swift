@@ -171,10 +171,17 @@ public enum SemanticTaskGrouper {
     public struct Summary: Equatable, Sendable {
         public var assigned: Int
         public var tasksCreated: Int
+        /// Candidates the model did not place — omitted, or dropped by
+        /// `resolve` for thin confidence. Counted because a pass that
+        /// declines everything used to be indistinguishable from a pass that
+        /// never ran: both printed nothing, and each decline silently burns
+        /// one of `maxAttempts`.
+        public var declined: Int
 
-        public init(assigned: Int = 0, tasksCreated: Int = 0) {
+        public init(assigned: Int = 0, tasksCreated: Int = 0, declined: Int = 0) {
             self.assigned = assigned
             self.tasksCreated = tasksCreated
+            self.declined = declined
         }
     }
 
@@ -267,9 +274,20 @@ extension SemanticTaskGrouper {
                                     database: database, now: now)
             summary.assigned += outcome.assigned
             summary.tasksCreated += outcome.created.count
+            summary.declined += outcome.declined
             roster.append(contentsOf: outcome.created)
         }
         return summary
+    }
+
+    /// What one batch's `apply` actually wrote. `assigned` counts activity
+    /// *rows* (a coalesced run writes all its members), `declined` counts
+    /// *candidates* the model left unplaced — the two are deliberately
+    /// different units, which is why they are named rather than positional.
+    struct Applied {
+        var assigned = 0
+        var created: [RosterEntry] = []
+        var declined = 0
     }
 
     /// One batch's verdict reduced to writable facts: task key → confident
@@ -318,20 +336,19 @@ extension SemanticTaskGrouper {
     static func apply(
         _ verdict: Verdict, batch: [BlockSample], roster: [RosterEntry],
         database: ShifuDatabase, now: Date = Date()
-    ) throws -> (assigned: Int, created: [RosterEntry]) {
+    ) throws -> Applied {
         let resolved = resolve(verdict, batch: batch.map(\.id), roster: roster)
         let byHandle = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         return try database.queue.write { db in
-            var created: [RosterEntry] = []
+            var applied = Applied()
             var assignedHandles: Set<Int64> = []
-            var assignedRows = 0
             for (key, ids) in resolved.assignmentsByKey.sorted(by: { $0.key < $1.key }) {
                 let lastActive = ids.compactMap { byHandle[$0]?.endedAt }.max() ?? nowMs
                 if let entry = try upsertTask(
                     db, key: key, definition: resolved.newTaskByKey[key],
                     createdAt: nowMs, lastActive: lastActive) {
-                    created.append(entry)
+                    applied.created.append(entry)
                 }
                 for id in ids {
                     let rows = byHandle[id]?.memberIDs ?? [id]
@@ -340,7 +357,7 @@ extension SemanticTaskGrouper {
                         WHERE id IN (\(databaseQuestionMarks(count: rows.count)))
                         """, arguments: [key] + StatementArguments(rows))
                     assignedHandles.insert(id)
-                    assignedRows += rows.count
+                    applied.assigned += rows.count
                 }
             }
             // A declined run burns an attempt on every constituent: exhausted
@@ -352,8 +369,9 @@ extension SemanticTaskGrouper {
                     UPDATE activities SET sem_attempts = sem_attempts + 1
                     WHERE id IN (\(databaseQuestionMarks(count: sample.memberIDs.count)))
                     """, arguments: StatementArguments(sample.memberIDs))
+                applied.declined += 1
             }
-            return (assignedRows, created)
+            return applied
         }
     }
 

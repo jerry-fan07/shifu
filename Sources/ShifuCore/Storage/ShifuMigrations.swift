@@ -621,6 +621,31 @@ extension ShifuDatabase {
             }
         }
 
+        migrator.registerMigration("v27-merge-source") { db in
+            // Who proposed a merge, because the `cosine` column carries two
+            // different scales and the gates have to tell them apart
+            // (TaskAutoMerge). An embedding cosine is a geometric fact about
+            // two centroids; `TaskReconciler`'s number is a reasoning model's
+            // self-reported confidence after reading both names, gists, hours
+            // and top sources. They were being compared against one threshold,
+            // which is why a reconciler proposal could never fold: it was
+            // capped at 0.96 on the way in and judged at 0.97 on the way out.
+            //
+            // Everything already on disk came from `TaskMerges.suggest`, so the
+            // default backfills the history correctly — except the handful of
+            // rows the reconciler wrote, which are indistinguishable by column
+            // value and stay 'embedding'. That is the safe direction: they keep
+            // today's stricter bar and wait for the user, exactly as now.
+            // Guarded because merging two branches renumbers migrations, and
+            // GRDB keys `grdb_migrations` on the whole identifier — a renamed
+            // "v27-…" runs again on a DB that already added the column.
+            guard try !db.columns(in: "task_merge_suggestions")
+                .contains(where: { $0.name == "source" }) else { return }
+            try db.alter(table: "task_merge_suggestions") { table in
+                table.add(column: "source", .text).notNull().defaults(to: "embedding")
+            }
+        }
+
         return migrator
     }
 }
