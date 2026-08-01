@@ -254,7 +254,11 @@ extension ThemeClusterer {
             let response = try await backend.complete(
                 prompt: prompt(roster: roster, blocks: batch, calendar: calendar),
                 maxTokens: responseTokenReserve)
-            let verdict = SemanticTaskGrouper.parse(response, newEntriesKey: "new_themes")
+            // An undecodable answer leaves the batch queued with its
+            // `theme_attempts` intact — same rule as the semantic grouper:
+            // nothing was judged, so nothing is charged.
+            guard let verdict = SemanticTaskGrouper.parse(
+                response, newEntriesKey: "new_themes") else { continue }
             let outcome = try apply(verdict, batch: batch, roster: roster,
                                     database: database, now: now)
             summary.assigned += outcome.assigned

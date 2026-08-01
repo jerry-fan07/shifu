@@ -87,17 +87,25 @@ extension SemanticTaskGrouper {
                       endedAt: row["ended_at"], appBundle: row["app_bundle"],
                       domain: row["domain"], topic: row["topic"])
         }
-        let pooled = coalesce(rows)
+        typealias PooledRun = (run: [SliverRow], activeMs: Int64)
+        let runs: [PooledRun] = coalesce(rows)
             .map { run in
                 (run: run, activeMs: run.reduce(Int64(0)) { $0 + $1.durationMs })
             }
             .filter { $0.activeMs >= minBlockMs }
-            .sorted {
-                $0.activeMs != $1.activeMs
-                    ? $0.activeMs > $1.activeMs
-                    : $0.run[0].startedAt < $1.run[0].startedAt
-            }
-        return try pooled.prefix(limit).map { pooledRun -> BlockSample in
+        // Heaviest first *only* to choose which runs make the quota — then
+        // back into time order. Returning them by weight used to matter,
+        // because long blocks were picked newest-first and runs by weight, so
+        // the two quotas interleaved into a sample that jumped around the
+        // window. What a batch is shown has to read as a stretch of a day.
+        let byWeight = runs.sorted { left, right in
+            left.activeMs != right.activeMs
+                ? left.activeMs > right.activeMs
+                : left.run[0].startedAt < right.run[0].startedAt
+        }
+        let pooled = byWeight.prefix(limit)
+            .sorted { $0.run[0].startedAt < $1.run[0].startedAt }
+        return try pooled.map { pooledRun -> BlockSample in
             let run = pooledRun.run
             let members = run.map(\.id)
             let evidence = try blockEvidence(db, blockIDs: members)

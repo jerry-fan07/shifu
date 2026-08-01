@@ -165,10 +165,14 @@ if let backend {
         // why "the LLM isn't inferring my tasks" was unanswerable from the
         // logs. Each decline also burns one of `maxAttempts`, so the count
         // is the early warning that blocks are about to give up for good.
-        if semSummary.assigned > 0 || semSummary.declined > 0 {
-            print("semantic tasks (\(backend.name)): \(semSummary.assigned) "
+        if semSummary.assigned > 0 || semSummary.declined > 0 || semSummary.unparsed > 0 {
+            var line = "semantic tasks (\(backend.name)): \(semSummary.assigned) "
                 + "blocks assigned, \(semSummary.tasksCreated) tasks created, "
-                + "\(semSummary.declined) declined")
+                + "\(semSummary.declined) declined"
+            // Worth its own word: these blocks were paid for and not judged,
+            // which is the signature of a batch outgrowing its answer reserve.
+            if semSummary.unparsed > 0 { line += ", \(semSummary.unparsed) unreadable" }
+            print(line)
         }
     } catch {
         print("semantic grouping failed, blocks stay mechanically grouped: \(error)")

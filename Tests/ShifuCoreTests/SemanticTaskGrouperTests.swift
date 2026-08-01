@@ -74,8 +74,8 @@ private struct TaskRowSnapshot: Sendable {
         }
     }
 
-    @Test func parsesVerdictWrappedInProse() {
-        let verdict = SemanticTaskGrouper.parse("""
+    @Test func parsesVerdictWrappedInProse() throws {
+        let verdict = try #require(SemanticTaskGrouper.parse("""
         Sure! Here is the grouping:
         ```json
         {"assignments": [{"id": 4, "task": "t1", "confidence": 0.8},
@@ -83,7 +83,7 @@ private struct TaskRowSnapshot: Sendable {
          "new_tasks": [{"handle": "n1", "title": "Booking flights", "gist": "Fares."},
                        {"handle": "n2", "title": "   "}]}
         ```
-        """)
+        """))
         #expect(verdict.assignments == [
             .init(id: 4, task: "t1", confidence: 0.8),
             .init(id: 5, task: "n1", confidence: 0.95)
@@ -97,11 +97,11 @@ private struct TaskRowSnapshot: Sendable {
     /// ever created was the old example's title *and* gist, verbatim, over
     /// unrelated evidence. An empty roster is the worst case, so this is a
     /// first-run bug — see `TaskGrouper.isPlaceholder`.
-    @Test func echoedPromptPlaceholderMintsNothing() {
-        let verdict = SemanticTaskGrouper.parse("""
+    @Test func echoedPromptPlaceholderMintsNothing() throws {
+        let verdict = try #require(SemanticTaskGrouper.parse("""
         {"assignments": [{"id": 7, "task": "n1", "confidence": 0.99}],
          "new_tasks": [{"handle": "n1", "title": "<…>", "gist": "<…>"}]}
-        """)
+        """))
         // The slot survives parsing as a title (parse only drops blanks)…
         #expect(verdict.newTasks == [.init(handle: "n1", title: "<…>", gist: nil)])
         // …but slugs to nothing, so resolve mints no task and the confident
@@ -120,11 +120,6 @@ private struct TaskRowSnapshot: Sendable {
         // And no prompt example is a usable task name any more.
         #expect(!prompt.contains("Booking flights for the SF trip"))
         #expect(!prompt.contains("Comparing fares and picking travel dates"))
-    }
-
-    @Test func parseToleratesGarbage() {
-        #expect(SemanticTaskGrouper.parse("no json here") == .init(assignments: [], newTasks: []))
-        #expect(SemanticTaskGrouper.parse("{}") == .init(assignments: [], newTasks: []))
     }
 
     @Test func promptListsRosterAndBlocks() {

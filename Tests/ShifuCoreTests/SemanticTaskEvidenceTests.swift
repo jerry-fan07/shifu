@@ -125,71 +125,107 @@ import Testing
 
     // MARK: - Stickiness, fenced
 
-    @Test func promptShowsNeighborsAndFencesInterruptions() {
+    private func span(
+        _ key: String, _ name: String, startMin: Int64, endMin: Int64, blocks: Int = 1
+    ) -> Grouper.AssignedSpan {
+        Grouper.AssignedSpan(
+            startedAt: startMin * 60_000, endedAt: endMin * 60_000, blocks: blocks,
+            activeMs: (endMin - startMin) * 60_000, taskKey: key, taskName: name)
+    }
+
+    /// Context sits *among* the candidates in time order, not in a section of
+    /// its own: "consecutive blocks usually continue the same task" has to be
+    /// true of the list the model reads, or the instruction points at nothing.
+    @Test func promptInterleavesAssignedSpansAndFencesInterruptions() {
         let roster = [entry("Writing the thesis", minutes: 300, daysActive: 6)]
-        let neighbors = [
-            Grouper.NeighborBlock(
-                startedAt: 0, endedAt: 15 * 60_000, appBundle: "com.apple.Safari",
-                domain: "overleaf.com", taskKey: roster[0].key, taskName: roster[0].name),
-            Grouper.NeighborBlock(
-                startedAt: 40 * 60_000, endedAt: 55 * 60_000,
-                appBundle: "com.tinyspeck.slackmacgap", domain: nil,
-                taskKey: "sem:standups", taskName: "Team standups")
+        let context = [
+            span(roster[0].key, roster[0].name, startMin: -30, endMin: -5, blocks: 4),
+            span("sem:standups", "Team standups", startMin: 40, endMin: 55)
         ]
-        let prompt = Grouper.prompt(roster: roster, blocks: [block()], neighbors: neighbors)
-        #expect(prompt.contains("Already grouped, around this batch"))
-        #expect(prompt.contains("15m overleaf.com → t1 (Writing the thesis)"))
-        // Off-roster neighbours are named, not handled — nothing to reuse.
-        #expect(prompt.contains("15m slackmacgap → Team standups"))
+        let prompt = Grouper.prompt(roster: roster, blocks: [block()], context: context)
+        let lines = prompt.components(separatedBy: "\n")
+        let assignable = lines.filter { $0.hasPrefix("id=") }
+        let contextual = lines.filter { $0.hasPrefix("~ ") }
+        #expect(assignable.count == 1)
+        #expect(contextual.count == 2)
+        // The earlier span precedes the candidate; the later one follows it.
+        let candidateAt = try? #require(lines.firstIndex { $0.hasPrefix("id=") })
+        let firstSpanAt = try? #require(lines.firstIndex { $0.hasPrefix("~ ") })
+        let lastSpanAt = try? #require(lines.lastIndex { $0.hasPrefix("~ ") })
+        #expect(firstSpanAt! < candidateAt!)
+        #expect(lastSpanAt! > candidateAt!)
+        // Roster tasks carry their handle; off-roster ones are named only.
+        #expect(prompt.contains("25m ×4 → t1 (Writing the thesis)"))
+        #expect(prompt.contains("15m → Team standups"))
         #expect(prompt.contains("Work is sticky"))
         #expect(prompt.contains("Interruptions are the exception"))
-        // Context lines carry no ids: only batch blocks are assignable.
-        #expect(prompt.components(separatedBy: "id=").count == 2)
-        #expect(!Grouper.prompt(roster: roster, blocks: [block()])
-            .contains("Already grouped"))
+        #expect(prompt.contains("Two names for one effort"))
+    }
+
+    /// A span outside the batch's own hours is not this batch's business —
+    /// which is what keeps a batch that shrank to fit its budget from still
+    /// paying for a whole window of context.
+    @Test func onlySpansAroundTheBatchAreShown() {
+        let near = span("sem:thesis", "Writing the thesis", startMin: 45, endMin: 50)
+        let far = span("sem:elsewhere", "Something else", startMin: 600, endMin: 620)
+        let prompt = Grouper.prompt(roster: [], blocks: [block()], context: [near, far])
+        #expect(prompt.contains("Writing the thesis"))
+        #expect(!prompt.contains("Something else"))
     }
 
     @Test func compactTierTrimsTheContextSection() {
-        let neighbors = (0..<5).map { index in
-            Grouper.NeighborBlock(
-                startedAt: Int64(index) * 600_000, endedAt: Int64(index) * 600_000 + 300_000,
-                appBundle: "com.apple.Safari", domain: "site\(index).com",
-                taskKey: "sem:thesis", taskName: "Writing the thesis")
+        let context = (0..<5).map {
+            span("sem:t\($0)", "Task \($0)", startMin: Int64($0) * 4, endMin: Int64($0) * 4 + 2)
         }
-        let prompt = Grouper.prompt(roster: [], blocks: [block()], neighbors: neighbors,
+        let prompt = Grouper.prompt(roster: [], blocks: [block()], context: context,
                                     detail: .compact)
-        #expect(!prompt.contains("site0.com"))
-        #expect(!prompt.contains("site1.com"))
-        #expect(prompt.contains("site4.com"))
+        #expect(!prompt.contains("Task 0"))
+        #expect(!prompt.contains("Task 1"))
+        #expect(prompt.contains("Task 4"))
     }
 
-    @Test func assignedNeighborsCoverBothSidesOfTheAnchorOnly() async throws {
+    /// Forty rows of one afternoon are one fact about the day. Collapsing is
+    /// what lets a whole window of context cost a handful of lines; a task
+    /// changing in between is what ends a span.
+    @Test func assignedSpansCollapseConsecutiveBlocksOfOneTask() async throws {
         let db = try ShifuDatabase.inMemory()
-        let anchor: Int64 = 12 * 3_600_000
         let hour: Int64 = 3_600_000
         try await db.queue.write { sqlite in
             try sqlite.execute(sql: """
                 INSERT INTO tasks (id, key, name, created_at, last_active_at)
                 VALUES (1, 'sem:sf-trip', 'Planning the SF trip', 0, 0)
                 """)
-            // before | after | unassigned | outside the window | no task row
-            for (start, semKey, category) in [(anchor - hour, "sem:sf-trip", "admin"),
-                                              (anchor + hour, "sem:sf-trip", "admin"),
-                                              (anchor - 2 * hour, nil, "admin"),
-                                              (anchor - 9 * hour, "sem:sf-trip", "admin"),
-                                              (anchor - 3 * hour, "sem:old-key", "admin"),
-                                              (anchor - 4 * hour, "sem:sf-trip", "private")] {
+            struct Seed {
+                var hours: Int64
+                var semKey: String?
+                var category = "admin"
+            }
+            let rows = [
+                Seed(hours: 1, semKey: "sem:sf-trip"),    // span 1, block 1
+                Seed(hours: 2, semKey: "sem:sf-trip"),    // span 1, block 2
+                Seed(hours: 3, semKey: "sem:old-key"),    // span 2 — cuts span 1
+                Seed(hours: 4, semKey: "sem:sf-trip"),    // span 3 — same task again
+                Seed(hours: 5, semKey: nil),              // unassigned: never context
+                Seed(hours: 6, semKey: "sem:sf-trip", category: "private")
+            ]
+            for row in rows {
                 try sqlite.execute(sql: """
                     INSERT INTO activities
                         (started_at, ended_at, app_bundle, category, sem_key, source)
                     VALUES (?, ?, 'com.apple.Safari', ?, ?, 'rules')
-                    """, arguments: [start, start + 600_000, category, semKey])
+                    """, arguments: [row.hours * hour, row.hours * hour + 600_000,
+                                     row.category, row.semKey])
             }
         }
-        let neighbors = try Grouper.assignedNeighbors(database: db, around: anchor)
-        #expect(neighbors.map(\.startedAt) == [anchor - 3 * hour, anchor - hour, anchor + hour])
-        #expect(neighbors[0].taskName == "old key")     // humanized: no task row
-        #expect(neighbors[1].taskName == "Planning the SF trip")
+        let spans = try Grouper.assignedSpans(database: db, from: 0, to: 24 * hour)
+        #expect(spans.count == 3)
+        #expect(spans[0].blocks == 2)
+        #expect(spans[0].startedAt == hour)
+        #expect(spans[0].endedAt == 2 * hour + 600_000)
+        #expect(spans[0].activeMs == 1_200_000)
+        #expect(spans[0].taskName == "Planning the SF trip")
+        #expect(spans[1].taskName == "old key")          // humanized: no task row
+        #expect(spans[2].blocks == 1)
     }
 
     // MARK: - Evidence: pages and spread sampling
