@@ -21,6 +21,9 @@ import Testing
         // The small prefill bursts design.md prescribes for power draw.
         #expect(arguments[arguments.firstIndex(of: "-ub")! + 1] == "256")
         #expect(arguments[arguments.firstIndex(of: "-b")! + 1] == "512")
+        // Thinking off at the server — the analyzer's `thinking: disabled`
+        // is DeepSeek dialect, invisible to llama-server (§4.2).
+        #expect(arguments[arguments.firstIndex(of: "--reasoning")! + 1] == "off")
         #expect(arguments.contains("--no-webui"))
     }
 }

@@ -1,0 +1,84 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Debug shifud",
+            "target": "shifud",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug shifud"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Release shifud",
+            "target": "shifud",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release shifud"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Debug shifu-analyzer",
+            "target": "shifu-analyzer",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug shifu-analyzer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Release shifu-analyzer",
+            "target": "shifu-analyzer",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release shifu-analyzer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Debug shifu",
+            "target": "shifu",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug shifu"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Release shifu",
+            "target": "shifu",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release shifu"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Debug ShifuApp",
+            "target": "ShifuApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug ShifuApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:shifu}",
+            "name": "Release ShifuApp",
+            "target": "ShifuApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release ShifuApp"
+        }
+    ]
+}
