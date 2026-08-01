@@ -1,12 +1,11 @@
 #!/bin/bash
-# Bundle ShifuApp into a standalone Shifu.app (desktop app + menu bar item)
-# and install it.
-# The capture daemon is separate — see install-daemon.sh.
+# Dev install: bundle Shifu.app (via bundle-app.sh, same layout as a release)
+# and drop it in /Applications. Signs with whatever codesigning identity is
+# available — enough to keep TCC grants stable across rebuilds, NOT enough to
+# ship: releases go through release.sh, which requires Developer ID.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-swift build -c release --product ShifuApp
-BIN_DIR="$(swift build -c release --show-bin-path)"
 
 if [ -w /Applications ]; then
     APP_ROOT=/Applications
@@ -17,36 +16,17 @@ fi
 APP="$APP_ROOT/Shifu.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
-cp "$BIN_DIR/ShifuApp" "$APP/Contents/MacOS/Shifu"
-cp -R "$BIN_DIR/GRDB.framework" "$APP/Contents/Frameworks/"
-cp "Sources/ShifuApp/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-# The build product resolves GRDB via @loader_path (framework next to the
-# binary); inside a bundle it lives in Contents/Frameworks instead.
-if ! otool -l "$APP/Contents/MacOS/Shifu" | grep -q '@executable_path/../Frameworks'; then
-    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Shifu"
-fi
+scripts/bundle-app.sh "$APP"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key><string>Shifu</string>
-    <key>CFBundleIdentifier</key><string>com.shifu.app</string>
-    <key>CFBundleName</key><string>Shifu</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-</dict>
-</plist>
-PLIST
-
-# Same identity logic as install-daemon.sh; install_name_tool invalidates the
-# linker signature, and arm64 refuses to run unsigned code, so always re-sign.
+# install_name_tool (in bundle-app.sh) invalidates the linker signature, and
+# arm64 refuses unsigned code, so always re-sign — every nested binary, then
+# the bundle. A certificate identity (vs ad-hoc) keeps TCC grants across
+# rebuilds; the positional pick is fine here because any stable cert will do.
 IDENTITY="${SHIFU_CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/[0-9]+\)/ {print $2; exit}')}"
 codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Frameworks/GRDB.framework"
+codesign --force --sign "${IDENTITY:--}" --identifier com.shifu.shifud "$APP/Contents/MacOS/shifud"
+codesign --force --sign "${IDENTITY:--}" "$APP/Contents/MacOS/shifu-analyzer"
+codesign --force --sign "${IDENTITY:--}" "$APP/Contents/MacOS/shifu"
 codesign --force --sign "${IDENTITY:--}" "$APP"
 
 echo "installed $APP"

@@ -33,7 +33,7 @@ public enum ShifuPaths {
     /// executable file — callers already treat a missing helper as
     /// graceful degradation, never an error.
     public static func helper(_ name: String) -> URL? {
-        let sibling = URL(fileURLWithPath: CommandLine.arguments[0])
+        let sibling = executable
             .resolvingSymlinksInPath()
             .deletingLastPathComponent()
             .appendingPathComponent(name)
@@ -43,6 +43,20 @@ public enum ShifuPaths {
         return [sibling, devBin].first {
             FileManager.default.isExecutableFile(atPath: $0.path)
         }
+    }
+
+    /// The running executable, from the kernel (`_NSGetExecutablePath`) rather
+    /// than argv[0]: launchd starts the bundled daemon with a bare program
+    /// name in argv[0], and Bundle.main is ambiguous for a launchd-launched
+    /// process inside an app bundle.
+    private static var executable: URL {
+        var capacity = UInt32(4 * 1024)
+        var buffer = [CChar](repeating: 0, count: Int(capacity))
+        if _NSGetExecutablePath(&buffer, &capacity) != 0 {
+            buffer = [CChar](repeating: 0, count: Int(capacity))
+            _NSGetExecutablePath(&buffer, &capacity)
+        }
+        return URL(fileURLWithPath: String(cString: buffer))
     }
 
     public static func ensureHomeExists() throws {

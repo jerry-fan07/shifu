@@ -21,6 +21,18 @@ if arguments.contains("--version") {
 }
 
 try ShifuPaths.ensureHomeExists()
+
+// The bundled LaunchAgent passes --log-file because an SMAppService plist is
+// baked at build time and cannot name the user's home in StandardOutPath the
+// way install-daemon.sh's template does. Opt-in by flag so a terminal run
+// still prints, and the perf harness still reads stdout.
+if arguments.contains("--log-file") {
+    try FileManager.default.createDirectory(
+        at: ShifuPaths.logs, withIntermediateDirectories: true)
+    freopen(ShifuPaths.logs.appendingPathComponent("shifud.log").path, "a", stdout)
+    freopen(ShifuPaths.logs.appendingPathComponent("shifud.err.log").path, "a", stderr)
+    setvbuf(stdout, nil, _IOLBF, 0)
+}
 // The daemon watches the control file's identity directly rather than going
 // through `FocusModeFile`, so it adopts the pre-rename name here — before
 // `startWatching` below takes the token it will compare everything against.
