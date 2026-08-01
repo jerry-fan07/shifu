@@ -9,17 +9,17 @@ sequence of clicks performed for the hundredth time without anyone noticing it
 had become a ritual. Attention leaves no residue. By evening the day has
 already begun rounding itself off to a story.
 
-Shifu is a quiet observer that keeps the residue. It sits on your Mac, watches
+**Shifu (师傅: mentor, master in martial arts)** is a quiet observer that keeps the residue. It sits on your Mac, watches
 the screen the way a patient teacher watches a student — not to judge, to
-remember — and turns what it sees into three things:
+remember — and help you do four things:
 
-1. **A productivity ledger** — an honest account of where the hours actually
+1. **Understand your productivity (and yourself)** with an honest account of where the hours actually
    went, assembled from evidence rather than recollection.
-2. **A knowledge vault** — the facts and ideas you encountered, distilled into
-   Markdown notes and resurfaced on an FSRS spaced-repetition schedule, so
-   what you read once has a chance to become something you know.
-3. **An efficiency radar** — the repetitive workflows you've stopped seeing,
-   caught in the act and flagged as worth automating.
+2. **Recall and return to** the facts and ideas you encountered, distilled into
+   a beautiful render of Markdown-style notes and a searchable vault.
+3. **Remember everything** with automatically generated flashcards (Anki FSRS algorithm), so
+   what you read once becomes internalized forever with the magic of spaced repetition.
+4. **An efficiency radar** to catch your repetitive workflows, and helping you automate them.
 
 Everything it captures stays on your Mac. What leaves — if you allow anything
 to leave at all — is narrow, redacted, and yours to switch off. The full
