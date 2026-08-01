@@ -68,13 +68,24 @@ if [ "$EDITION" = "qwen" ]; then
         -DLLAMA_BUILD_SERVER=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=OFF \
-        -DLLAMA_CURL=OFF
+        -DLLAMA_CURL=OFF \
+        -DLLAMA_OPENSSL=OFF
     cmake --build "$LLAMA_SRC/build" --target llama-server -j "$(sysctl -n hw.ncpu)"
     LLAMA_SERVER="$LLAMA_SRC/build/bin/llama-server"
     [ -x "$LLAMA_SERVER" ] || {
         echo "ERROR: llama.cpp $LLAMA_TAG built no llama-server at $LLAMA_SERVER" >&2
         exit 1
     }
+    # A binary that loads anything from /opt/homebrew or /usr/local dies on
+    # every Mac but this one — and dies here too once the hardened-runtime
+    # signature refuses the unsigned library. LLAMA_OPENSSL=OFF above is the
+    # known offender (v0.1.2's first qwen cut shipped it); this catches the
+    # next one at assembly instead of at a user's first analyzer run.
+    if otool -L "$LLAMA_SERVER" | grep -qE '/opt/homebrew|/usr/local'; then
+        echo "ERROR: llama-server links non-system libraries:" >&2
+        otool -L "$LLAMA_SERVER" | grep -E '/opt/homebrew|/usr/local' >&2
+        exit 1
+    fi
 fi
 
 swift build -c release --product ShifuApp
