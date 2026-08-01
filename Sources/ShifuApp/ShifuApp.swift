@@ -55,12 +55,7 @@ struct ShifuApp: App {
                 .environmentObject(store)
                 .environmentObject(router)
         } label: {
-            if let mark = MenuBarMark.image(paused: store.isPaused) {
-                Image(nsImage: mark)
-                    .accessibilityLabel(store.isPaused ? "Shifu, resting" : "Shifu, watching")
-            } else {
-                Image(systemName: store.isPaused ? "pause" : "chart.bar.xaxis")
-            }
+            MenuBarLabel(store: store)
         }
         // A window rather than a menu: the panel leads with two lines of
         // figures, and an NSMenu can only render them as disabled menu items.

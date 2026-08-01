@@ -77,6 +77,11 @@ enum Instrument {
 
     /// The capture indicator: watching.
     static let live = Color(light: 0x3F7D4F, dark: 0x6AA87C)
+    /// The running Focus session's own row — a gold wash across the whole
+    /// line, standing in for the `StatusDot` a wide table row is too easy to
+    /// glance past.
+    static let liveTint = Color(
+        light: 0xC9A227, dark: 0xD9BB5E, lightAlpha: 0.16, darkAlpha: 0.2)
     /// A count that wants attention — cards due, a theme gone quiet.
     static let alert = Color(light: 0xA8551F, dark: 0xE0A06A)
     /// Past due. One step hotter than `alert`, and always beside a word.

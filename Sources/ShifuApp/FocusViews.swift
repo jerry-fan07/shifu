@@ -34,10 +34,17 @@ struct FocusPage<Controls: View>: View {
             head(sessions)
             if !sessions.isEmpty {
                 Band {
-                    if isWeek {
-                        FocusWeekBand(sessions: sessions, blocks: blocks, window: window)
-                    } else {
-                        dayBand(sessions)
+                    VStack(spacing: 14) {
+                        if isWeek {
+                            FocusWeekBand(sessions: sessions, blocks: blocks, window: window)
+                        } else {
+                            dayBand(sessions)
+                        }
+                        // While a session runs: its focus index as one bare
+                        // line under the ribbon that places it in the day.
+                        if let live = sessions.first(where: \.isLive) {
+                            FocusSessionLine(session: live, blocks: blocks)
+                        }
                     }
                 }
             }
@@ -146,11 +153,11 @@ struct FocusPage<Controls: View>: View {
 
     private func row(_ session: FocusReport.Session) -> some View {
         HStack(spacing: 14) {
-            HStack(spacing: 9) {
-                if session.isLive { StatusDot(color: Instrument.live, size: 6) }
-                Figure(label(session))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(label(session))
+                .font(Instrument.sans(13, session.isLive ? .medium : .regular))
+                .foregroundStyle(Instrument.ink)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if session.isLive {
                     // The running session's own stopwatch, ticking in the
@@ -188,6 +195,9 @@ struct FocusPage<Controls: View>: View {
             .frame(width: 148, alignment: .leading)
         }
         .padding(.vertical, 7)
+        .background(
+            (session.isLive ? Instrument.liveTint : Color.clear)
+                .padding(.horizontal, -Instrument.gutter))
     }
 
     /// "10:05 – 11:40 AM", with the weekday in front when the table spans one.
