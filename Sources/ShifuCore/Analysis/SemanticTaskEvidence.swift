@@ -52,7 +52,7 @@ extension SemanticTaskGrouper {
         }
 
         lines.append("")
-        lines.append("Blocks, chronological (id, time, minutes, app, pages, card or titles+text):")
+        lines.append("Blocks, chronological (id, time, minutes or visits, app, pages, card or titles+text):")
         for block in blocks {
             lines.append(blockLine(block, times: times))
             if !block.textSample.isEmpty { lines.append("  text: \(block.textSample)") }
@@ -91,9 +91,19 @@ extension SemanticTaskGrouper {
     }
 
     private static func blockLine(_ block: BlockSample, times: DateFormatter) -> String {
-        let minutes = max(1, (block.endedAt - block.startedAt) / 60_000)
         let start = Date(timeIntervalSince1970: Double(block.startedAt) / 1_000)
-        var desc = "id=\(block.id) \(times.string(from: start)) \(minutes)m"
+        var desc = "id=\(block.id) \(times.string(from: start))"
+        if block.memberIDs.count > 1 {
+            // A run reads as what it is: repeated glances, a little active
+            // time, a long span. Printing the bare span would tell the model
+            // a 3-minute dribble was the afternoon's main event.
+            let activeMinutes = max(1, block.activeMs / 60_000)
+            let spanMinutes = max(1, (block.endedAt - block.startedAt) / 60_000)
+            desc += " \(block.memberIDs.count) visits"
+                + " · \(activeMinutes)m over \(spanMinutes)m"
+        } else {
+            desc += " \(max(1, (block.endedAt - block.startedAt) / 60_000))m"
+        }
         desc += " app=\(shortBundle(block.appBundle))"
         // The pages already carry the block's host, so the bare domain would
         // just be repeating itself.
@@ -196,89 +206,64 @@ extension SemanticTaskGrouper {
 // MARK: - Queries
 
 extension SemanticTaskGrouper {
-    /// Unassigned, evidence-bearing blocks in the window, oldest first.
-    /// Evidence means a topic, a window title, or captured text — a bare
-    /// metadata block gives the model nothing beyond the app name, which the
-    /// mechanical key already encodes.
+    /// Every predicate a candidate must clear, long block or sliver run —
+    /// one string so the two queries cannot drift. In the window; *closed*
+    /// (a sessionizer gap between `ended_at` and `to` — a still-growing
+    /// block's verdict is discarded on the next rebuild when its span moves,
+    /// paid twice and grouped on partial evidence); not private; still
+    /// unplaced with attempts left; and evidence-bearing (a card, a topic, a
+    /// window title, or captured text — a bare metadata block gives the
+    /// model nothing beyond the app name, which the mechanical key already
+    /// encodes). Binds, in order: from, to, to − gapThresholdMs, maxAttempts.
+    static let candidateClause = """
+        ended_at > ? AND started_at < ? AND ended_at <= ?
+          AND category != 'private'
+          AND sem_key IS NULL AND sem_attempts < ?
+          AND (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
+                SELECT 1 FROM observations o WHERE o.session_id = activities.id
+                  AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
+        """
+
+    /// Unassigned, evidence-bearing candidates in the window, oldest first —
+    /// blocks over `minBlockMs` as themselves, sub-minute glances pooled
+    /// into runs (SemanticTaskSlivers.swift).
     ///
-    /// Sub-minute blocks are normally not worth tokens (`minBlockMs`), but a
-    /// hop-style tool breaks that assumption in bulk: the dogfood ledger
-    /// showed Conductor as dozens of ~20 s glances a day — each one
-    /// intent-legible on screen, all bottoming out at a container `app:` task
-    /// because no stage ever looked. So an app whose sub-minute candidates
-    /// accumulate past `TaskGrouper.minNewTaskMs` in the window has them
-    /// admitted despite their length — the same substance floor a mechanical
-    /// key must clear to mint. Assignment stays per block, so one tool's hops
-    /// can straddle tasks.
-    ///
-    /// Only *closed* blocks (a sessionizer gap between `ended_at` and `to`):
-    /// a still-growing block's verdict is discarded on the next rebuild when
-    /// its span moves — paid twice, and grouped on partial evidence.
+    /// The limit is a *quota*, not one ordered query: long blocks take slots
+    /// first (newest first, as before), runs fill what's left by pooled
+    /// active time, and evidence is fetched only for what ships. Admitting
+    /// by recency alone let a hop-heavy afternoon fill all sixty slots — the
+    /// dogfood window held ~1.4k slivers against ~5 pending long blocks, so
+    /// the model bought 59 glances and 1 block of real work.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
-        let evidenceClause = """
-            (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
-                  SELECT 1 FROM observations o WHERE o.session_id = activities.id
-                    AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
-            """
-        return try database.queue.read { db in
-            let hopApps = try hopAdmittedApps(
-                db, from: from, to: to, evidenceClause: evidenceClause)
-            let lengthGate = hopApps.isEmpty
-                ? "ended_at - started_at >= ?"
-                : """
-                  (ended_at - started_at >= ?
-                   OR app_bundle IN (\(databaseQuestionMarks(count: hopApps.count))))
-                  """
+        try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, started_at, ended_at, app_bundle, domain, topic, card
                 FROM activities
-                WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
-                  AND category != 'private'
-                  AND sem_key IS NULL AND sem_attempts < ?
-                  AND \(lengthGate)
-                  AND \(evidenceClause)
+                WHERE \(candidateClause)
+                  AND ended_at - started_at >= ?
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
-                                 maxAttempts, minBlockMs]
-                    + StatementArguments(hopApps) + [limit])
-            return try rows.map { row -> BlockSample in
+                                 maxAttempts, minBlockMs, limit])
+            var samples = try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let card: String? = row["card"]
                 // A card-bearing block skips the title/text sampling — the
                 // card is its evidence — but keeps the sanitized pages, which
                 // the card's entities don't reliably duplicate.
                 let evidence = try blockEvidence(
-                    db, blockID: id, textCap: card == nil ? textSampleChars : 0)
+                    db, blockIDs: [id], textCap: card == nil ? textSampleChars : 0)
                 return BlockSample(
                     id: id, startedAt: row["started_at"], endedAt: row["ended_at"],
                     appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
                     card: card, titles: card == nil ? evidence.titles : [],
                     urls: evidence.urls, textSample: evidence.text)
             }
-            .sorted { $0.startedAt < $1.startedAt }
+            samples += try sliverRuns(db, from: from, to: to,
+                                      limit: limit - samples.count)
+            return samples.sorted { $0.startedAt < $1.startedAt }
         }
-    }
-
-    /// Bundle ids whose sub-minute, evidence-bearing candidates accumulate
-    /// past the mechanical mint floor in the window — the hop-style tools
-    /// whose slivers `pendingSamples` admits despite `minBlockMs`.
-    private static func hopAdmittedApps(
-        _ db: Database, from: Int64, to: Int64, evidenceClause: String
-    ) throws -> [String] {
-        try String.fetchAll(db, sql: """
-            SELECT app_bundle FROM activities
-            WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
-              AND category != 'private'
-              AND sem_key IS NULL AND sem_attempts < ?
-              AND ended_at - started_at < ?
-              AND \(evidenceClause)
-            GROUP BY app_bundle
-            HAVING SUM(ended_at - started_at) >= ?
-            """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
-                             maxAttempts, minBlockMs]
-                + [TaskGrouper.minNewTaskMs])
     }
 
     /// What the sampled observations of one block yielded.
@@ -288,19 +273,22 @@ extension SemanticTaskGrouper {
         var text = ""
     }
 
-    /// One block's evidence, sampled across its whole span. Ids are fetched
-    /// first (cheap) so only the handful of rows actually sampled pay for
-    /// their OCR text. `textCap` exists for `CardBuilder`, which distills a
-    /// block once and so affords a bigger sample than the per-run stages.
+    /// One candidate's evidence, sampled across its whole span — a single
+    /// block's, or a whole run's when `blockIDs` carries the members. Ids
+    /// are fetched first (cheap) so only the handful of rows actually
+    /// sampled pay for their OCR text; the `sampleCount` spread applies to
+    /// the union, which is what keeps a run's token cost equal to a block's.
+    /// `textCap` exists for `CardBuilder`, which distills a block once and
+    /// so affords a bigger sample than the per-run stages.
     static func blockEvidence(
-        _ db: Database, blockID: Int64, textCap: Int = textSampleChars
+        _ db: Database, blockIDs: [Int64], textCap: Int = textSampleChars
     ) throws -> BlockEvidence {
         let ids = try Int64.fetchAll(db, sql: """
             SELECT id FROM observations
-            WHERE session_id = ?
+            WHERE session_id IN (\(databaseQuestionMarks(count: blockIDs.count)))
               AND (window_title IS NOT NULL OR text IS NOT NULL OR url IS NOT NULL)
             ORDER BY started_at
-            """, arguments: [blockID])
+            """, arguments: StatementArguments(blockIDs))
         let picked = spreadIndices(total: ids.count).map { ids[$0] }
         guard !picked.isEmpty else { return BlockEvidence() }
         let rows = try Row.fetchAll(db, sql: """

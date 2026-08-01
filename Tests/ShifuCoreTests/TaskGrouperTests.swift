@@ -413,9 +413,11 @@ import Testing
         #expect(dayLogs.map(\.taskName) == ["short afternoon task", "long morning task"])
         #expect(dayLogs.map(\.themeKey) == [key, nil])
     }
+}
 
-    // MARK: - Last-resort minting (design.md §5.3)
-
+// MARK: - Last-resort minting (design.md §5.3)
+// Extension keeps the suite's type body inside the lint budget.
+extension TaskGrouperPipelineTests {
     /// The gate's whole point: the existing-row bypass ("keys with an
     /// existing task always attach") is exactly how a container task, once
     /// minted, went on swallowing every later glance. Under `.lastResort` an

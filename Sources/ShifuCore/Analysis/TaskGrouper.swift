@@ -253,6 +253,14 @@ public enum TaskGrouper {
         return GroupedItems(groups: groups, order: keyOrder, items: items)
     }
 
+    /// The window time a group has had *finished declining* — members whose
+    /// semantic attempts are exhausted. Blocks still pending (or never
+    /// sampled at all) don't count: last resort means the model got its say.
+    private static func declinedMs(of group: [Item]) -> Int64 {
+        group.filter { $0.semAttempts >= SemanticTaskGrouper.maxAttempts }
+            .reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
+    }
+
     /// Assigns `activities.task_id` for the window, creating tasks as needed
     /// (existing names are never overwritten — renames stick; new keys must
     /// clear the minNewTaskMs substance gate), then rebuilds task logs for
@@ -294,12 +302,8 @@ public enum TaskGrouper {
                 // is a merge the user (or reconciler) made into that task —
                 // gating it would quietly undo the merge on the next rebuild.
                 if minting == .lastResort, isContainerKey(itemKey),
-                   group.allSatisfy({ $0.semKey == nil }) {
-                    let declinedMs = group
-                        .filter { $0.semAttempts >= SemanticTaskGrouper.maxAttempts }
-                        .reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
-                    guard declinedMs >= minNewTaskMs else { continue }
-                }
+                   group.allSatisfy({ $0.semKey == nil }),
+                   declinedMs(of: group) < minNewTaskMs { continue }
                 let lastActive = group.map(\.endedAt).max() ?? nowMs
                 let taskID: Int64
                 if let existing = try Int64.fetchOne(
