@@ -183,7 +183,8 @@ import Testing
         for (backend, slug) in [
             ("off", "onboarding-consent"),
             ("shifu-cloud", "onboarding-consent-cloud"),
-            ("deepseek", "onboarding-consent-key")
+            ("deepseek", "onboarding-consent-key"),
+            ("local", "onboarding-consent-local")
         ] {
             shoot(
                 OnboardingView(step: 3, backend: backend),

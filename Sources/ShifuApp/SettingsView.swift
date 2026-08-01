@@ -159,9 +159,17 @@ private struct SettingsPanel: View {
                 // look at, and opening with "how long text is kept"
                 // answers a question nobody arrived with.
                 if section == .privacy { PrivacyRows() }
-                ForEach(visibleInts) { IntSettingRow(setting: $0) }
+                // A gated int is one backend's dial, so it stands after the
+                // choice that reveals it, with that backend's text rows — not
+                // up top with the section's own dials.
+                ForEach(visibleInts.filter { $0.visibleWhen == nil }) {
+                    IntSettingRow(setting: $0)
+                }
                 ForEach(visibleChoices) { ChoiceSettingRow(setting: $0) }
                 ForEach(visibleTexts) { TextSettingRow(setting: $0) }
+                ForEach(visibleInts.filter { $0.visibleWhen != nil }) {
+                    IntSettingRow(setting: $0)
+                }
                 ForEach(SettingsCatalog.domainLists.filter { $0.section == section }) {
                     DomainListRow(setting: $0)
                 }
