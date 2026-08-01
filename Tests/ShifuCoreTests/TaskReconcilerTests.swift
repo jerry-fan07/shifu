@@ -66,13 +66,16 @@ import Testing
         #expect(summary == .init(mergesSuggested: 1, gistsFilled: 0))
 
         let row = try db.queue.read {
-            try Row.fetchOne($0, sql: "SELECT task_a, task_b, cosine FROM task_merge_suggestions")
+            try Row.fetchOne(
+                $0, sql: "SELECT task_a, task_b, cosine, source FROM task_merge_suggestions")
         }
         #expect(row?["task_a"] == Int64(1))
         #expect(row?["task_b"] == Int64(2))
-        // The auto-merge bar (0.97) was calibrated to embedding cosine, so a
-        // model's 0.99 must land below it — proposals never fold silently.
-        #expect(row?["cosine"] == TaskReconciler.storedScoreCap)
+        // The score is stored raw and stamped with its scale (v27). It used to
+        // be capped below the embedding auto-merge bar, which is why nothing
+        // this stage proposed ever folded; `source` is what separates them now.
+        #expect(row?["cosine"] == 0.99)
+        #expect(row?["source"] == "reconcile")
     }
 
     @Test func aDismissedPairStaysDismissed() throws {

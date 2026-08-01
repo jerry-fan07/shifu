@@ -149,10 +149,10 @@ private struct StubBackend: LLMBackend {
         #expect(freed == 1)
 
         // And the model can't offer it straight back.
-        let verdict = SemanticTaskGrouper.parse(#"""
+        let verdict = try #require(SemanticTaskGrouper.parse(#"""
             {"assignments": [{"id": \#(ids[0]), "task": "n1", "confidence": 0.9}],
              "new_themes": [{"handle": "n1", "title": "Travel", "gist": "Trips."}]}
-            """#, newEntriesKey: "new_themes")
+            """#, newEntriesKey: "new_themes"))
         _ = try ThemeClusterer.apply(
             verdict,
             batch: [.init(id: ids[0], startedAt: 0, endedAt: 1_800_000,

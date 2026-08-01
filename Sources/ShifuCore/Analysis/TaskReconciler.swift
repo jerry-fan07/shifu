@@ -15,13 +15,15 @@ public enum TaskReconciler {
     /// Below this the model is guessing, and a guessed merge pair clutters
     /// the queue the auto-merge gates then have to re-judge.
     public static let mergeConfidenceFloor = 0.75
-    /// The auto-merge bar (0.97) was calibrated to *embedding cosine*
-    /// precision; an LLM's self-reported confidence is a different scale.
-    /// Capping what lands in the `cosine` column keeps a substantial pair
-    /// from ever folding silently on the model's say-so — fragments may
-    /// still fold (their path is documented as the conservative one), and
-    /// everything else waits for the user.
-    public static let storedScoreCap = 0.96
+    /// Proposals are stamped with their origin (`v27-merge-source`) and land
+    /// at their raw confidence. The cap that used to sit here existed only
+    /// because one `cosine` column carried two incompatible scales — an
+    /// embedding cosine and a model's self-reported confidence — so the only
+    /// way to stop the model folding real work silently was to write a number
+    /// too small to clear the embedding bar. It worked: nothing this stage
+    /// proposed *ever* folded, including the pairs it got right. The `source`
+    /// column separates the scales, so each is judged on its own bar
+    /// (`TaskMerges.llmAutoMergeThreshold`) and the score stays honest.
     public static let responseTokens = 2_000
 
     public struct Summary: Equatable, Sendable {
@@ -121,7 +123,7 @@ public enum TaskReconciler {
     }
 
     /// Writes one verdict: merge pairs land in `task_merge_suggestions`
-    /// (score capped — see `storedScoreCap`), gists fill only tasks that
+    /// (stamped `source = 'reconcile'`, v27), gists fill only tasks that
     /// have none. Unknown handles are dropped; ids resolve through the
     /// roster the model was actually shown.
     static func apply(
@@ -145,10 +147,10 @@ public enum TaskReconciler {
                 // dismissed (and previously merged) pairs dismissed.
                 try db.execute(sql: """
                     INSERT OR IGNORE INTO task_merge_suggestions
-                        (task_a, task_b, cosine, status, created_at)
-                    VALUES (?, ?, ?, 'new', ?)
+                        (task_a, task_b, cosine, status, created_at, source)
+                    VALUES (?, ?, ?, 'new', ?, 'reconcile')
                     """, arguments: [min(idA, idB), max(idA, idB),
-                                     min(merge.confidence, storedScoreCap), nowMs])
+                                     merge.confidence, nowMs])
                 summary.mergesSuggested += db.changesCount
             }
             for (handle, gist) in verdict.gists.sorted(by: { $0.key < $1.key }) {
