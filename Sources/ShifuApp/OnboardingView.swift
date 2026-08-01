@@ -8,14 +8,21 @@ import SwiftUI
 /// unsurprising.
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var step = 0
+    @State private var step: Int
     /// Off until chosen — the consent gate (§8). For a screen observer,
     /// sending anything anywhere must be the user's affirmative act, so the
     /// cloud options are never preselected.
-    @State private var backend = "off"
+    @State private var backend: String
     @State private var apiKey = ""
 
     private static let steps = 4
+
+    /// The parameters exist for WindowShots, which can't click through the
+    /// flow; the app always starts at the first step with analysis off.
+    init(step: Int = 0, backend: String = "off") {
+        _step = State(initialValue: step)
+        _backend = State(initialValue: backend)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
