@@ -17,6 +17,10 @@ struct SettingRow<Control: View>: View {
     let title: String
     var note: String?
     let help: String
+    /// A second paragraph about the *state the control is in*, under the help
+    /// about the control itself. One register quieter, because it changes as
+    /// you turn the dial and the line above it doesn't.
+    var detail: String?
     @ViewBuilder var control: Control
 
     /// The right-hand edge every control on the page shares. Wide enough for
@@ -25,12 +29,13 @@ struct SettingRow<Control: View>: View {
     static var controlWidth: CGFloat { 224 }
 
     init(
-        _ title: String, note: String? = nil, help: String,
+        _ title: String, note: String? = nil, help: String, detail: String? = nil,
         @ViewBuilder control: () -> Control
     ) {
         self.title = title
         self.note = note
         self.help = help
+        self.detail = detail
         self.control = control()
     }
 
@@ -52,6 +57,14 @@ struct SettingRow<Control: View>: View {
                         .foregroundStyle(Instrument.secondary)
                         .lineSpacing(1.5)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(Instrument.sans(11.5))
+                            .foregroundStyle(Instrument.muted)
+                            .lineSpacing(1.5)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 4)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 5) { control }
@@ -169,17 +182,37 @@ private struct RangeTrack: View {
     }
 }
 
-/// The descriptor's own options as a segmented strip; unknown stored values
-/// render as the default because reads normalize.
+/// The descriptor's own options as a drop-down; unknown stored values render
+/// as the default because reads normalize.
+///
+/// A drop-down and not the segmented strip these rows used to wear. A strip
+/// is `fixedSize` — it takes the width its labels ask for and spills over
+/// whatever is beside it — and the AI backend's three labels ask for more than
+/// the shared control column, so the strip sat against its own help text with
+/// no gutter left between them. A drop-down spends one pill's width whatever
+/// the labels say, which is also the right register for the row: this is a
+/// setting you pick once, not a lens you flick between while reading a chart.
+///
+/// The help under the title is the *chosen* option's, not a paragraph about
+/// all of them. Where your text goes is the only thing this row is really
+/// asking, and a reader who has to find their own answer in a wall covering
+/// three backends is being asked to consent to something they half-read. It
+/// follows the draft, not the saved value: the description you are reading is
+/// the one you are about to Save.
 struct ChoiceSettingRow: View {
     @EnvironmentObject private var store: SettingsStore
     let setting: ChoiceSetting
 
     var body: some View {
-        SettingRow(setting.title, help: setting.help) {
-            SegmentedBar(
+        let picked = store.value(for: setting)
+        SettingRow(
+            setting.title, help: setting.help,
+            detail: setting.options.first { $0.value == picked }?.detail
+        ) {
+            FilterMenu(
                 options: setting.options.map { ($0.label, $0.value) },
                 selection: store.binding(for: setting))
+                .accessibilityLabel(setting.title)
         }
     }
 }
