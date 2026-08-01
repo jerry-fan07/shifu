@@ -52,6 +52,59 @@ struct FocusTimerLine: View {
     }
 }
 
+/// The menu bar item's second hand (design.md §7).
+///
+/// The item can't use `FocusTick` the way every on-screen surface does. A
+/// `MenuBarExtra` label is built once and never re-proposed on a schedule of
+/// its own: the `TimelineView` inside it fires and nothing redraws, so the
+/// reading freezes at whatever it read when the item was made. What *does*
+/// move it is an object it observes — so the tick lives here, as a published
+/// value, and the label is an ordinary view of it.
+///
+/// Kept off `LedgerStore` on purpose, though the store owns one: a published
+/// value there re-runs every body in the app that reads the store, once a
+/// second, and the window has tables a hand's breadth away that must not.
+///
+/// The timer runs only while a session does — an idle Shifu keeps none.
+@MainActor
+final class FocusStopwatch: ObservableObject {
+    /// How long the running session has been going, or nil when Focus Mode is
+    /// off. The whole published surface: the item wears one number.
+    @Published private(set) var elapsed: TimeInterval?
+
+    private var startedAt: Date?
+    private var timer: Timer?
+
+    /// Points the stopwatch at a session, or stops it with nil. Idempotent:
+    /// `refresh()` republishes the same start many times a minute, and each
+    /// one must not restart the second hand mid-second.
+    func follow(startedAt: Date?) {
+        guard startedAt != self.startedAt else { return }
+        self.startedAt = startedAt
+        timer?.invalidate()
+        timer = nil
+        read()
+        guard startedAt != nil else { return }
+        let ticking = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.read() }
+        }
+        // Nothing is being timed to the quarter-second here, and the slack is
+        // what lets macOS coalesce this wake-up with whatever else is due.
+        ticking.tolerance = 0.25
+        // `.common`, not the default mode: a stopwatch that stopped while a
+        // menu was open would be frozen exactly when it is being read.
+        RunLoop.main.add(ticking, forMode: .common)
+        timer = ticking
+    }
+
+    /// One reading, through the same arithmetic every other surface uses — the
+    /// bar and the panel must never disagree about a number they both draw.
+    private func read() {
+        elapsed = FocusClock.reading(
+            now: Date(), startedAt: startedAt, previousEnd: nil).elapsed
+    }
+}
+
 /// Re-renders its content once a second while `active`, and never otherwise.
 ///
 /// Both clocks tick — the running session by construction, and the gap since

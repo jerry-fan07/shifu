@@ -115,6 +115,104 @@ import Testing
     /// One minute, the floor a row has to clear to count as a session at all.
     private var minute: Int64 { FocusModeSessions.minSessionMs }
 
+    /// The minimum length screens closed flip-flops, never the running
+    /// session: a live row seconds old must read back, or the Focus page
+    /// spends its first minute denying the switch was flipped.
+    @Test func aLiveRowYoungerThanAMinuteStillReads() throws {
+        let db = try ShifuDatabase.inMemory()
+        let minute: Int64 = 60_000
+        try openSession(db, startedAt: 100 * minute)
+        let now = 100 * minute + 5_000
+        let sessions = try FocusModeSessions.overlapping(
+            from: 0, to: 200 * minute, liveEnd: now, database: db)
+        #expect(sessions.count == 1)
+        #expect(sessions.first?.isLive == true)
+        #expect(sessions.first?.endedAt == now)
+        // A *closed* row of the same age stays screened out.
+        try db.queue.write {
+            try $0.execute(
+                sql: "UPDATE focus_mode_sessions SET ended_at = ?", arguments: [now])
+        }
+        #expect(try FocusModeSessions.overlapping(
+            from: 0, to: 200 * minute, liveEnd: nil, database: db).isEmpty)
+    }
+
+    /// The stand-in fills the daemon's gap and steps aside the moment the
+    /// real open row reads back.
+    @Test func standInAppearsOnlyUntilTheRealRowLands() {
+        let minute: Int64 = 60_000
+        let started = 100 * minute
+        let now = started + 5_000
+        let standIn = FocusModeSessions.addingStandIn(
+            [], liveEnd: now, startedAt: started, from: 0, to: 200 * minute)
+        #expect(standIn.count == 1)
+        #expect(standIn.first?.isLive == true)
+        #expect(standIn.first?.startedAt == started)
+        // A real live row already read back: nothing to add.
+        let real = FocusModeSessions.Session(
+            id: 7, startedAt: started, endedAt: now, isLive: true)
+        #expect(FocusModeSessions.addingStandIn(
+            [real], liveEnd: now, startedAt: started, from: 0, to: 200 * minute) == [real])
+        // Focus Mode off, or no start on record, or outside the window: no row.
+        #expect(FocusModeSessions.addingStandIn(
+            [], liveEnd: nil, startedAt: started, from: 0, to: 200 * minute).isEmpty)
+        #expect(FocusModeSessions.addingStandIn(
+            [], liveEnd: now, startedAt: nil, from: 0, to: 200 * minute).isEmpty)
+        #expect(FocusModeSessions.addingStandIn(
+            [], liveEnd: now, startedAt: started, from: 150 * minute,
+            to: 200 * minute).isEmpty)
+    }
+
+    /// The other end of the same gap: the switch has gone off in the app, the
+    /// daemon's `ended_at` write hasn't landed, and the session must not
+    /// vanish off the page — and out of the score — in between.
+    @Test func endedHereClosesTheRowTheSwitchJustLeftOpen() throws {
+        let db = try ShifuDatabase.inMemory()
+        let started = 100 * minute
+        let stopped = started + 30 * minute
+        try openSession(db, startedAt: started)
+
+        let sessions = try FocusModeSessions.overlapping(
+            from: 0, to: 200 * minute, liveEnd: nil, endedHere: stopped, database: db)
+        #expect(sessions.count == 1)
+        #expect(sessions.first?.isLive == false)
+        #expect(sessions.first?.endedAt == stopped)
+        // Without that moment on record the open row is still a dead daemon's
+        // leftover, and crediting it would be worse than skipping it.
+        #expect(try FocusModeSessions.overlapping(
+            from: 0, to: 200 * minute, liveEnd: nil, database: db).isEmpty)
+    }
+
+    /// `endedHere` may only close the row the switch itself left open — the
+    /// last one to start. An older leftover stopped at some moment nobody
+    /// recorded, and stretching it to now would credit hours nobody focused.
+    @Test func endedHereNeverClosesAnOlderLeftover() throws {
+        let db = try ShifuDatabase.inMemory()
+        try openSession(db, startedAt: 10 * minute)     // yesterday's crash
+        try openSession(db, startedAt: 100 * minute)    // the one just flipped off
+        let stopped = 130 * minute
+
+        let sessions = try FocusModeSessions.overlapping(
+            from: 0, to: 200 * minute, liveEnd: nil, endedHere: stopped, database: db)
+        #expect(sessions.map(\.startedAt) == [100 * minute])
+        #expect(sessions.first?.endedAt == stopped)
+    }
+
+    /// A live row's end is only ever "when it was read". Advancing it is what
+    /// keeps the score moving while you watch it: the minutes captured since
+    /// that read have to fall *inside* the session to be scored at all.
+    @Test func advancingLiveMovesOnlyTheRunningRowAndOnlyForward() {
+        let live = FocusModeSessions.Session(
+            id: 1, startedAt: 100 * minute, endedAt: 110 * minute, isLive: true)
+        let closed = FocusModeSessions.Session(
+            id: 2, startedAt: 10 * minute, endedAt: 20 * minute, isLive: false)
+
+        let advanced = FocusModeSessions.advancingLive([closed, live], to: 130 * minute)
+        #expect(advanced.map(\.endedAt) == [20 * minute, 130 * minute])
+        // A clock reading behind the row — a stale publish — never shortens it.
+        #expect(FocusModeSessions.advancingLive([live], to: 105 * minute) == [live])
+    }
+
     @Test func previousEndIsTheLatestSessionToHaveEnded() throws {
         let db = try ShifuDatabase.inMemory()
         try closedSession(db, from: 0, to: minute)

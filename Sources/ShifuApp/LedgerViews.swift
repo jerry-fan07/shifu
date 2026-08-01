@@ -59,8 +59,18 @@ struct LedgerView: View {
         let blocks = isWeek ? weekBlocks : store.todayActivities
         Group {
             if isFocus {
+                // The tail: rules-classified observations past the fold, so
+                // the live session reads the present, not the last fold. The
+                // running session's end is advanced to match — it was stamped
+                // when `load()` read the row, and a session frozen there would
+                // clip every one of those new minutes back out again, leaving
+                // the score stuck at whatever it read on arrival.
                 FocusPage(
-                    blocks: blocks, raw: focusSessions, window: window, isWeek: isWeek
+                    blocks: blocks + store.focusTailBlocks(),
+                    raw: FocusModeSessions.advancingLive(
+                        focusSessions,
+                        to: Int64(window.to.timeIntervalSince1970 * 1_000)),
+                    window: window, isWeek: isWeek
                 ) { pickers }
             } else {
                 lensPage(blocks: blocks, window: window)
@@ -68,6 +78,10 @@ struct LedgerView: View {
         }
         .onAppear(perform: load)
         .onChange(of: isWeek) { _, _ in load() }
+        // The switch republishes its start the moment it flips; without this
+        // the Focus page keeps the sessions it loaded on arrival and a toggle
+        // made *while looking at it* changes nothing until the next visit.
+        .onChange(of: store.focusStartedAt) { _, _ in load() }
     }
 
     private func lensPage(

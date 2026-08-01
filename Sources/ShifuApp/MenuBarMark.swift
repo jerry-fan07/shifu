@@ -1,4 +1,5 @@
 import AppKit
+import ShifuCore
 import SwiftUI
 
 /// Shifu's mark in the menu bar: one mountain ridge, drawn in a single stroke.
@@ -13,22 +14,108 @@ import SwiftUI
 enum MenuBarMark {
     /// Menu bar items get 22 pt of height; 18 leaves the usual optical margin.
     private static let side: CGFloat = 18
+    /// The stopwatch beside the mark. Smaller than the bar's own clock on
+    /// purpose — this is Shifu's reading, not the system's, and it should sit
+    /// a step behind the time of day rather than compete with it.
+    private static let digits: CGFloat = 11.5
+    private static let gap: CGFloat = 4
 
     @MainActor private static var cache: [Bool: NSImage] = [:]
+    /// The timed mark can't use `cache`: its content changes every second, so
+    /// keying it by state would grow an entry per tick for the life of the
+    /// launch. One slot, replaced on each tick — which is all a stopwatch ever
+    /// needs, since the only image anyone can be looking at is the current one.
+    @MainActor private static var timed: (key: String, image: NSImage)?
 
     /// Nil if `ImageRenderer` can't produce a bitmap — the caller falls back to
     /// an SF Symbol rather than leaving a blank gap in the menu bar, which is
     /// what an empty `NSImage` would look like.
     @MainActor static func image(paused: Bool) -> NSImage? {
         if let cached = cache[paused] { return cached }
-        let renderer = ImageRenderer(
-            content: InstrumentMark(paused: paused)
-                .frame(width: side, height: side))
+        guard let image = render(InstrumentMark(paused: paused)
+            .frame(width: side, height: side)) else { return nil }
+        cache[paused] = image
+        return image
+    }
+
+    /// The mark with a running stopwatch beside it (design.md §4.4) — the
+    /// always-visible half of the Focus Mode clock, so "how long have I been at
+    /// this" is answered without opening anything.
+    ///
+    /// Drawn *into the same template image* rather than set as a `Text` next to
+    /// it, for the reason the mark is one: AppKit tints a template, so the
+    /// digits invert with the ridge when the item is pressed and stay legible
+    /// on a dark bar. A separately-coloured label would go its own way in both
+    /// cases.
+    @MainActor static func image(paused: Bool, stopwatch: String) -> NSImage? {
+        let key = "\(paused)-\(stopwatch)"
+        if let timed, timed.key == key { return timed.image }
+        let content = HStack(spacing: gap) {
+            InstrumentMark(paused: paused)
+                .frame(width: side, height: side)
+            Text(stopwatch)
+                // Tabular figures so the item only changes width when the
+                // reading gains a digit, not on every rolling second.
+                .font(Instrument.mono(digits, .medium))
+                .monospacedDigit()
+                .foregroundStyle(Color.black)
+        }
+        .frame(height: side)
+        guard let image = render(content) else { return nil }
+        timed = (key, image)
+        return image
+    }
+
+    /// Renders at the screen's scale and marks the result a template — the ink
+    /// is thrown away and only the coverage survives, which is why the fill
+    /// above can be flat black.
+    @MainActor private static func render(_ content: some View) -> NSImage? {
+        let renderer = ImageRenderer(content: content)
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         guard let image = renderer.nsImage else { return nil }
         image.isTemplate = true
-        cache[paused] = image
         return image
+    }
+}
+
+/// What the menu bar item wears: the mark, and while Focus Mode is on, the
+/// running session's stopwatch beside it.
+///
+/// Two objects, because they move at two rates. `store` says which mark to
+/// draw and changes a few times a day; `stopwatch` carries the reading and
+/// changes every second — and only while a session runs, so an idle Shifu
+/// redraws its item exactly as rarely as it always has.
+struct MenuBarLabel: View {
+    @ObservedObject private var store: LedgerStore
+    @ObservedObject private var stopwatch: FocusStopwatch
+
+    init(store: LedgerStore) {
+        _store = ObservedObject(wrappedValue: store)
+        _stopwatch = ObservedObject(wrappedValue: store.focusStopwatch)
+    }
+
+    var body: some View {
+        mark.accessibilityLabel(spoken)
+    }
+
+    @ViewBuilder private var mark: some View {
+        if let image = stopwatch.elapsed
+            .map({ MenuBarMark.image(paused: store.isPaused, stopwatch: FocusClock.stopwatch($0)) })
+            ?? MenuBarMark.image(paused: store.isPaused) {
+            Image(nsImage: image)
+        } else {
+            Image(systemName: store.isPaused ? "pause" : "chart.bar.xaxis")
+        }
+    }
+
+    /// The stopwatch is drawn, so VoiceOver has to say it: the image's own
+    /// label would announce the state and drop the one number the item was
+    /// extended for.
+    private var spoken: String {
+        guard let elapsed = stopwatch.elapsed else {
+            return store.isPaused ? "Shifu, resting" : "Shifu, watching"
+        }
+        return "Shifu, in focus \(FocusClock.stopwatch(elapsed))"
     }
 }
 

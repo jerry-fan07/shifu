@@ -102,33 +102,49 @@ private struct Places: View {
     }
 }
 
-/// Focus Mode at the rail's foot — the one switch the window carries. The whole
-/// row is the target, like the menu bar's line; the switch is the state, and
-/// the line under it is the clock (`FocusTimerLine`).
+/// Focus Mode at the rail's foot — the one switch the window carries. Off,
+/// it is a plain row and the whole row is the target, like the menu bar's
+/// line. On, it becomes the ink slab (`FocusSlabCompact`), and only the
+/// switch inside it ends the session — ending is worth one deliberate click
+/// where starting isn't.
+///
+/// Both states hang their name and switch from the *bottom* (`FocusFootRow`),
+/// at the same inset from the same edges. Everything under this row is pinned
+/// to the rail's foot, so the slab opens by growing upward into the spacer:
+/// the switch doesn't move, the clock stays where the eye left it, and what
+/// arrives is the chart. The reading above it swaps in place — the one-line
+/// stopwatch becomes the same session drawn as candles.
 private struct FocusModeRailRow: View {
     @EnvironmentObject private var store: LedgerStore
 
     var body: some View {
-        Button {
-            store.toggleFocusMode()
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text("Focus Mode")
-                        .font(Instrument.sans(13))
-                        .foregroundStyle(Instrument.railInk)
-                    Spacer(minLength: 0)
-                    ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
+        Group {
+            if store.focusModeOn {
+                FocusSlabCompact()
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
+                    .padding(.bottom, 3)
+            } else {
+                Button {
+                    store.toggleFocusMode()
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        FocusTimerLine()
+                        FocusFootRow(on: false) { store.toggleFocusMode() }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 5)
+                    // 8, not 5: the slab's own foot clearance plus the card's,
+                    // so the switch lands on the same pixel in both states.
+                    .padding(.bottom, 8)
+                    .padding(.horizontal, 6)
+                    .contentShape(Rectangle())
                 }
-                FocusTimerLine()
+                .buttonStyle(.plain)
+                .accessibilityLabel("Focus Mode")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 5)
-            .padding(.horizontal, 6)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Focus Mode")
+        .animation(.easeOut(duration: 0.22), value: store.focusModeOn)
     }
 }
 

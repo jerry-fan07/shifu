@@ -41,6 +41,11 @@ final class LedgerStore: ObservableObject {
     /// consults it live in LedgerStoreControls.swift, and an extension can't
     /// hold state of its own.
     var focusEndedHere: Date?
+    /// The menu bar item's ticking reading. Deliberately *not* `@Published`:
+    /// it changes every second while Focus Mode is on, and announcing that
+    /// through the store would re-run every body in the app at 1 Hz. The one
+    /// view that wants it observes the object directly.
+    let focusStopwatch = FocusStopwatch()
     @Published private(set) var dueNotes: [Note] = []
     /// Every kept, reviewable card (Q/A present), most urgent first.
     @Published private(set) var allCards: [Note] = []
@@ -256,38 +261,16 @@ final class LedgerStore: ObservableObject {
             to: Int64(to.timeIntervalSince1970 * 1_000))) ?? []
     }
 
-    /// The window's Focus Mode sessions, ends resolved — the Focus view's
-    /// rows. An open row counts, running to now, only while Focus Mode really
-    /// is on; otherwise it is a crashed daemon's leftover and the next daemon
-    /// launch will repair it (`FocusModeSessions.closeDangling`).
-    ///
-    /// Reports rather than swallowing: this read depends on the *schema*, and
-    /// a bare `try?` turns "that table isn't there" into "you had no
-    /// sessions", which is indistinguishable from a genuinely quiet week. It
-    /// is not hypothetical — the sessions table was renamed under this branch
-    /// by another workspace's migration, and the page read as empty for a day
-    /// instead of saying so.
-    func focusSessions(from: Date, to: Date) -> [FocusModeSessions.Session] {
-        guard let database = try? db() else { return [] }
-        let liveEnd = FocusModeFile.isOn()
-            ? Int64(Date().timeIntervalSince1970 * 1_000) : nil
-        do {
-            return try FocusModeSessions.overlapping(
-                from: Int64(from.timeIntervalSince1970 * 1_000),
-                to: Int64(to.timeIntervalSince1970 * 1_000),
-                liveEnd: liveEnd, database: database)
-        } catch {
-            report(error)
-            return []
-        }
-    }
-
     /// Republishes where each clock starts. The read itself is in
     /// LedgerStoreControls.swift, with the switch that starts them.
     private func refreshFocusClock() {
         let moments = focusMoments()
         focusStartedAt = moments.startedAt
         focusPreviousEnd = moments.previousEnd
+        // The menu bar item's second hand starts and stops here because this
+        // is the one place that learns a session began — whichever switch was
+        // flipped, they all land in `refresh()`.
+        focusStopwatch.follow(startedAt: moments.startedAt)
     }
 
     // MARK: - Vault search (vault-features.md §4)
