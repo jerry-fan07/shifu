@@ -138,11 +138,11 @@ struct DeepSeekBackend: LLMBackend {
     /// chosen the local tier. The wire protocol is identical throughout;
     /// only who holds the credentials — and whether any exist — moves.
     static func ifConfigured(
-        database: ShifuDatabase, role: Role = .fast
+        database: ShifuDatabase, role: Role = .fast, edition: Edition = .current
     ) throws -> DeepSeekBackend? {
         let credential: String
         let base: String
-        switch try Settings.llmCredential(database: database) {
+        switch try Settings.llmCredential(database: database, edition: edition) {
         case nil:
             return nil
         case .deepseek(let key):

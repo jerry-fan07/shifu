@@ -166,7 +166,10 @@ import Testing
         for (key, value) in settings {
             try Settings.set(key, to: value, database: database)
         }
-        return try #require(try DeepSeekBackend.ifConfigured(database: database, role: role))
+        // The tier only exists in the Qwen edition (the standard bundle
+        // doesn't offer the choice), so these tests run as that bundle.
+        return try #require(
+            try DeepSeekBackend.ifConfigured(database: database, role: role, edition: .qwen))
     }
 
     /// The whole point of the tier: no key, no token, and a backend still

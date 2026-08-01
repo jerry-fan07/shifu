@@ -24,6 +24,56 @@ public enum Shifu {
     static let fallbackVersion = "0.1.1"
 }
 
+/// Which Shifu this build is sold as (design.md §4.2): one codebase, two
+/// bundles. The standard bundle offers the hosted tiers; the Qwen bundle
+/// offers only the local one — Qwen in place of the cloud server and API
+/// keys, nothing to send anything to. The difference is a stamped Info.plist
+/// key, not a fork: bundle-app.sh writes `ShifuEdition` the same way it
+/// stamps the version, and every binary in the bundle reads it back here.
+/// The edition gates which backend *choices exist* — the tier code itself is
+/// shared, so main's changes reach both bundles by ordinary merge.
+public enum Edition: String, Sendable {
+    case standard
+    case qwen
+
+    /// Resolved once per process: the SHIFU_EDITION environment variable
+    /// (how a dev build or test run becomes the Qwen edition without
+    /// assembling a bundle), else the stamped plist, else standard.
+    public static let current: Edition = resolve(
+        environment: ProcessInfo.processInfo.environment,
+        stamped: Bundle.main.bundleIdentifier == "com.shifu.app"
+            ? Bundle.main.object(forInfoDictionaryKey: "ShifuEdition") as? String : nil)
+
+    static func resolve(environment: [String: String], stamped: String?) -> Edition {
+        if let forced = environment["SHIFU_EDITION"].flatMap(Edition.init(rawValue:)) {
+            return forced
+        }
+        return stamped.flatMap(Edition.init(rawValue:)) ?? .standard
+    }
+
+    /// The `analysis.backend` values this edition offers, in display order.
+    /// A stored value outside this list reads as rules-only, never as some
+    /// other backend — a database that has seen the other edition must not
+    /// silently reroute its text to an endpoint the user never chose here.
+    public var analysisBackends: [String] {
+        switch self {
+        case .standard: return ["shifu-cloud", "deepseek", "off"]
+        case .qwen: return ["local", "off"]
+        }
+    }
+
+    /// What an untouched install's backend row means. Standard keeps
+    /// "deepseek" (the stored identifier the key-as-opt-in era wrote);
+    /// the Qwen edition starts rules-only until the user points it at
+    /// their server.
+    public var defaultAnalysisBackend: String {
+        switch self {
+        case .standard: return "deepseek"
+        case .qwen: return "off"
+        }
+    }
+}
+
 /// The hosted LLM proxy (server/ in this repo). Constants only — the client
 /// that talks to it lives in shifu-analyzer, the one binary allowed to touch
 /// the network (§8).

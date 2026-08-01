@@ -180,12 +180,14 @@ import Testing
                 to: directory.appendingPathComponent("onboarding-\(step + 1).png"),
                 dark: step == 4)
         }
+        // Filtered like BackendBeat itself: a standard run photographs the
+        // hosted disclosures, a SHIFU_EDITION=qwen run the local one.
         for (backend, slug) in [
             ("off", "onboarding-consent"),
             ("shifu-cloud", "onboarding-consent-cloud"),
             ("deepseek", "onboarding-consent-key"),
             ("local", "onboarding-consent-local")
-        ] {
+        ].filter({ Edition.current.analysisBackends.contains($0.0) }) {
             shoot(
                 OnboardingView(step: 3, backend: backend),
                 to: directory.appendingPathComponent("\(slug).png"),

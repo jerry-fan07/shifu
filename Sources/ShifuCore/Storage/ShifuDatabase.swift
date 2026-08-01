@@ -160,7 +160,24 @@ public enum Settings {
     /// work without one. A credential here is not a promise the endpoint
     /// answers; it is the difference between "will try" and "cannot".
     public static func llmCredential(database: ShifuDatabase) throws -> LLMCredential? {
-        switch try get(analysisBackendKey, database: database) {
+        try llmCredential(database: database, edition: .current)
+    }
+
+    /// The edition-explicit form the default above resolves to; tests are
+    /// the only callers that pass one. A backend value the edition doesn't
+    /// offer — one database has met both bundles — reads as rules-only,
+    /// never as some other backend: silently rerouting the Qwen bundle's
+    /// text to a cloud endpoint over a leftover key would be an opt-in
+    /// nobody made.
+    public static func llmCredential(
+        database: ShifuDatabase, edition: Edition
+    ) throws -> LLMCredential? {
+        // A pre-choice install stored nothing; the key was the opt-in then,
+        // and the edition default keeps that reading.
+        let choice = try get(analysisBackendKey, database: database)
+            ?? edition.defaultAnalysisBackend
+        guard edition.analysisBackends.contains(choice) else { return nil }
+        switch choice {
         case "off":
             return nil
         case "shifu-cloud":

@@ -286,11 +286,23 @@ public enum SettingsCatalog {
     // Cloud is that act for the hosted backend; pasting a key is it for
     // DeepSeek; choosing Local is it for a server the user runs themselves.
     // Without one, analysis is rules-only and nothing ever leaves this Mac.
-    public static let analysisBackend = ChoiceSetting(
-        key: Settings.analysisBackendKey, section: .analysis,
-        title: "AI backend",
-        help: "Backend analysis engine",
-        options: [
+    // Which of these choices *exist* is the edition's call (§4.2): the
+    // standard bundle offers the hosted tiers, the Qwen bundle only the
+    // local one. The copy below is written once for all editions.
+    public static let analysisBackend = analysisBackend(for: .current)
+
+    static func analysisBackend(for edition: Edition) -> ChoiceSetting {
+        ChoiceSetting(
+            key: Settings.analysisBackendKey, section: .analysis,
+            title: "AI backend",
+            help: "Backend analysis engine",
+            options: analysisBackendOptions.filter {
+                edition.analysisBackends.contains($0.value)
+            },
+            defaultValue: edition.defaultAnalysisBackend)
+    }
+
+    private static let analysisBackendOptions: [ChoiceSetting.Option] = [
             .init(
                 value: "shifu-cloud", label: "Shifu Cloud",
                 detail: "No key and no account. Redacted, post-exclusion text samples go "
@@ -298,9 +310,9 @@ public enum SettingsCatalog {
                     + "pixels, never raw captures, never stored."),
             // The label says what the user brings ("API Key"); the value stays
             // "deepseek" because it is a stored identifier, not copy — the
-            // default below, the text rows' `visibleWhen` gates, onboarding's
-            // write and every existing settings row all say "deepseek", and
-            // renaming the value would orphan them all.
+            // edition default, the text rows' `visibleWhen` gates,
+            // onboarding's write and every existing settings row all say
+            // "deepseek", and renaming the value would orphan them all.
             .init(
                 value: "deepseek", label: "API Key",
                 detail: "Redacted, post-exclusion text samples go straight to DeepSeek — "
@@ -321,9 +333,7 @@ public enum SettingsCatalog {
                     + "Themes, the radar, work-note narratives and new decks need a "
                     + "model, so they stand still; nothing already written is lost, and "
                     + "turning an engine on later picks up the last two days.")
-        ],
-        defaultValue: "deepseek"
-    )
+    ]
 
     public static let shifuCloudBaseURL = TextSetting(
         key: Settings.shifuCloudBaseURLKey, section: .analysis,

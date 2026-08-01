@@ -138,14 +138,17 @@ import Testing
         try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
         // The blank endpoint default is loopback, so pacing applies out of
         // the box…
-        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) != nil)
+        #expect(LLMPacer.ifLocal(
+            database: database, userIsAway: { false }, edition: .qwen) != nil)
         try Settings.set(Settings.localBaseURLKey,
                          to: "http://127.0.0.1:8080/v1", database: database)
-        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) != nil)
+        #expect(LLMPacer.ifLocal(
+            database: database, userIsAway: { false }, edition: .qwen) != nil)
 
         try Settings.set(SettingsCatalog.llmDutyActive, to: 100, database: database)
         try Settings.set(SettingsCatalog.llmDutyIdle, to: 100, database: database)
-        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
+        #expect(LLMPacer.ifLocal(
+            database: database, userIsAway: { false }, edition: .qwen) == nil)
     }
 
     /// …but a LAN server's heat is some other machine's problem, local tier
@@ -155,7 +158,8 @@ import Testing
         try Settings.set(Settings.analysisBackendKey, to: "local", database: database)
         try Settings.set(Settings.localBaseURLKey,
                          to: "http://192.168.1.20:8080", database: database)
-        #expect(LLMPacer.ifLocal(database: database, userIsAway: { false }) == nil)
+        #expect(LLMPacer.ifLocal(
+            database: database, userIsAway: { false }, edition: .qwen) == nil)
     }
 
     @Test func loopbackMeansThisMacOnly() {

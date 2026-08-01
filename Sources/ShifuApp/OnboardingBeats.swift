@@ -259,6 +259,18 @@ struct BackendBeat: View {
     @Binding var backend: String
     @Binding var apiKey: String
 
+    /// Onboarding labels differ from the settings copy ("Own API key" says
+    /// what the user brings), so the list lives here — but which segments
+    /// *exist* is the edition's call, same as the settings row.
+    static var segments: [(String, String)] {
+        [
+            ("Rules only", "off"),
+            ("Shifu Cloud", "shifu-cloud"),
+            ("Own API key", "deepseek"),
+            ("Local model", "local")
+        ].filter { Edition.current.analysisBackends.contains($0.1) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Prose("""
@@ -266,14 +278,7 @@ struct BackendBeat: View {
             model. Off, those stages are skipped and Shifu runs on rules alone — nothing \
             ever leaves this Mac.
             """)
-            SegmentedBar(
-                options: [
-                    ("Rules only", "off"),
-                    ("Shifu Cloud", "shifu-cloud"),
-                    ("Own API key", "deepseek"),
-                    ("Local model", "local")
-                ],
-                selection: $backend)
+            SegmentedBar(options: Self.segments, selection: $backend)
             if backend == "off" {
                 // What "rules alone" costs, spelled out — otherwise the default
                 // reads as the safe *and* free choice, and it is only the first.

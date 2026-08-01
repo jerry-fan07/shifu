@@ -94,9 +94,11 @@ extension LLMPacer {
     /// the local server lives on some other machine, or both duties are
     /// dialed to 100.
     public static func ifLocal(
-        database: ShifuDatabase, userIsAway: @escaping @Sendable () -> Bool
+        database: ShifuDatabase, userIsAway: @escaping @Sendable () -> Bool,
+        edition: Edition = .current
     ) -> LLMPacer? {
-        guard case .localServer = (try? Settings.llmCredential(database: database)) ?? nil
+        guard case .localServer =
+            (try? Settings.llmCredential(database: database, edition: edition)) ?? nil
         else { return nil }
         let base = (try? Settings.get(Settings.localBaseURLKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.baseURL
