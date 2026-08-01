@@ -11,6 +11,16 @@ extension TaskMerges {
     /// one wrong pair in five, far too many to apply to real work silently).
     /// Set the key above 1 to switch auto-merge off entirely.
     static let defaultAutoMergeThreshold = 0.97
+    /// The bar for a *reconciler*-proposed pair (`source = 'reconcile'`,
+    /// v27). A different scale needs a different number: 0.97 was calibrated
+    /// to embedding cosine, where the score is a geometric accident of two
+    /// centroids and 0.9 still mixed one wrong pair in five. The reconciler
+    /// reaches its number the way a person would — it is shown both names,
+    /// both gists, hours logged, days active and top sources, and asked
+    /// whether they are one effort — and it reports in round hundredths.
+    /// On the dogfood roster its proposals at ≥0.9 were the three real
+    /// duplicate families and nothing else.
+    static let defaultLLMAutoMergeThreshold = 0.9
     /// Backstop on the fixed-point loop in `autoMerge`; two or three passes
     /// settle a real backlog.
     static let maxPasses = 10
@@ -32,10 +42,38 @@ extension TaskMerges {
         var taskB: Int64
         var cosine: Double
         var defaultNamed: Bool
-        var filedApart: Bool
+        /// The hand-filed theme on each side, if any (`theme_user_set`).
+        var filedA: String?
+        var filedB: String?
         /// Lifetime activity of the *smaller* side. A pair is a fragment pair
         /// when this is under the substance gate.
         var smallerMs: Int64
+        /// Who proposed the pair — `"embedding"` (`TaskMerges.suggest`) or
+        /// `"reconcile"` (`TaskReconciler`), which decides which bar
+        /// `cosine` is judged against. v27; rows written before it read as
+        /// `"embedding"` and keep the stricter treatment.
+        var source: String
+
+        var isReconciled: Bool { source == "reconcile" }
+
+        /// Unfiled compares as its own value, so filing one side and leaving
+        /// the other alone reads as "these differ" — the pre-v14 `project_id`
+        /// semantics, kept for embedding pairs, where the score alone is thin
+        /// evidence and any user signal should outweigh it.
+        var filedApart: Bool { filedA != filedB }
+
+        /// Both sides were filed by hand, under different themes. This is the
+        /// bar a *reconciler* pair is held to: it read both gists and said
+        /// they are one effort, which is stronger evidence than a NULL. An
+        /// absent theme is the absence of a judgement, not a judgement that
+        /// the two differ — and on the dogfood roster the strict reading
+        /// alone blocked the largest real duplicate ("Shifu Development" <>
+        /// "shifu app development and task log features") on nothing more
+        /// than one side never having been filed.
+        var filedApartByHand: Bool {
+            guard let filedA, let filedB else { return false }
+            return filedA != filedB
+        }
     }
 
     /// Folds the unambiguous end of the suggestion queue and leaves the rest
@@ -99,22 +137,40 @@ extension TaskMerges {
         let autoThreshold = autoRaw.flatMap(Double.init) ?? defaultAutoMergeThreshold
         let suggestRaw = (try? Settings.get(mergeThresholdKey, database: database)) ?? nil
         let fragmentThreshold = suggestRaw.flatMap(Double.init) ?? defaultMergeThreshold
+        // Dialling `autoMergeThresholdKey` above 1 switches auto-merge off.
+        // That has to hold for reconciler pairs too, so the LLM bar follows
+        // it out of range rather than sitting under a switch the user just
+        // turned off. Below that it is its own constant: the two scales are
+        // what v27 exists to separate.
+        let llmThreshold = autoThreshold > 1 ? autoThreshold : defaultLLMAutoMergeThreshold
 
         let candidates = try self.candidates(
-            database: database, minimumCosine: min(autoThreshold, fragmentThreshold))
+            database: database,
+            minimumCosine: min(autoThreshold, fragmentThreshold, llmThreshold))
         let eligible = candidates.filter { candidate in
-            guard candidate.defaultNamed, !candidate.filedApart else { return false }
-            return candidate.smallerMs < TaskGrouper.minNewTaskMs
-                ? candidate.cosine >= fragmentThreshold
-                : candidate.cosine >= autoThreshold
+            guard candidate.defaultNamed else { return false }
+            // A reconciler pair answers to the hand-filing test only; every
+            // other gate — default-named, dismissed-stays-dismissed, and the
+            // fragment fast path — applies to both sources unchanged.
+            guard !(candidate.isReconciled
+                        ? candidate.filedApartByHand : candidate.filedApart)
+            else { return false }
+            if candidate.smallerMs < TaskGrouper.minNewTaskMs {
+                return candidate.cosine >= fragmentThreshold
+            }
+            return candidate.cosine >= (candidate.isReconciled
+                                        ? llmThreshold : autoThreshold)
         }
         guard !eligible.isEmpty else { return 0 }
 
         let groups = components(of: eligible.map { ($0.taskA, $0.taskB) })
         let durations = try lifetimeDurations(
             of: Set(groups.flatMap { $0 }), database: database)
+        // "Strong" is per scale, like eligibility: a reconciler pair at 0.95
+        // is a direct verdict on these two tasks, so it carries a substantial
+        // member across a chain exactly as a 0.97 cosine does.
         let strongPairs = Set(eligible
-            .filter { $0.cosine >= autoThreshold }
+            .filter { $0.cosine >= ($0.isReconciled ? llmThreshold : autoThreshold) }
             .map { PairKey($0.taskA, $0.taskB) })
         let pairs = groups.flatMap { group -> [TaskStore.MergePair] in
             // Longest-running survives; the lowest id breaks ties, so a rerun
@@ -150,7 +206,7 @@ extension TaskMerges {
     ) throws -> [Candidate] {
         try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT s.task_a, s.task_b, s.cosine,
+                SELECT s.task_a, s.task_b, s.cosine, s.source,
                        ta.name AS name_a, ta.key AS key_a,
                        tb.name AS name_b, tb.key AS key_b,
                        (SELECT a.theme_key FROM activities a
@@ -170,20 +226,19 @@ extension TaskMerges {
                 ORDER BY s.cosine DESC
                 """, arguments: [minimumCosine]
             ).map { row in
+                // Only *hand* filing is read at all: two tasks the clusterer
+                // happened to put in different themes are not a user
+                // judgement, and gating on that would stall the queue
+                // auto-merge exists to drain. What "apart" then means differs
+                // by source — see `filedApart` / `filedApartByHand`.
                 Candidate(
                     taskA: row["task_a"], taskB: row["task_b"], cosine: row["cosine"],
                     defaultNamed:
                         TaskGrouper.isDefaultName(row["name_a"], forKey: row["key_a"])
                         && TaskGrouper.isDefaultName(row["name_b"], forKey: row["key_b"]),
-                    // Only *hand* filing counts: two tasks the clusterer
-                    // happened to put in different themes are not a user
-                    // judgement, and gating on that would stall the queue
-                    // auto-merge exists to drain. Unfiled compares as its own
-                    // value, so filing one side and not the other is itself a
-                    // "these differ" — the same thing `project_id` said before
-                    // v14, where NULL vs an id was likewise unequal.
-                    filedApart: (row["filed_a"] as String?) != (row["filed_b"] as String?),
-                    smallerMs: row["smaller_ms"])
+                    filedA: row["filed_a"], filedB: row["filed_b"],
+                    smallerMs: row["smaller_ms"],
+                    source: (row["source"] as String?) ?? "embedding")
             }
         }
     }

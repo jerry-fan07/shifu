@@ -29,8 +29,14 @@ public enum SemanticTaskGrouper {
     /// Blocks shorter than this stay mechanically grouped — a 40-second glance
     /// carries too little intent to be worth tokens.
     public static let minBlockMs: Int64 = 60_000
-    /// Cap on candidate blocks per run; the rest wait for the next hour.
-    public static let candidateLimit = 60
+    /// Backstop on candidates per run — a sane ceiling on one pass's work,
+    /// not the thing that sizes a batch. `LLMTokens.estimate` does that
+    /// (invariant 7). It used to be 60, which *was* the binding constraint:
+    /// it cut in 52% of the dogfood window's hourly runs, so the model was
+    /// handed sixty blocks sampled across a median 33.8 h and told they were
+    /// chronological and sticky. A batch is a stretch of the user's day or it
+    /// is nothing.
+    public static let candidateLimit = 300
     /// Existing tasks offered for reuse: the most recently active semantic
     /// tasks of the last `rosterWindowDays`.
     public static let rosterLimit = 40
@@ -41,10 +47,12 @@ public enum SemanticTaskGrouper {
     /// smaller ones (on-device Foundation Models is 4k for prompt *and*
     /// response, invariant 7) get names and gists only.
     public static let fullRosterMinContextTokens = 16_000
-    /// Already-grouped blocks shown around a batch as stickiness context.
-    static let neighborLimit = 6
-    static let compactNeighborLimit = 3
-    static let neighborWindowMs: Int64 = 6 * 3_600_000
+    /// How far outside a batch's own span assigned context is still shown, so
+    /// the first and last candidates see what they continue.
+    static let contextMarginMs: Int64 = 30 * 60_000
+    /// Context lines a small-context backend can afford (the full tier is
+    /// bounded by the batch's span instead, which shrinks with the batch).
+    static let compactContextLimit = 3
     /// Observations sampled per block, spread across its whole span.
     static let sampleCount = 5
     static let sourceLimit = 3
@@ -53,8 +61,25 @@ public enum SemanticTaskGrouper {
     static let urlSegmentChars = 40
     static let urlTokenChars = 96
     public static let textSampleChars = 300
+    /// Floor on the answer reserve, and what a small batch asks for.
     public static let responseTokenReserve = 2_000
+    /// `{"id": 123456, "task": "t12", "confidence": 0.85},` — one assignment,
+    /// measured generously.
+    static let answerTokensPerCandidate = 26
+    /// The JSON wrapper plus room for the new tasks a batch may mint.
+    static let answerEnvelopeTokens = 400
     public static let keyPrefix = "sem:"
+
+    /// What the *answer* to a batch of `count` candidates will cost. Batches
+    /// were sized against the prompt alone while `complete(maxTokens:)` was
+    /// handed a flat 2 000 — fine at sixty candidates, a silent cliff above
+    /// ~140, where the answer no longer fits and the fast slot has no
+    /// escalation retry (`DeepSeekBackend` gates that on `thinks`). A
+    /// truncated answer is `LLMError.badResponse`, which fails the whole
+    /// pass, not one batch. Invariant 7 covers prompt *and* response.
+    static func answerTokens(candidates count: Int) -> Int {
+        max(responseTokenReserve, answerEnvelopeTokens + count * answerTokensPerCandidate)
+    }
 
     /// How much history each roster line carries — see
     /// `fullRosterMinContextTokens`.
@@ -135,13 +160,24 @@ public enum SemanticTaskGrouper {
         }
     }
 
-    /// One already-grouped block near a batch, shown read-only so the model
-    /// can see the work the batch sits inside.
-    struct NeighborBlock: Sendable {
+    /// A stretch of already-grouped time, collapsed from the consecutive
+    /// blocks that share one task. Rendered read-only and id-less among the
+    /// candidates, in its own place in the day, which is what makes "work is
+    /// sticky: consecutive blocks usually continue the same task" a true
+    /// statement about the list the model is actually reading.
+    ///
+    /// It replaced a per-batch neighbour lookup anchored ±6 h on the batch's
+    /// *first* block. Batches span a median 33.8 h on the dogfood window, so
+    /// 67% of candidates were being shown what happened around a different
+    /// day — the one mechanism this stage most depends on, pointed at the
+    /// wrong hours since it shipped.
+    struct AssignedSpan: Sendable {
         var startedAt: Int64
         var endedAt: Int64
-        var appBundle: String
-        var domain: String?
+        /// How many blocks the span collapses; "×12" reads as sustained work
+        /// where one long block would read as a single sitting.
+        var blocks: Int
+        var activeMs: Int64
         var taskKey: String
         var taskName: String
     }
@@ -171,10 +207,23 @@ public enum SemanticTaskGrouper {
     public struct Summary: Equatable, Sendable {
         public var assigned: Int
         public var tasksCreated: Int
+        /// Candidates the model did not place — omitted, or dropped by
+        /// `resolve` for thin confidence. Counted because a pass that
+        /// declines everything used to be indistinguishable from a pass that
+        /// never ran: both printed nothing, and each decline silently burns
+        /// one of `maxAttempts`.
+        public var declined: Int
+        /// Batches whose answer carried no decodable JSON object — truncation
+        /// or refusal. Separate from `declined` because nothing was judged and
+        /// nothing was charged against `maxAttempts`; the blocks retry.
+        public var unparsed: Int
 
-        public init(assigned: Int = 0, tasksCreated: Int = 0) {
+        public init(assigned: Int = 0, tasksCreated: Int = 0, declined: Int = 0,
+                    unparsed: Int = 0) {
             self.assigned = assigned
             self.tasksCreated = tasksCreated
+            self.declined = declined
+            self.unparsed = unparsed
         }
     }
 
@@ -183,18 +232,20 @@ public enum SemanticTaskGrouper {
     /// Parses the model's JSON object (tolerating surrounding prose/fences).
     /// `newEntriesKey` lets ThemeClusterer reuse this for its `"new_themes"`
     /// wire key — the shapes are otherwise identical.
-    static func parse(_ response: String, newEntriesKey: String = "new_tasks") -> Verdict {
-        let empty = Verdict(assignments: [], newTasks: [])
-        guard let start = response.firstIndex(of: "{"),
-              let end = response.lastIndex(of: "}"), start < end,
-              let data = String(response[start...end]).data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return empty }
+    /// `nil` means no JSON object could be decoded at all — a truncated or
+    /// refused answer, not a considered "none of these". The distinction pays
+    /// for itself now that one batch can carry a whole window: `run` skips
+    /// `apply` on nil, so a mangled response costs a retry instead of burning
+    /// an attempt on every candidate it never judged. A decoded-but-empty
+    /// verdict still burns, which is what stops an unchanged window billing
+    /// forever.
+    static func parse(_ response: String, newEntriesKey: String = "new_tasks") -> Verdict? {
+        guard let object = firstJSONObject(in: response) else { return nil }
         let assignments = (object["assignments"] as? [[String: Any]] ?? [])
             .compactMap { item -> Assignment? in
-                guard let id = (item["id"] as? NSNumber)?.int64Value,
+                guard let id = number(item["id"])?.int64Value,
                       let task = item["task"] as? String,
-                      let confidence = (item["confidence"] as? NSNumber)?.doubleValue
+                      let confidence = number(item["confidence"])?.doubleValue
                 else { return nil }
                 return Assignment(id: id, task: task, confidence: confidence)
             }
@@ -214,6 +265,45 @@ public enum SemanticTaskGrouper {
                                gist: gist.map { String($0.prefix(200)) })
             }
         return Verdict(assignments: assignments, newTasks: newTasks)
+    }
+
+    /// The first *balanced* JSON object in a response, so trailing prose that
+    /// happens to contain a brace can't extend the slice past the answer.
+    /// First-`{`-to-last-`}` was fine while answers were short; a 4 000-token
+    /// answer is exactly where a model starts appending commentary. Code
+    /// fences are stripped, and a truncated object simply never balances,
+    /// which is how truncation becomes `nil` rather than a silent half-verdict.
+    private static func firstJSONObject(in response: String) -> [String: Any]? {
+        let text = response.replacingOccurrences(of: "```json", with: " ")
+            .replacingOccurrences(of: "```", with: " ")
+        guard let start = text.firstIndex(of: "{") else { return nil }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for index in text[start...].indices {
+            let character = text[index]
+            if escaped { escaped = false; continue }
+            if character == "\\", inString { escaped = true; continue }
+            if character == "\"" { inString.toggle(); continue }
+            if inString { continue }
+            if character == "{" { depth += 1 }
+            if character == "}" {
+                depth -= 1
+                guard depth == 0 else { continue }
+                let data = Data(text[start...index].utf8)
+                return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            }
+        }
+        return nil
+    }
+
+    /// Numbers arrive as numbers, or as `"12"` / `"0.9"` when a model decides
+    /// the schema's quotes apply to every value. Both are the same answer.
+    private static func number(_ value: Any?) -> NSNumber? {
+        if let number = value as? NSNumber { return number }
+        guard let text = value as? String else { return nil }
+        if let integer = Int64(text) { return NSNumber(value: integer) }
+        return Double(text).map(NSNumber.init(value:))
     }
 }
 
@@ -238,38 +328,64 @@ extension SemanticTaskGrouper {
         // the list the verdict resolves against have to be the same list.
         var roster = try activeRoster(database: database, now: now)
         if detail == .compact { roster = compacted(roster) }
-        let budget = max(
-            512, backend.contextWindowTokens - backend.responseReserve(responseTokenReserve))
+        // Read once for the whole run rather than per batch: `prompt` selects
+        // the spans around each batch's own hours, and a batch that shrinks
+        // to fit its budget takes its context down with it.
+        let context = try assignedSpans(database: database, from: from, to: to)
+
+        /// The prompt budget for a batch of `count`, which now moves with the
+        /// answer that batch will produce.
+        func budget(candidates count: Int) -> Int {
+            max(512, backend.contextWindowTokens
+                    - backend.responseReserve(answerTokens(candidates: count)))
+        }
 
         var summary = Summary()
         var cursor = 0
         while cursor < samples.count {
-            let neighbors = try assignedNeighbors(
-                database: database, around: samples[cursor].startedAt)
             var batch: [BlockSample] = []
             while cursor < samples.count {
                 batch.append(samples[cursor])
                 cursor += 1
                 if batch.count > 1,
                    LLMTokens.estimate(prompt(roster: roster, blocks: batch,
-                                             neighbors: neighbors, detail: detail,
-                                             calendar: calendar)) > budget {
+                                             context: context, detail: detail,
+                                             calendar: calendar)) > budget(candidates: batch.count) {
                     batch.removeLast()
                     cursor -= 1
                     break
                 }
             }
             let response = try await backend.complete(
-                prompt: prompt(roster: roster, blocks: batch, neighbors: neighbors,
+                prompt: prompt(roster: roster, blocks: batch, context: context,
                                detail: detail, calendar: calendar),
-                maxTokens: responseTokenReserve)
-            let outcome = try apply(parse(response), batch: batch, roster: roster,
+                maxTokens: answerTokens(candidates: batch.count))
+            // No decodable object at all: the batch stays queued with its
+            // attempts intact rather than paying for an answer that never
+            // arrived. `LLMStageGate` is not stamped here, so the next hourly
+            // run retries the same blocks.
+            guard let verdict = parse(response) else {
+                summary.unparsed += 1
+                continue
+            }
+            let outcome = try apply(verdict, batch: batch, roster: roster,
                                     database: database, now: now)
             summary.assigned += outcome.assigned
             summary.tasksCreated += outcome.created.count
+            summary.declined += outcome.declined
             roster.append(contentsOf: outcome.created)
         }
         return summary
+    }
+
+    /// What one batch's `apply` actually wrote. `assigned` counts activity
+    /// *rows* (a coalesced run writes all its members), `declined` counts
+    /// *candidates* the model left unplaced — the two are deliberately
+    /// different units, which is why they are named rather than positional.
+    struct Applied {
+        var assigned = 0
+        var created: [RosterEntry] = []
+        var declined = 0
     }
 
     /// One batch's verdict reduced to writable facts: task key → confident
@@ -318,20 +434,19 @@ extension SemanticTaskGrouper {
     static func apply(
         _ verdict: Verdict, batch: [BlockSample], roster: [RosterEntry],
         database: ShifuDatabase, now: Date = Date()
-    ) throws -> (assigned: Int, created: [RosterEntry]) {
+    ) throws -> Applied {
         let resolved = resolve(verdict, batch: batch.map(\.id), roster: roster)
         let byHandle = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         return try database.queue.write { db in
-            var created: [RosterEntry] = []
+            var applied = Applied()
             var assignedHandles: Set<Int64> = []
-            var assignedRows = 0
             for (key, ids) in resolved.assignmentsByKey.sorted(by: { $0.key < $1.key }) {
                 let lastActive = ids.compactMap { byHandle[$0]?.endedAt }.max() ?? nowMs
                 if let entry = try upsertTask(
                     db, key: key, definition: resolved.newTaskByKey[key],
                     createdAt: nowMs, lastActive: lastActive) {
-                    created.append(entry)
+                    applied.created.append(entry)
                 }
                 for id in ids {
                     let rows = byHandle[id]?.memberIDs ?? [id]
@@ -340,7 +455,7 @@ extension SemanticTaskGrouper {
                         WHERE id IN (\(databaseQuestionMarks(count: rows.count)))
                         """, arguments: [key] + StatementArguments(rows))
                     assignedHandles.insert(id)
-                    assignedRows += rows.count
+                    applied.assigned += rows.count
                 }
             }
             // A declined run burns an attempt on every constituent: exhausted
@@ -352,8 +467,9 @@ extension SemanticTaskGrouper {
                     UPDATE activities SET sem_attempts = sem_attempts + 1
                     WHERE id IN (\(databaseQuestionMarks(count: sample.memberIDs.count)))
                     """, arguments: StatementArguments(sample.memberIDs))
+                applied.declined += 1
             }
-            return (assignedRows, created)
+            return applied
         }
     }
 

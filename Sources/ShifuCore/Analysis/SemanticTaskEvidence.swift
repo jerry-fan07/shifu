@@ -21,7 +21,7 @@ extension SemanticTaskGrouper {
     /// `t<n>` handles `resolve` reads back — the two must never disagree.
     /// `detail` decides only how much history each roster line carries.
     static func prompt(roster: [RosterEntry], blocks: [BlockSample],
-                       neighbors: [NeighborBlock] = [], detail: RosterDetail = .full,
+                       context: [AssignedSpan] = [], detail: RosterDetail = .full,
                        calendar: Calendar = .current) -> String {
         var handleByKey: [String: String] = [:]
         for (index, entry) in roster.enumerated() { handleByKey[entry.key] = "t\(index + 1)" }
@@ -42,21 +42,13 @@ extension SemanticTaskGrouper {
             lines.append(rosterLine(handle: "t\(index + 1)", entry: entry, detail: detail))
         }
 
-        if !neighbors.isEmpty {
-            lines.append("")
-            lines.append("Already grouped, around this batch (context — these are not yours to assign):")
-            let shown = neighbors.suffix(detail == .full ? neighborLimit : compactNeighborLimit)
-            lines.append(contentsOf: shown.map {
-                neighborLine($0, handleByKey: handleByKey, times: times)
-            })
-        }
-
         lines.append("")
-        lines.append("Blocks, chronological (id, time, minutes or visits, app, pages, card or titles+text):")
-        for block in blocks {
-            lines.append(blockLine(block, times: times))
-            if !block.textSample.isEmpty { lines.append("  text: \(block.textSample)") }
-        }
+        lines.append("The day around these blocks, chronological. Lines starting \"~\" are")
+        lines.append("already grouped and are context only — never assign them. Lines with an")
+        lines.append("id are yours (id, time, minutes or visits, app, pages, card or titles+text):")
+        lines.append(contentsOf: timeline(blocks: blocks, context: context,
+                                          handleByKey: handleByKey,
+                                          times: times, detail: detail))
 
         lines.append(contentsOf: [
             "",
@@ -66,6 +58,9 @@ extension SemanticTaskGrouper {
             "Interruptions are the exception: a short messaging, social, or entertainment",
             "detour between two stretches of one task is a break from it, never part of it —",
             "leave it out. The return to the task is the continuity, not the detour.",
+            "Before minting, read the task list again: if the goal is already there under",
+            "any wording, reuse it. Two names for one effort is the worst outcome here —",
+            "worse than leaving a block out.",
             "A new task needs a specific goal-level title (3-8 words) and a one-sentence gist.",
             "Omit blocks that fit no task (idle browsing, one-off glances).",
             "Confidence is 0-1; use low confidence when the evidence is thin.",
@@ -76,18 +71,59 @@ extension SemanticTaskGrouper {
         return lines.joined(separator: "\n")
     }
 
-    /// "~ Thu 09:12 14m overleaf.com → t1 (Writing the thesis)". Deliberately
+    /// The batch's candidates and the assigned spans around them, merged into
+    /// one chronological list. Only spans overlapping the batch's own hours
+    /// (plus `contextMarginMs` at each end) are shown, so a batch that shrank
+    /// to fit its budget carries proportionally less context — and a batch
+    /// covering a whole evening sees that evening, not six lines from a
+    /// window anchored on its first block.
+    static func timeline(
+        blocks: [BlockSample], context: [AssignedSpan], handleByKey: [String: String],
+        times: DateFormatter, detail: RosterDetail
+    ) -> [String] {
+        guard let first = blocks.first, let last = blocks.max(by: { $0.endedAt < $1.endedAt })
+        else { return [] }
+        let (low, high) = (first.startedAt - contextMarginMs, last.endedAt + contextMarginMs)
+        var spans = context.filter { $0.endedAt > low && $0.startedAt < high }
+        if detail == .compact { spans = Array(spans.suffix(compactContextLimit)) }
+
+        // Rendered up front and sorted on one key, so a span and a candidate
+        // starting the same minute order the same way on every render — a
+        // byte-identical prompt is what a provider's cache rewards. Context
+        // sorts ahead of a candidate at the same instant: it is what the
+        // candidate continues.
+        struct Entry {
+            var sortKey: (Int64, Int)
+            var lines: [String]
+        }
+        var entries = spans.map {
+            Entry(sortKey: ($0.startedAt, 0),
+                  lines: [spanLine($0, handleByKey: handleByKey, times: times)])
+        }
+        entries += blocks.map { block in
+            var lines = [blockLine(block, times: times)]
+            if !block.textSample.isEmpty { lines.append("  text: \(block.textSample)") }
+            return Entry(sortKey: (block.startedAt, 1), lines: lines)
+        }
+        return entries.sorted { $0.sortKey < $1.sortKey }.flatMap(\.lines)
+    }
+
+    /// "~ Thu 09:12-11:40 148m ×12 → t1 (Writing the thesis)". Deliberately
     /// id-less: the model can only answer about the batch's blocks, and
     /// `resolve` drops every other id anyway.
-    private static func neighborLine(
-        _ neighbor: NeighborBlock, handleByKey: [String: String], times: DateFormatter
+    static func spanLine(
+        _ span: AssignedSpan, handleByKey: [String: String], times: DateFormatter
     ) -> String {
-        let start = Date(timeIntervalSince1970: Double(neighbor.startedAt) / 1_000)
-        let minutes = max(1, (neighbor.endedAt - neighbor.startedAt) / 60_000)
-        let label = handleByKey[neighbor.taskKey].map { "\($0) (\(neighbor.taskName))" }
-            ?? neighbor.taskName
-        return "~ \(times.string(from: start)) \(minutes)m "
-            + (neighbor.domain ?? shortBundle(neighbor.appBundle)) + " → " + label
+        let start = Date(timeIntervalSince1970: Double(span.startedAt) / 1_000)
+        let end = Date(timeIntervalSince1970: Double(span.endedAt) / 1_000)
+        let label = handleByKey[span.taskKey].map { "\($0) (\(span.taskName))" } ?? span.taskName
+        let (from, to) = (times.string(from: start), times.string(from: end))
+        // "Thu 09:12-11:40" on one day, "Thu 23:50-Fri 00:40" across midnight:
+        // the weekday is repeated only when it actually changed.
+        let closing = from.prefix(3) == to.prefix(3) ? String(to.suffix(5)) : to
+        var line = "~ \(from)-\(closing) \(max(1, span.activeMs / 60_000))m"
+        if span.blocks > 1 { line += " ×\(span.blocks)" }
+        return line + " → " + label
     }
 
     private static func blockLine(_ block: BlockSample, times: DateFormatter) -> String {
@@ -375,32 +411,48 @@ extension SemanticTaskGrouper {
         }
     }
 
-    /// Already-grouped blocks around `anchor`, chronological. This is the
-    /// stickiness evidence: what the user was doing on either side of the
-    /// batch, which is the strongest cue a human observer has — switches are
-    /// punctuated events, not the default. Re-read per batch, so a batch sees
-    /// what the previous one just wrote.
-    static func assignedNeighbors(
-        database: ShifuDatabase, around anchor: Int64, limit: Int = neighborLimit
-    ) throws -> [NeighborBlock] {
+    /// The window's already-grouped time, chronological, with consecutive
+    /// blocks of one task collapsed into a span. This is the stickiness
+    /// evidence — what the user was doing on either side of a candidate,
+    /// which is the strongest cue a human observer has, since switches are
+    /// punctuated events rather than the default.
+    ///
+    /// Read once per run over the whole window and filtered per batch in
+    /// `prompt`. Collapsing matters as much as the range: an afternoon on one
+    /// task is forty rows in `activities` and one fact about the day, and
+    /// forty lines would both cost forty times the tokens and read as forty
+    /// separate decisions.
+    static func assignedSpans(
+        database: ShifuDatabase, from: Int64, to: Int64
+    ) throws -> [AssignedSpan] {
         try database.queue.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT a.started_at, a.ended_at, a.app_bundle, a.domain, a.sem_key,
-                       t.name AS task_name
+            var spans: [AssignedSpan] = []
+            for row in try Row.fetchAll(db, sql: """
+                SELECT a.started_at, a.ended_at, a.sem_key, t.name AS task_name
                 FROM activities a LEFT JOIN tasks t ON t.key = a.sem_key
                 WHERE a.sem_key IS NOT NULL AND a.category != 'private'
                   AND a.ended_at > ? AND a.started_at < ?
-                ORDER BY ABS(a.started_at - ?) LIMIT ?
-                """, arguments: [anchor - neighborWindowMs, anchor + neighborWindowMs,
-                                 anchor, limit]
-            ).map { row -> NeighborBlock in
+                ORDER BY a.started_at
+                """, arguments: [from, to]) {
                 let key: String = row["sem_key"]
-                return NeighborBlock(
-                    startedAt: row["started_at"], endedAt: row["ended_at"],
-                    appBundle: row["app_bundle"], domain: row["domain"],
-                    taskKey: key, taskName: (row["task_name"] as String?) ?? humanize(key: key))
+                let (start, end): (Int64, Int64) = (row["started_at"], row["ended_at"])
+                // Same task as the row before it — extend rather than append.
+                // Any other task in between ends the span, which is what makes
+                // a line a stretch of one intent rather than a time range that
+                // merely contains it.
+                if var last = spans.last, last.taskKey == key {
+                    last.endedAt = max(last.endedAt, end)
+                    last.blocks += 1
+                    last.activeMs += end - start
+                    spans[spans.count - 1] = last
+                } else {
+                    spans.append(AssignedSpan(
+                        startedAt: start, endedAt: end, blocks: 1, activeMs: end - start,
+                        taskKey: key,
+                        taskName: (row["task_name"] as String?) ?? humanize(key: key)))
+                }
             }
-            .sorted { $0.startedAt < $1.startedAt }
+            return spans
         }
     }
 }
