@@ -94,6 +94,38 @@ import Testing
         shootDecks(store: store, into: directory)
         shootNotes(store: store, into: directory)
         shootOnboarding(into: directory)
+        shootNudgeDemo(into: directory)
+    }
+
+    /// The nudge demonstration (§4.4) at the peak of its pulse, over a stand-in
+    /// desktop. It is the one surface the app draws that is never inside the
+    /// app's window, so a shot of the window can't catch it — and the whole
+    /// point of the screen is what the vignette leaves readable, which is a
+    /// judgement nothing but a picture can settle.
+    @MainActor private func shootNudgeDemo(into directory: URL) {
+        let size = CGSize(width: 1_280, height: 800)
+        for dark in [false, true] {
+            let demo = NudgeDemo()
+            demo.vignette = 1
+            demo.message = 1
+            shoot(
+                ZStack {
+                    // Whatever the user was working on, as a flat tone: the
+                    // question is how much of it survives the vignette.
+                    Rectangle().fill(Color(light: 0xE9E8E4, dark: 0x24242A))
+                    NudgePulse(
+                        demo: demo,
+                        messageSize: size.width * FocusNudge.messageWidthFraction,
+                        carriesMessage: true)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        NudgeDemoBar(demo: demo, again: {}, done: {}).frame(height: 80)
+                    }
+                },
+                to: directory.appendingPathComponent(
+                    "nudge-demo\(dark ? "-dark" : "").png"),
+                dark: dark, size: size)
+        }
     }
 
     @MainActor private func shootDecks(store: LedgerStore, into directory: URL) {
@@ -136,10 +168,18 @@ import Testing
         return (unrollable ?? bySize.first)?.task.id
     }
 
-    /// The consent page (§8) in each of its three states — the one screen
-    /// where wording is the product, and the disclosure blocks only appear
-    /// for the selection they describe.
+    /// First run: every beat once, so the rail's ticks and its changing foot
+    /// are visible as a sequence rather than reasoned about — plus the consent
+    /// page (§8) in each of its three states, the one screen where wording is
+    /// the product and the disclosure blocks only appear for the selection
+    /// they describe.
     @MainActor private func shootOnboarding(into directory: URL) {
+        for step in 0..<6 {
+            shoot(
+                OnboardingView(step: step),
+                to: directory.appendingPathComponent("onboarding-\(step + 1).png"),
+                dark: step == 4)
+        }
         for (backend, slug) in [
             ("off", "onboarding-consent"),
             ("shifu-cloud", "onboarding-consent-cloud"),
@@ -248,6 +288,39 @@ import Testing
                 to: directory.appendingPathComponent("settings-\(slug).png"),
                 dark: section == .privacy)
         }
+
+        // The AI backend row describes the backend you picked, so the section
+        // has three faces and the shot of whichever one this Mac happens to be
+        // set to says nothing about the other two. These are consent copy —
+        // the one place where an unreadable paragraph is a privacy problem and
+        // not a cosmetic one — so each gets looked at.
+        for option in SettingsCatalog.analysisBackend.options {
+            let settings = SettingsStore()
+            settings.load()
+            settings.set(SettingsCatalog.analysisBackend, to: option.value)
+            settings.section = .analysis
+            let router = Router()
+            router.go(to: .settings)
+            shoot(
+                MainWindow(router: router, settings: settings).environmentObject(store),
+                to: directory.appendingPathComponent("settings-analysis-\(option.value).png"),
+                dark: false)
+        }
+
+        // The Save bar exists only while an edit is staged, so it needs its
+        // own frame: nudge one dial off its stored value and don't save.
+        let unsaved = SettingsStore()
+        unsaved.load()
+        let heartbeat = SettingsCatalog.heartbeatSeconds
+        let target = unsaved.value(for: heartbeat) == heartbeat.range.upperBound
+            ? heartbeat.range.lowerBound : heartbeat.range.upperBound
+        unsaved.set(heartbeat, to: target)
+        let router = Router()
+        router.go(to: .settings)
+        shoot(
+            MainWindow(router: router, settings: unsaved).environmentObject(store),
+            to: directory.appendingPathComponent("settings-unsaved.png"),
+            dark: false)
     }
 
     /// One shot: the window pointed at `place`, optionally with a pushed

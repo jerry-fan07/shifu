@@ -10,7 +10,10 @@ import ShifuCore
 @MainActor
 final class FocusModeController {
     static let gracePeriod: TimeInterval = 1       // 1 s off-task before first glow
-    static let pulseSpacing: TimeInterval = 10     // ≥10 s between glows
+    /// ≥10 s between glows. Shared with the app, which draws the pulse against
+    /// this gap during first run — "and then nothing for this long" is half of
+    /// what makes the nudge tolerable, and it only reads to scale.
+    static let pulseSpacing = FocusNudge.spacing
 
     private let database: ShifuDatabase
     private let classifier: RulesClassifier
