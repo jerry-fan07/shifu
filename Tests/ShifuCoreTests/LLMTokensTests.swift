@@ -113,5 +113,53 @@ import Testing
     @Test func backendErrorsDescribeThemselvesForTheAnalyzerLog() {
         #expect(LLMError.unavailable("no key").description.contains("no key"))
         #expect(LLMError.badResponse("not json").description.contains("not json"))
+        #expect(LLMError.truncated(partial: "half a note", detail: "hit max_tokens=1200")
+            .description.contains("hit max_tokens=1200"))
+    }
+}
+
+/// What happens when an answer runs out of budget. A prose stage keeps what
+/// arrived; a JSON stage must not. Both halves are asserted, because getting
+/// this wrong in either direction has already cost real money: discarding
+/// prose spent 46% of 2026-08-01's budget on nothing, and accepting half a
+/// JSON batch once built 0 cards from 40 blocks.
+@Suite struct LLMTruncationSalvageTests {
+    private struct Truncating: LLMBackend {
+        var name = "truncating"
+        var partial: String
+        func complete(prompt: String, maxTokens: Int) async throws -> String {
+            throw LLMError.truncated(partial: partial, detail: "hit max_tokens=\(maxTokens)")
+        }
+    }
+
+    @Test func salvageKeepsWholeLinesAndDropsTheClippedOne() {
+        #expect(LLMText.salvage("- one\n- two\n- thr")
+            == "- one\n- two")
+        // Trailing break: everything before it was complete.
+        #expect(LLMText.salvage("- one\n- two\n") == "- one\n- two")
+    }
+
+    @Test func aFragmentWithNoWholeLineSalvagesToNothing() {
+        // One clipped sentence is not a day's record — and returning it
+        // would stamp the day as described.
+        #expect(LLMText.salvage("- **09:00–10:00** — chased the ob").isEmpty)
+        #expect(LLMText.salvage("").isEmpty)
+    }
+
+    @Test func completeProseReturnsTheSalvageWhereCompleteThrows() async throws {
+        let backend = Truncating(partial: "- **09:00–10:00** — landed the fix\n- **11:00–12:00** — half")
+
+        await #expect(throws: LLMError.self) {
+            _ = try await backend.complete(prompt: "p", maxTokens: 400)
+        }
+        let prose = try await backend.completeProse(prompt: "p", maxTokens: 400)
+        #expect(prose == "- **09:00–10:00** — landed the fix")
+    }
+
+    @Test func completeProseStillFailsWhenThereIsNothingWholeToKeep() async {
+        let backend = Truncating(partial: "- **09:00–10:00** — chas")
+        await #expect(throws: LLMError.self) {
+            _ = try await backend.completeProse(prompt: "p", maxTokens: 400)
+        }
     }
 }

@@ -62,27 +62,29 @@ public enum TaskOverviewCompiler {
 
     // MARK: - Prompt (pure, testable)
 
-    /// Ordered stablest-first, which is what the provider's context cache
-    /// rewards: it discounts a shared *prefix*, so one volatile line early in
-    /// the prompt forfeits the discount on everything behind it.
+    /// Assembled back-to-front for the same reason as the day-note prompt
+    /// (`WorkNoteNarrative.rules`): DeepSeek bills the cache rate only for the
+    /// byte-identical *prefix* a request shares with a recent one, so the day
+    /// notes — which only ever gain an entry at the end — have to sit above
+    /// everything that moves. They used to sit below both the task name and
+    /// `previous`, and `previous` is by construction a different document on
+    /// every single call, so nothing here ever cached: 9 of 10 measured calls
+    /// came back at exactly zero.
     ///
-    /// This is the heaviest prompt Shifu sends (10-25k tokens), and the day
-    /// notes are the most cacheable material in it — append-only and
-    /// oldest-first, so run N's notes are run N-1's plus a suffix. The
-    /// overview being revised is the opposite: rewritten wholesale on every
-    /// successful pass. It therefore goes last, after the notes rather than
-    /// ahead of them, or it invalidates all thirty of them every time.
+    /// `previous` still lands last, but the rewrite instruction lands after
+    /// it. A prior draft immediately before generation is a standing
+    /// invitation to reproduce it verbatim, which is the one thing this stage
+    /// must not do — so the final thing the model reads is the order to
+    /// replace it, not the thing being replaced.
     static func prompt(
         taskName: String, gist: String?, previous: String?, days: [DayNote]
     ) -> String {
         let intro = gist.map { "What it is about: \($0)\n" } ?? ""
         let prior = previous.map {
-            "\nThe current overview, to revise — supersede it wherever the notes above "
-                + "have moved on:\n\($0)\n"
-        } ?? ""
+            "\nThe current overview, to revise:\n\($0)\n"
+        } ?? "\nThere is no current overview yet; write the first one.\n"
         return """
-        Maintain the living overview document for the task "\(taskName)".
-        \(intro)\
+        Maintain the living overview document for one task, from its day notes.
         Write the document as a complete replacement, not an addition — it is rewritten
         in full every time, so restate whatever still holds and drop whatever no longer
         does.
@@ -94,11 +96,15 @@ public enum TaskOverviewCompiler {
         "## Timeline" — bullets of the phases it went through, not a day-by-day replay.
         "## Key knowledge" — what was learned that outlives the task, with the why.
         "## Open threads" — what is unfinished, unanswered, or waiting.
-        Use ONLY the material below as evidence. Respond with ONLY the document.
+        Use ONLY the day notes and the current overview as evidence. Respond with ONLY the document.
 
         Day notes, oldest first:
         \(days.map(\.rendered).joined(separator: "\n\n"))
-        \(prior)
+
+        The task: "\(taskName)"
+        \(intro)\(prior)
+        Now rewrite it in full, as a complete replacement: restate what still holds,
+        drop what no longer does, and never copy the draft above back verbatim.
         """
     }
 
@@ -214,7 +220,13 @@ public enum TaskOverviewCompiler {
         for candidate in try candidates(database: database, vault: vault,
                                         now: now, calendar: calendar) {
             let previous = vault.taskOverview(taskKey: candidate.taskKey)
-            let body = try await backend.complete(
+            // Prose, like the day notes: an overview that outgrows its
+            // reserve keeps whatever whole lines it wrote. This document is
+            // a *replacement*, so throwing the answer away leaves the task
+            // showing the previous one until the next change — and this
+            // stage has been bitten by silent truncation before (see
+            // `responseTokens`).
+            let body = try await backend.completeProse(
                 prompt: budgeted(candidate, previous: previous?.body, backend: backend),
                 maxTokens: responseTokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)

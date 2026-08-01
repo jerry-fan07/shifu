@@ -38,6 +38,30 @@ extension LLMBackend {
     public func responseReserve(_ answerTokens: Int) -> Int {
         max(answerTokens, responseHeadroomTokens)
     }
+
+    /// `complete` for the stages whose answer is prose rather than JSON: an
+    /// answer that ran out of budget comes back trimmed to its last whole
+    /// line instead of throwing.
+    ///
+    /// Which of the two a stage calls is a statement about its answer, not
+    /// about how much it tolerates failure. Half a JSON object yields no
+    /// verdicts, so `CardBuilder` and the groupers must keep using `complete`
+    /// and failing. Half a day note is most of a day note — and discarding it
+    /// is what made thirteen calls on 2026-08-01 spend 46% of the day's
+    /// budget on nothing.
+    ///
+    /// A fragment too short to trim to a line is still a failure: it comes
+    /// back as `badResponse`, so the caller retries rather than recording a
+    /// day it never described.
+    public func completeProse(prompt: String, maxTokens: Int) async throws -> String {
+        do {
+            return try await complete(prompt: prompt, maxTokens: maxTokens)
+        } catch LLMError.truncated(let partial, let detail) {
+            let salvaged = LLMText.salvage(partial)
+            guard !salvaged.isEmpty else { throw LLMError.badResponse(detail) }
+            return salvaged
+        }
+    }
 }
 
 /// Prompt sizing (CLAUDE.md invariant 7). Every batched prompt must be sized
@@ -49,6 +73,32 @@ public enum LLMTokens {
     public static func estimate(_ text: String) -> Int {
         text.utf8.count / 3 + 1
     }
+
+    /// Bytes two prompts share from the front — the only part of a prompt a
+    /// provider's context cache can discount, since the cache is keyed on the
+    /// longest byte-identical *prefix* and quantized to a block (128 tokens on
+    /// DeepSeek, measured: every non-zero `cached_prompt_tokens` ever recorded
+    /// is a multiple of 128, and none is smaller).
+    ///
+    /// Deliberately bytes rather than `estimate`: this is the one measurement
+    /// where the estimator's deliberate over-count would lie in the dangerous
+    /// direction. `estimate` divides by 3 while real prompts of this content
+    /// measure ~3.9 bytes/token, so a 192-byte header reads as 65 "tokens" and
+    /// would satisfy a token-denominated floor while the provider sees ~49 and
+    /// caches nothing. `PromptPrefixTests` asserts a byte floor for that
+    /// reason, and `estimate` stays what invariant 7 sizes batches with.
+    public static func sharedPrefixBytes(_ first: String, _ second: String) -> Int {
+        var count = 0
+        var left = first.utf8.makeIterator()
+        var right = second.utf8.makeIterator()
+        while let lhs = left.next(), let rhs = right.next(), lhs == rhs { count += 1 }
+        return count
+    }
+
+    /// A byte floor that guarantees one whole 128-token cache block even at a
+    /// pessimistic 4 bytes per token. A prompt family sharing less than this
+    /// is billed as if it shared nothing.
+    public static let cacheBlockBytes = 512
 
     /// Greedy token-sized batching, shared by every batched prompt: grow a
     /// batch, render the *real* prompt, and split when the render exceeds
@@ -82,11 +132,48 @@ public enum LLMTokens {
 public enum LLMError: Error, CustomStringConvertible {
     case unavailable(String)
     case badResponse(String)
+    /// The response budget ran out mid-answer (`finish_reason=length`),
+    /// carrying whatever had been written when it did.
+    ///
+    /// Separate from `badResponse` because the two kinds of caller want
+    /// opposite things from it. A stage that parses JSON gets nothing from
+    /// half an object and must keep failing — that is why this was raised at
+    /// all (`CardBuilder` once returned a truncated batch as a success and
+    /// built 0 cards from 40 blocks). A stage whose answer is *prose* is in
+    /// the opposite position: half a day note is most of a day note, and
+    /// throwing it away is how thirteen calls on 2026-08-01 spent 46% of the
+    /// day's budget to produce nothing and erase the prose already on disk.
+    ///
+    /// So the partial travels with the error and only prose callers unwrap
+    /// it (`LLMText.salvage`). Nobody gets it by accident: every existing
+    /// `catch` sees an `LLMError` exactly as before.
+    case truncated(partial: String, detail: String)
 
     public var description: String {
         switch self {
         case .unavailable(let why): return "LLM unavailable: \(why)"
         case .badResponse(let why): return "LLM bad response: \(why)"
+        case .truncated(let partial, let why):
+            return "LLM answer truncated (\(partial.count) chars usable): \(why)"
         }
+    }
+}
+
+/// Rescuing a prose answer that ran out of budget.
+public enum LLMText {
+    /// The usable head of a truncated answer: everything up to the last line
+    /// break, so a note ends on a whole bullet rather than mid-word. A
+    /// fragment with no line break at all yields nothing — one clipped
+    /// sentence is not a day's record, and returning it would stamp the day
+    /// as described.
+    ///
+    /// Trimming to a *line* rather than a sentence is deliberate: every prose
+    /// stage here emits markdown whose units are lines (bullets, headings),
+    /// and sentence-splitting prose that contains code and file paths guesses
+    /// wrong more often than it helps.
+    public static func salvage(_ partial: String) -> String {
+        guard let lastBreak = partial.lastIndex(of: "\n") else { return "" }
+        return String(partial[..<lastBreak])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

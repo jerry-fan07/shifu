@@ -586,20 +586,57 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
   would spread them, but the closed-block gate plus the cap already bound the
   waste to two extra calls per stubborn block; not worth a timestamp column.
-- **Cross-run prompt-cache alignment as its own effort (§4.2)** — the ordering
-  wins are taken: rosters render in stable key order, `CardBuilder.ongoingTopics`
-  in slug order, and the task-overview prompt puts the overview it is revising
-  *after* the day notes rather than ahead of them (it is rewritten every pass,
-  so anything behind it was a guaranteed miss). What is left is the part that
-  costs something to keep: the roster's per-task counters (`2.4h over 3d · last
-  2d ago`) move hourly and sit inline with the names, so the byte-identical
-  prefix still ends at the instruction header — splitting them into their own
-  section after the stable name/gist block is the fix. Alongside it, the
-  grouping and clustering prompts append their output-format spec *after* the
-  block list, where it can never be cached. Measure both against the per-stage
-  attribution below before spending anything on them; note also that input is
-  only worth chasing once thinking mode is off the fast slot — with
-  chain-of-thought billed as output, input was under a fifth of the bill.
+- **Cross-run prompt-cache alignment (§4.2) — half shipped 2026-08-01, half
+  still deferred.** The revisit condition below was met and acted on: on
+  2026-08-01 misses were 95% of input and input was 88% of the bill.
+  - **Measured, so it is not re-derived.** DeepSeek's cache is prefix-only and
+    quantized to **128 tokens** — every one of the 101 non-zero
+    `cached_prompt_tokens` rows ever recorded is a multiple of 128, none is
+    smaller, while `prompt_tokens` are not quantized at all. So the only
+    discountable bytes are the ones before the first byte that differs from a
+    recent request, and a shared prefix under 128 tokens is billed as if there
+    were none. TTL is comfortable: a 512-token prefix hit 6 h 52 min after it
+    was last written.
+  - **Shipped: prompts are assembled back-to-front.** `WorkNoteCompiler`,
+    `TaskOverviewCompiler`, `ThemeClusterer.narrativePrompt` and `DeckBuilder`
+    all opened with the value that changes between calls, so two calls of one
+    stage shared 25 bytes and the stage measured *exactly* zero cached on
+    every call. Static rules now lead, append-only evidence follows, and
+    identity plus the operative instruction close. Nothing was added or
+    removed. Replayed over 425 dogfood task-days, day notes move 0% → ~48%.
+    `PromptPrefixTests` pins the property; it is invisible in output and only
+    a column in `llm_usage` ever reports it.
+  - **Not done, deliberately.** *Quantizing roster stats* is a coin flip: the
+    roster is key-sorted, so the one task worked this hour truncates the
+    prefix at an arbitrary index, and a task minted mid-run gets inserted
+    mid-list and renumbers every later `t<n>` handle anyway. *Sorting
+    `CardBuilder.ongoingTopics` by slug* is a correctness regression — the
+    anchor list is a recency LRU (`insert(at: 0)` / `removeLast()`), so
+    alphabetical order would evict the newest anchors. *Padding
+    `TaskReconciler`'s header past a block* is one call a day at ~2.2k tokens;
+    the minimalism rule wins.
+  - **The bigger line item was next door, and is fixed.** `WorkNoteCompiler`'s
+    detailed tier pinned at `max_tokens` on dense task-days: on 2026-08-01,
+    13 calls and 565,816 input tokens — **46% of the day's spend** — for
+    answers `finish_reason=length` discarded. Three defects stacked, and each
+    is now closed:
+    - *The reserve was too low.* 1,200 tokens, flat. The answer barely tracks
+      the evidence (19 labelled calls over 1.3k-16.6k prompts answered in
+      137-950 tokens, uncorrelated), so this is a ceiling on a bounded
+      artifact, not a budget — but the ceiling was under it. Now 2,500.
+    - *A truncated prose answer was thrown away.* `LLMError.truncated` now
+      carries the partial and `LLMBackend.completeProse` trims it to its last
+      whole line. Which of `complete`/`completeProse` a stage calls states
+      what its answer is: half a JSON batch is nothing (`CardBuilder` once
+      built 0 cards from 40 blocks that way), half a day note is most of one.
+    - *A failed narrative erased the prose already on disk.* `gather` wrote
+      the new `contentHash` before the call was attempted, so a failure left
+      the day stamped as described and blank — and a completed day's evidence
+      never changes again, so it could never retry. The hash now moves with
+      the prose, never ahead of it, and a substantial note whose hash says
+      described while carrying no prose is read as changed, which heals the
+      days already blanked. The same write also erased prose on any run made
+      with the backend off.
 - **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
   recorded what each response cost but never what it bought, so "which stage
   is expensive?" could only be answered by lining rows up against the order
