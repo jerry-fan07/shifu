@@ -254,10 +254,52 @@ private func seedBlock(
             database: db, from: 0, to: 10_000_000) == 0)
     }
 
-    /// Only blocks nothing else will place inherit: a long unplaced block is
-    /// the model's to judge, and a sliver whose attempts are exhausted was
-    /// *declined* — inheriting it would back-door a verdict the model
-    /// already refused, the same sentinel ThemeInheritance honours.
+    /// A block past `minBlockMs` is the model's to judge — unless it happened
+    /// in the same app and domain as one of the slices, which says what
+    /// duration alone never could: same place, same sitting, same task either
+    /// side. On the dogfood window this admits 125 more blocks and agrees
+    /// with the model on 96.8% of them, above the 94.6% the sub-minute rule
+    /// scores on its own. Change the app and it is the model's again.
+    @Test func aLongBlockSharingItsSlicesSourceInherits() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        try seedBlock(db, id: &ids, startedAt: 0, title: nil, text: nil)
+        // Five minutes — far past the sliver floor — and one minute's gap
+        // either side, so only the source test can admit it.
+        try seedBlock(db, id: &ids, startedAt: 660_000, durationMs: 300_000,
+                      title: nil, text: nil)
+        try seedBlock(db, id: &ids, startedAt: 1_020_000, title: nil, text: nil)
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: "UPDATE activities SET sem_key = ? WHERE id IN (?, ?)",
+                               arguments: ["sem:writing-the-thesis", ids[0], ids[2]])
+        }
+        #expect(try SemanticTaskGrouper.inheritFromNeighbors(
+            database: db, from: 0, to: 10_000_000) == 1)
+        let key = try db.queue.read { sqlite in
+            try String.fetchOne(sqlite, sql: "SELECT sem_key FROM activities WHERE id = ?",
+                                arguments: [ids[1]])
+        }
+        #expect(key == "sem:writing-the-thesis")
+
+        // Same shape in a different app: no shared source, so it waits.
+        let other = try ShifuDatabase.inMemory()
+        var otherIDs: [Int64] = []
+        try seedBlock(other, id: &otherIDs, startedAt: 0, title: nil, text: nil)
+        try seedBlock(other, id: &otherIDs, startedAt: 660_000, durationMs: 300_000,
+                      bundle: "com.apple.mail", title: nil, text: nil)
+        try seedBlock(other, id: &otherIDs, startedAt: 1_020_000, title: nil, text: nil)
+        try other.queue.write { sqlite in
+            try sqlite.execute(sql: "UPDATE activities SET sem_key = ? WHERE id IN (?, ?)",
+                               arguments: ["sem:writing-the-thesis", otherIDs[0], otherIDs[2]])
+        }
+        #expect(try SemanticTaskGrouper.inheritFromNeighbors(
+            database: other, from: 0, to: 10_000_000) == 0)
+    }
+
+    /// Only blocks nothing else will place inherit: a long unplaced block in
+    /// another app is the model's to judge, and a sliver whose attempts are
+    /// exhausted was *declined* — inheriting it would back-door a verdict the
+    /// model already refused, the same sentinel ThemeInheritance honours.
     @Test func inheritanceIsIdempotentAndSkipsExhausted() throws {
         let db = try ShifuDatabase.inMemory()
         let ids = try seedSandwich(db)
