@@ -206,6 +206,16 @@ extension SemanticTaskGrouper {
     /// never join a task, and left in they'd hold candidate slots and burn
     /// tokens and attempts on lock screens and auth prompts.
     ///
+    /// Sub-minute blocks are normally not worth tokens (`minBlockMs`), but a
+    /// hop-style tool breaks that assumption in bulk: the dogfood ledger
+    /// showed Conductor as dozens of ~20 s glances a day — each one
+    /// intent-legible on screen, all bottoming out at a container `app:` task
+    /// because no stage ever looked. So an app whose sub-minute candidates
+    /// accumulate past `TaskGrouper.minNewTaskMs` in the window has them
+    /// admitted despite their length — the same substance floor a mechanical
+    /// key must clear to mint. Assignment stays per block, so one tool's hops
+    /// can straddle tasks.
+    ///
     /// Only *closed* blocks (a sessionizer gap between `ended_at` and `to`):
     /// a still-growing block's verdict is discarded on the next rebuild when
     /// its span moves — paid twice, and grouped on partial evidence.
@@ -213,21 +223,33 @@ extension SemanticTaskGrouper {
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
         let denied = TaskGrouper.notSystemBundleSQL()
+        let evidenceClause = """
+            (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
+                  SELECT 1 FROM observations o WHERE o.session_id = activities.id
+                    AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
+            """
         return try database.queue.read { db in
+            let hopApps = try hopAdmittedApps(
+                db, from: from, to: to, denied: denied, evidenceClause: evidenceClause)
+            let lengthGate = hopApps.isEmpty
+                ? "ended_at - started_at >= ?"
+                : """
+                  (ended_at - started_at >= ?
+                   OR app_bundle IN (\(databaseQuestionMarks(count: hopApps.count))))
+                  """
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, started_at, ended_at, app_bundle, domain, topic, card
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
                   AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
-                  AND ended_at - started_at >= ?
+                  AND \(lengthGate)
                   AND \(denied.clause)
-                  AND (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
-                        SELECT 1 FROM observations o WHERE o.session_id = activities.id
-                          AND (o.window_title IS NOT NULL OR o.text IS NOT NULL)))
+                  AND \(evidenceClause)
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
                                  maxAttempts, minBlockMs]
+                    + StatementArguments(hopApps)
                     + StatementArguments(denied.arguments) + [limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
@@ -245,6 +267,29 @@ extension SemanticTaskGrouper {
             }
             .sorted { $0.startedAt < $1.startedAt }
         }
+    }
+
+    /// Bundle ids whose sub-minute, evidence-bearing candidates accumulate
+    /// past the mechanical mint floor in the window — the hop-style tools
+    /// whose slivers `pendingSamples` admits despite `minBlockMs`.
+    private static func hopAdmittedApps(
+        _ db: Database, from: Int64, to: Int64,
+        denied: (clause: String, arguments: [String]), evidenceClause: String
+    ) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT app_bundle FROM activities
+            WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
+              AND category != 'private'
+              AND sem_key IS NULL AND sem_attempts < ?
+              AND ended_at - started_at < ?
+              AND \(denied.clause)
+              AND \(evidenceClause)
+            GROUP BY app_bundle
+            HAVING SUM(ended_at - started_at) >= ?
+            """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
+                             maxAttempts, minBlockMs]
+                + StatementArguments(denied.arguments)
+                + [TaskGrouper.minNewTaskMs])
     }
 
     /// What the sampled observations of one block yielded.

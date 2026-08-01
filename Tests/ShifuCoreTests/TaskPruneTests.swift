@@ -134,4 +134,32 @@ import Testing
         #expect(state.orphans == 1)
         #expect(state.lockLogs == 0)
     }
+
+    /// Browser-internal `domain:` tasks (chrome://new-tab-page and kin,
+    /// minted before Sessionizer stopped deriving domains from non-web
+    /// schemes) die on sight like system-bundle tasks — regardless of size
+    /// or recency, spared only by a rename. Real domains of the same shape
+    /// and size survive.
+    @Test func reapsBrowserInternalDomainTasksRegardlessOfSubstance() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        let recent = ms(now) - 3_600_000
+
+        try seedTask(database, key: "domain:contextual-tasks",
+                     name: "contextual-tasks", minutes: 145, endedAt: recent)
+        try seedTask(database, key: "domain:omnibox-popup.top-chrome",
+                     name: "omnibox-popup.top-chrome", minutes: 32, endedAt: recent)
+        try seedTask(database, key: "domain:new-tab-page", name: "Tab triage",
+                     minutes: 42, endedAt: recent)
+        try seedTask(database, key: "domain:github.com", name: "github.com",
+                     minutes: 45, endedAt: recent)
+
+        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
+        #expect(pruned == 2)
+
+        let keys = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
+        }
+        #expect(keys == ["domain:github.com", "domain:new-tab-page"])
+    }
 }

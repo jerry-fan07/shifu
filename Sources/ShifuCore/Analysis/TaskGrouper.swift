@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import GRDB
 
@@ -54,6 +55,17 @@ public enum TaskGrouper {
         return systemBundles.contains(normalized)
     }
 
+    /// True for hosts that name a browser surface rather than a site — no
+    /// dot ("new-tab-page", "contextual-tasks", "chromewebdata", extension
+    /// ids) or Chrome's WebUI suffix. `Sessionizer.domain(of:)` no longer
+    /// derives domains from non-web schemes, so new blocks can't carry
+    /// these; the predicate exists for `TaskStore.prune` to reap `domain:`
+    /// tasks minted before that gate, the way system-bundle `app:` tasks
+    /// are reaped.
+    public static func isBrowserInternalHost(_ host: String) -> Bool {
+        !host.contains(".") || host.hasSuffix(".top-chrome")
+    }
+
     /// `isSystemBundle` as a SQL predicate, with the values it binds in order.
     ///
     /// Four queries have to agree with the Swift check — the Time page's two
@@ -98,8 +110,27 @@ public enum TaskGrouper {
     }
 
     /// Initial display name for a new task; the user can rename it later.
+    /// An `app:` fallback asks Launch Services for the installed app's own
+    /// name first: the bundle tail is right for `com.apple.dt.xcode` ("xcode")
+    /// but wrong exactly when it is generic — `com.conductor.app` minted a
+    /// task literally named "app" in the dogfood ledger.
     static func displayName(topic: String?, domain: String?, appBundle: String) -> String {
-        topic ?? domain ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
+        topic ?? domain ?? installedAppName(bundleID: appBundle)
+            ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
+    }
+
+    /// The user-facing name of the installed app for a bundle id, or nil when
+    /// Launch Services knows no such app (tests, uninstalled apps — callers
+    /// fall back to the bundle tail). CoreServices, deliberately not
+    /// NSWorkspace: ShifuCore links into shifud, which should not pull AppKit.
+    static func installedAppName(bundleID: String) -> String? {
+        guard let urls = LSCopyApplicationURLsForBundleIdentifier(
+                bundleID as CFString, nil)?.takeRetainedValue() as? [URL],
+              let appURL = urls.first else { return nil }
+        return Bundle(url: appURL).flatMap { bundle in
+            bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+        } ?? FileManager.default.displayName(atPath: appURL.path)
     }
 
     /// True while a task still wears the name the machine gave it — i.e. the
@@ -118,9 +149,13 @@ public enum TaskGrouper {
         if key.hasPrefix("topic:") { return slug(name) == String(key.dropFirst(6)) }
         if key.hasPrefix("domain:") { return name.lowercased() == String(key.dropFirst(7)) }
         if key.hasPrefix("app:") {
-            let bundle = key.dropFirst(4)
-            let lastComponent = bundle.split(separator: ".").last.map(String.init) ?? String(bundle)
-            return name.lowercased() == lastComponent
+            let bundle = String(key.dropFirst(4))
+            let lastComponent = bundle.split(separator: ".").last.map(String.init) ?? bundle
+            if name.lowercased() == lastComponent { return true }
+            // The Launch Services name `displayName` now mints with. If the
+            // app is gone the lookup is nil and the task reads as user-named —
+            // spared from prune/auto-merge, which err on keeping.
+            return name == installedAppName(bundleID: bundle)
         }
         return false
     }

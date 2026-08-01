@@ -52,12 +52,14 @@ private struct TaskRowSnapshot: Sendable {
     /// qualifies as an evidence-bearing candidate.
     private func seedBlock(
         _ db: ShifuDatabase, id: inout [Int64], startedAt: Int64, minutes: Int64 = 10,
-        bundle: String = "com.apple.Safari", domain: String? = nil,
+        durationMs: Int64? = nil, bundle: String = "com.apple.Safari",
+        domain: String? = nil,
         title: String? = "some window", text: String? = "some screen text"
     ) throws {
+        let endedAt = startedAt + (durationMs ?? minutes * 60_000)
         try db.queue.write { sqlite in
             var activity = Activity(
-                startedAt: startedAt, endedAt: startedAt + minutes * 60_000,
+                startedAt: startedAt, endedAt: endedAt,
                 appBundle: bundle, domain: domain, category: .unclassified)
             try activity.insert(sqlite)
             if title != nil || text != nil {
@@ -65,7 +67,7 @@ private struct TaskRowSnapshot: Sendable {
                     INSERT INTO observations
                         (started_at, last_seen, app_bundle, window_title, capture_kind, text, session_id)
                     VALUES (?, ?, ?, ?, 'ax', ?, ?)
-                    """, arguments: [startedAt, startedAt + minutes * 60_000, bundle,
+                    """, arguments: [startedAt, endedAt, bundle,
                                      title, text, activity.id])
             }
             id.append(activity.id!)
@@ -365,6 +367,31 @@ private struct TaskRowSnapshot: Sendable {
 
 // Extension keeps the suite's type body inside the lint budget.
 extension SemanticTaskGrouperTests {
+    /// Sub-minute blocks are individually gated, but an app whose slivers
+    /// accumulate past `TaskGrouper.minNewTaskMs` in the window is a
+    /// hop-style tool (Conductor in the dogfood ledger), and its slivers are
+    /// admitted — still one candidate per block, so hops can straddle tasks.
+    @Test func subMinuteHopsAreAdmittedOnceTheirAppAccruesSubstance() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        // Twelve 30 s hops: 6 min accumulated, every block sub-minute.
+        for index in 0..<12 {
+            try seedBlock(db, id: &ids, startedAt: Int64(index) * 120_000,
+                          durationMs: 30_000, bundle: "com.conductor.app",
+                          title: "Conductor",
+                          text: "Projects / shifu / format-task-note-pages")
+        }
+        // A lone 30 s glance elsewhere stays below the floor and stays out.
+        try seedBlock(db, id: &ids, startedAt: 3_000_000, durationMs: 30_000,
+                      bundle: "com.apple.mail")
+        // An evidence-less hop is no candidate even though its app qualifies.
+        try seedBlock(db, id: &ids, startedAt: 3_200_000, durationMs: 30_000,
+                      bundle: "com.conductor.app", title: nil, text: nil)
+        let samples = try SemanticTaskGrouper.pendingSamples(
+            database: db, from: 0, to: 10_000_000)
+        #expect(samples.map(\.id) == Array(ids.prefix(12)))
+    }
+
     /// A block whose `ended_at` is within a sessionizer gap of `to` may still
     /// be growing — its verdict would be discarded by the next rebuild when
     /// the span moves, so it must not be bought at all.

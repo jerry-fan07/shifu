@@ -16,9 +16,10 @@ extension TaskStore {
     /// Ids of the tasks prune would take: quiet, sub-threshold, mechanically
     /// keyed, and still wearing the name the grouper gave them — plus `app:`
     /// tasks for system bundles the grouper now denylists
-    /// (TaskGrouper.isSystemBundle), which accrue time daily and so never
-    /// meet the staleness or substance conditions; those die regardless of
-    /// size or recency. Only a rename spares a system task — not a hand-filed
+    /// (TaskGrouper.isSystemBundle) and `domain:` tasks for browser-internal
+    /// hosts (TaskGrouper.isBrowserInternalHost), both of which accrue time
+    /// daily and so never meet the staleness or substance conditions; those
+    /// die regardless of size or recency. Only a rename spares one — not a hand-filed
     /// theme: the bundle can never be work, the denylist starves the task of
     /// new blocks either way, and the dogfood DB showed such filings were UI
     /// experiments (loginwindow filed under "Shifu Development"). The blocks
@@ -48,8 +49,18 @@ extension TaskStore {
                 """
             ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
                 .filter { TaskGrouper.isSystemBundle(String($0.key.dropFirst(4))) }
+            // Same die-on-sight rule for `domain:` tasks minted from
+            // browser-internal pages (chrome://new-tab-page and kin) before
+            // Sessionizer stopped deriving domains from non-web schemes —
+            // that gate starves them of new blocks exactly like the bundle
+            // denylist starves system tasks.
+            let browser = try Row.fetchAll(db, sql: """
+                SELECT id, key, name FROM tasks WHERE key LIKE 'domain:%'
+                """
+            ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
+                .filter { TaskGrouper.isBrowserInternalHost(String($0.key.dropFirst(7))) }
             var seenIDs: Set<Int64> = []
-            return (debris + system)
+            return (debris + system + browser)
                 .filter { TaskGrouper.isDefaultName($0.name, forKey: $0.key) }
                 .filter { seenIDs.insert($0.id).inserted }
         }

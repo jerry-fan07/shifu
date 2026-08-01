@@ -106,9 +106,19 @@ public enum Sessionizer {
         return blocks
     }
 
-    /// Normalized domain of a URL: lowercase host, `www.` stripped.
+    /// Normalized web domain of a URL: lowercase host, `www.` stripped —
+    /// http(s) only. Browser-internal schemes (`chrome://`,
+    /// `chrome-extension://`, `chrome-error://`, `devtools://`) put a UI
+    /// surface where the host belongs ("new-tab-page",
+    /// "omnibox-popup.top-chrome", extension ids), and deriving those as
+    /// domains minted junk tasks from the browser's own chrome — the dogfood
+    /// ledger had 145 min filed under "contextual-tasks". A nil here just
+    /// means the block keys by topic or app instead; its time is unaffected.
     public static func domain(of url: String?) -> String? {
-        guard let url, let host = URL(string: url)?.host?.lowercased() else { return nil }
+        guard let url, let parsed = URL(string: url),
+              let scheme = parsed.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = parsed.host?.lowercased() else { return nil }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 }

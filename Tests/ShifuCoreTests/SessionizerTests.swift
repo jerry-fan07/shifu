@@ -58,6 +58,18 @@ import Testing
         #expect(blocks[1].observationIDs == [2, 3])
     }
 
+    /// Browser-internal schemes name UI surfaces, not sites — deriving them
+    /// as domains minted junk tasks ("new-tab-page", "contextual-tasks").
+    @Test func onlyWebSchemesYieldADomain() {
+        #expect(Sessionizer.domain(of: "https://www.github.com/a") == "github.com")
+        #expect(Sessionizer.domain(of: "http://localhost:3000/dev") == "localhost")
+        #expect(Sessionizer.domain(of: "chrome://new-tab-page/") == nil)
+        #expect(Sessionizer.domain(of: "chrome://omnibox-popup.top-chrome/") == nil)
+        #expect(Sessionizer.domain(of: "chrome-extension://mndbiagdebdacjlmmpdglnainjnakpaj/popup") == nil)
+        #expect(Sessionizer.domain(of: "chrome-error://chromewebdata/") == nil)
+        #expect(Sessionizer.domain(of: "devtools://devtools/bundled/worker_app.html") == nil)
+    }
+
     @Test func excludedFlagOnlyWhenAllObservationsExcluded() {
         let blocks = Sessionizer.sessionize([
             obs(id: 1, start: 0, seen: 5_000, bundle: "com.1password.1password", kind: .excluded),

@@ -32,6 +32,20 @@ import Testing
         #expect(!TaskGrouper.isDefaultName("Reading", forKey: "domain:github.com"))
     }
 
+    @Test func appTasksMintTheInstalledAppsOwnName() {
+        // Finder ships with every macOS, so the lookup is stable in CI.
+        #expect(TaskGrouper.displayName(topic: nil, domain: nil,
+                                        appBundle: "com.apple.finder") == "Finder")
+        // No such app installed: fall back to the bundle tail.
+        #expect(TaskGrouper.displayName(topic: nil, domain: nil,
+                                        appBundle: "com.example.zzz.someapp") == "someapp")
+        // Both the resolved name and the tail count as machine-given, so
+        // prune/auto-merge treat either era's minting as never-renamed.
+        #expect(TaskGrouper.isDefaultName("Finder", forKey: "app:com.apple.finder"))
+        #expect(TaskGrouper.isDefaultName("finder", forKey: "app:com.apple.finder"))
+        #expect(!TaskGrouper.isDefaultName("File wrangling", forKey: "app:com.apple.finder"))
+    }
+
     // The denylist itself is covered in `SystemBundleDenylistTests`, which
     // asserts the Swift check and its SQL twin against each other.
 
