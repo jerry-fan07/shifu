@@ -6,7 +6,9 @@ import SwiftUI
 /// draw over them.
 ///
 /// - *Breakdown* — where the time went: the window as a ribbon (one rail a
-///   day), then a ranked table with a meter per row.
+///   day), then a ranked table with a meter per row. Its picker carries a
+///   third position, Focus, which swaps the page for the Focus Mode session
+///   view (FocusViews) — a reading of the same window, not another grouping.
 /// - *Timeline* — when it happened, in detail: stacked bars over the hours or
 ///   days with each group's total under them, then every block in order. The
 ///   ribbon says "what was the morning"; the bars say "how much at 10 AM".
@@ -25,6 +27,9 @@ struct LedgerView: View {
     @AppStorage("shifu.ledger.week") private var isWeek = false
     /// The week's blocks, read once on appear — the day's come from the store.
     @State private var weekBlocks: [LedgerBuilder.LabeledActivity] = []
+    /// The window's Focus Mode sessions, read in `load()` with everything else
+    /// — the Focus page's rows.
+    @State private var focusSessions: [FocusModeSessions.Session] = []
     /// Tracked ms in the window one day (or week) back, read once in `load()`
     /// with the blocks. The body must never open the database: it re-runs on
     /// every store publish, and it used to re-run per hover crossing — the
@@ -34,10 +39,16 @@ struct LedgerView: View {
     /// they came from. Week only: a single day has no run to read.
     @State private var signals: [Rhythms.Signal] = []
 
-    /// Theme and task lenses fold everything past the biggest few into
-    /// "Other", so the table and the ribbon stay readable over a busy week.
-    private static let maxGroups = 6
+    /// What the Breakdown's third segment selects. Not a `TimeLens` case: it
+    /// doesn't group blocks, it swaps the page — but it shares the persisted
+    /// raw value, so the picker remembers Focus across launches the way it
+    /// remembers a lens.
+    private static let focusRaw = "Focus"
 
+    private var isFocus: Bool { mode == .breakdown && lensRaw == Self.focusRaw }
+
+    /// Coerces an unknown raw (Focus here, or a retired lens) to Category, so
+    /// the Timeline always has a real grouping to draw.
     private var lens: TimeLens {
         get { TimeLens(rawValue: lensRaw) ?? .category }
         nonmutating set { lensRaw = newValue.rawValue }
@@ -46,12 +57,28 @@ struct LedgerView: View {
     var body: some View {
         let window = range
         let blocks = isWeek ? weekBlocks : store.todayActivities
+        Group {
+            if isFocus {
+                FocusPage(
+                    blocks: blocks, raw: focusSessions, window: window, isWeek: isWeek
+                ) { pickers }
+            } else {
+                lensPage(blocks: blocks, window: window)
+            }
+        }
+        .onAppear(perform: load)
+        .onChange(of: isWeek) { _, _ in load() }
+    }
+
+    private func lensPage(
+        blocks: [LedgerBuilder.LabeledActivity], window: (from: Date, to: Date)
+    ) -> some View {
         let slices = TimeBreakdown.slices(
             blocks, lens: lens, from: window.from, to: window.to,
-            limit: lens == .category ? nil : Self.maxGroups)
+            limit: lens == .category ? nil : TimeBreakdown.maxGroups)
         let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
 
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             head(blocks: blocks, window: window)
             if !blocks.isEmpty {
                 Band {
@@ -70,13 +97,14 @@ struct LedgerView: View {
             }
             table(blocks: blocks, slices: slices)
         }
-        .onAppear(perform: load)
-        .onChange(of: isWeek) { _, _ in load() }
     }
 
     private func load() {
         store.refresh()
         let window = range
+        if mode == .breakdown {
+            focusSessions = store.focusSessions(from: window.from, to: window.to)
+        }
         if isWeek {
             weekBlocks = store.activities(sinceWeeksAgo: 1)
             signals = Rhythms.signals(weekBlocks, from: window.from, to: window.to)
@@ -105,10 +133,27 @@ struct LedgerView: View {
         ) {
             summaryLine(blocks: blocks, total: total)
         } trailing: {
-            HStack(spacing: 6) {
+            pickers
+        }
+    }
+
+    /// The window and lens controls, shared with the Focus page so switching
+    /// off Focus is the same gesture that switched it on. The Breakdown's
+    /// picker works on raw values because Focus isn't a `TimeLens`; the
+    /// Timeline's stays on the enum and never offers Focus.
+    private var pickers: some View {
+        HStack(spacing: 6) {
+            SegmentedBar(
+                options: [("Day", false), ("Week", true)],
+                selection: $isWeek)
+            if mode == .breakdown {
                 SegmentedBar(
-                    options: [("Day", false), ("Week", true)],
-                    selection: $isWeek)
+                    options: TimeLens.allCases.map { ($0.rawValue, $0.rawValue) }
+                        + [(Self.focusRaw, Self.focusRaw)],
+                    selection: Binding(
+                        get: { isFocus ? Self.focusRaw : lens.rawValue },
+                        set: { lensRaw = $0 }))
+            } else {
                 SegmentedBar(
                     options: TimeLens.allCases.map { ($0.rawValue, $0) },
                     selection: Binding(get: { lens }, set: { lens = $0 }))
@@ -268,11 +313,12 @@ struct LedgerView: View {
 
 /// The head's summary, cut to the room it has: the longest run of leading
 /// `parts` whose joined line fits, so the facts at the end are the first to
-/// go. The fit is *measured*, with the face's own NSFont, the way a drop-down
+/// go. Shared with the Focus page's head, which carries the same kind of
+/// line. The fit is *measured*, with the face's own NSFont, the way a drop-down
 /// sizes its panel — not solved by `ViewThatFits`, whose trial layout of
 /// every candidate re-ran on every commit of the page, whatever had changed,
 /// and was most of a pinned core under a hover sweep of the table below.
-private struct SummaryLine: View {
+struct SummaryLine: View {
     let parts: [(text: String, color: Color)]
 
     @MainActor private static let font = Instrument.sansFont(12.5)
@@ -320,9 +366,9 @@ private struct SummaryFacts: View {
 }
 
 /// The Timeline's band: stacked bars over the day's hours — or the week's
-/// days — with each group's total under them. The strip is a breakdown rather
-/// than a color key: the block list below names no groups, so this is where
-/// the chart's series are spelled out.
+/// days — with each group's total under them. This part cuts the clock into
+/// slots and tallies the blocks into them; `FocusedBars` draws the result and
+/// the strip that names its series.
 private struct TimelineChart: View {
     let blocks: [LedgerBuilder.LabeledActivity]
     let slices: [TimeSlice]
@@ -332,14 +378,11 @@ private struct TimelineChart: View {
     let isWeek: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            StackedBars(
-                stacks: LedgerShapes.bars(
-                    blocks, lens: lens, colors: colors, order: slices.map(\.name),
-                    slots: isWeek ? daySlots : hourSlots),
-                endTick: isWeek ? nil : "24")
-            legend
-        }
+        FocusedBars(
+            stacks: LedgerShapes.bars(
+                blocks, lens: lens, colors: colors, order: slices.map(\.name),
+                slots: isWeek ? daySlots : hourSlots),
+            slices: slices, lens: lens, endTick: isWeek ? nil : "24")
     }
 
     /// One slot per hour, midnight to midnight. The grid is fixed rather than
@@ -372,6 +415,45 @@ private struct TimelineChart: View {
         }
     }
 
+}
+
+/// The chart and the strip that names its series, with the group under the
+/// pointer picked out of every column.
+///
+/// The hover state lives here for the reason `BreakdownTable`'s does, one
+/// scope further in: `TimelineChart` tallies every block into every slot to
+/// build the columns, and a week of heartbeat-sized blocks is a four-figure
+/// count. Owning `hovered` up there would redo all of that tallying on every
+/// crossing of a legend row, to change nothing but which fill a band takes.
+private struct FocusedBars: View {
+    let stacks: [BarStack]
+    let slices: [TimeSlice]
+    let lens: TimeLens
+    let endTick: String?
+
+    /// The legend row the pointer is on — the group the chart holds lit.
+    @State private var hovered: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            StackedBars(stacks: stacks, endTick: endTick, highlight: highlight)
+            legend
+        }
+    }
+
+    /// What to light up: `hovered`, but only while it still names a series on
+    /// show. Flipping the lens under a resting pointer would otherwise leave a
+    /// name nothing in the chart matches — and every column dimmed at once —
+    /// until the mouse moved again.
+    private var highlight: String? {
+        slices.contains { $0.name == hovered } ? hovered : nil
+    }
+
+    /// The strip is a breakdown rather than a color key: the block list below
+    /// names no groups, so this is where the chart's series are spelled out —
+    /// and, on hover, where you ask one of them where it went. A group with
+    /// two hours scattered thin over a week is invisible in a stack of six;
+    /// it is obvious the moment the other five recede.
     private var legend: some View {
         LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 150), spacing: 18, alignment: .leading)],
@@ -380,13 +462,27 @@ private struct TimelineChart: View {
             ForEach(slices) { slice in
                 HStack(spacing: 7) {
                     SeriesSwatch(color: slice.color, hatched: slice.name == "private")
+                    // Darkened rather than emboldened: the row is a fixed cell
+                    // of a grid holding a name that already truncates, and a
+                    // weight change would re-measure it and shift the figure
+                    // beside it every time the pointer crossed.
                     Text(lens.display(slice.name))
                         .font(Instrument.sans(11.5))
-                        .foregroundStyle(Instrument.secondary)
+                        .foregroundStyle(
+                            highlight == slice.name ? Instrument.ink : Instrument.secondary)
                         .lineLimit(1)
                     Figure(
                         TimeBreakdown.duration(slice.ms),
                         size: 11, color: Instrument.faint)
+                }
+                // The whole cell, not the glyphs: a legend row is a 9pt swatch
+                // and two short strings, and asking for the pointer to be on
+                // one of them is asking too much. The grid cell is already
+                // leading-aligned, so filling it moves nothing.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    hovered = inside ? slice.name : (hovered == slice.name ? nil : hovered)
                 }
             }
         }

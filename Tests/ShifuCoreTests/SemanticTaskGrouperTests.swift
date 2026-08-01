@@ -52,12 +52,14 @@ private struct TaskRowSnapshot: Sendable {
     /// qualifies as an evidence-bearing candidate.
     private func seedBlock(
         _ db: ShifuDatabase, id: inout [Int64], startedAt: Int64, minutes: Int64 = 10,
-        bundle: String = "com.apple.Safari", domain: String? = nil,
+        durationMs: Int64? = nil, bundle: String = "com.apple.Safari",
+        domain: String? = nil,
         title: String? = "some window", text: String? = "some screen text"
     ) throws {
+        let endedAt = startedAt + (durationMs ?? minutes * 60_000)
         try db.queue.write { sqlite in
             var activity = Activity(
-                startedAt: startedAt, endedAt: startedAt + minutes * 60_000,
+                startedAt: startedAt, endedAt: endedAt,
                 appBundle: bundle, domain: domain, category: .unclassified)
             try activity.insert(sqlite)
             if title != nil || text != nil {
@@ -65,7 +67,7 @@ private struct TaskRowSnapshot: Sendable {
                     INSERT INTO observations
                         (started_at, last_seen, app_bundle, window_title, capture_kind, text, session_id)
                     VALUES (?, ?, ?, ?, 'ax', ?, ?)
-                    """, arguments: [startedAt, startedAt + minutes * 60_000, bundle,
+                    """, arguments: [startedAt, endedAt, bundle,
                                      title, text, activity.id])
             }
             id.append(activity.id!)
@@ -484,5 +486,34 @@ extension SemanticTaskGrouperTests {
                 .map { $0["sem_key"] as String? }
         }
         #expect(assigned == ["sem:sf-trip", nil])
+    }
+
+    /// Twelve 30 s hops of one app pool into a *single* candidate carrying
+    /// every member; a lone glance elsewhere stays under the run floor and
+    /// out. The run's handle is its earliest member, its active time is the
+    /// pooled 6 minutes — not the 22-minute span the glances hopped across.
+    @Test func subMinuteRunsAreOneCandidateAndSingleGlancesAreNot() throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        for index in 0..<12 {
+            try seedBlock(db, id: &ids, startedAt: Int64(index) * 120_000,
+                          durationMs: 30_000, bundle: "com.conductor.app",
+                          title: "Conductor",
+                          text: "Projects / shifu / format-task-note-pages")
+        }
+        // A lone 30 s glance elsewhere: no run reaches the 60 s floor.
+        try seedBlock(db, id: &ids, startedAt: 3_000_000, durationMs: 30_000,
+                      bundle: "com.apple.mail")
+        // An evidence-less hop is no candidate even though its app has a run.
+        try seedBlock(db, id: &ids, startedAt: 3_200_000, durationMs: 30_000,
+                      bundle: "com.conductor.app", title: nil, text: nil)
+        let samples = try SemanticTaskGrouper.pendingSamples(
+            database: db, from: 0, to: 10_000_000)
+        #expect(samples.count == 1)
+        let run = try #require(samples.first)
+        #expect(run.id == ids[0])
+        #expect(run.memberIDs == Array(ids.prefix(12)))
+        #expect(run.activeMs == 360_000)
+        #expect(run.endedAt - run.startedAt == 11 * 120_000 + 30_000)
     }
 }

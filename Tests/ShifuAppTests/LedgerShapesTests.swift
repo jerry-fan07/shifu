@@ -21,13 +21,14 @@ import Testing
     }
 
     static func block(
-        from: Date, to: Date, category: String = "work", task: String? = nil
+        from: Date, to: Date, category: String = "work", task: String? = nil,
+        theme: String? = nil
     ) -> LedgerBuilder.LabeledActivity {
         LedgerBuilder.LabeledActivity(
             id: Int64(from.timeIntervalSince1970),
             startedAt: Int64(from.timeIntervalSince1970 * 1_000),
             endedAt: Int64(to.timeIntervalSince1970 * 1_000),
-            category: category, source: "app", taskName: task)
+            category: category, source: "app", taskName: task, themeName: theme)
     }
 
     @Test func theRailCoversTheHoursThatWereWorked() {
@@ -207,7 +208,7 @@ import Testing
     @Test func privateTimeIsHatchedRatherThanColouredOrEmpty() {
         let segments = LedgerShapes.ribbon(
             [Fixture.block(from: Fixture.at(9), to: Fixture.at(10), category: "private")],
-            lens: .task, colors: [:], from: Fixture.at(9), to: Fixture.at(10))
+            lens: .theme, colors: [:], from: Fixture.at(9), to: Fixture.at(10))
         #expect(segments.allSatisfy { $0.fill == .hidden })
     }
 
@@ -299,11 +300,37 @@ import Testing
     /// table folds it, rather than minting a colour of its own.
     @Test func aGroupThePaletteDoesNotNameFoldsIntoOther() {
         let stacks = LedgerShapes.bars(
-            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10), task: "stray")],
-            lens: .task, colors: ["Other": Instrument.other],
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(10))],
+            lens: .theme, colors: ["Other": Instrument.other],
             order: ["Other"], slots: Self.hourSlots(9..<10))
         #expect(stacks.first?.segments.count == 1)
         #expect(stacks.first?.segments.first?.caption.hasPrefix("Other") == true)
+    }
+
+    /// Every band names the group it came from, spelled the way the legend
+    /// spells it — that name is the only thing tying a legend row to its
+    /// bands, so a segment that folded into "Other" has to say "Other" and
+    /// not the label it arrived with.
+    @Test func everySegmentNamesItsGroup() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 20), theme: "writing"),
+             Fixture.block(from: Fixture.at(9, 20), to: Fixture.at(9, 40), theme: "stray")],
+            lens: .theme,
+            colors: ["writing": Instrument.strong, "Other": Instrument.other],
+            order: ["writing", "Other"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.map(\.name) == ["writing", "Other"])
+    }
+
+    /// Private time is named too, by the category it is — so under the
+    /// Category lens its legend row can find its own hatched bands.
+    @Test func privateTimeIsNamedByItsCategory() {
+        let stacks = LedgerShapes.bars(
+            [Fixture.block(from: Fixture.at(9), to: Fixture.at(9, 30)),
+             Fixture.block(
+                from: Fixture.at(9, 30), to: Fixture.at(10), category: "private")],
+            lens: .category, colors: ["work": Instrument.strong],
+            order: ["work"], slots: Self.hourSlots(9..<10))
+        #expect(stacks.first?.segments.map(\.name) == ["work", "private"])
     }
 
     /// Time in a group the order forgot is still drawn — a chart that
@@ -315,5 +342,67 @@ import Testing
             order: [], slots: Self.hourSlots(9..<10))
         #expect(stacks.first?.totalMs == 3_600_000)
         #expect(stacks.first?.segments.first?.caption == "Work — 1h 0m")
+    }
+}
+
+@Suite struct FocusRibbonTests {
+    typealias Fixture = LedgerClockTests
+
+    private static func ms(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970 * 1_000)
+    }
+
+    private static func session(
+        _ id: Int64, from: Date, to: Date, isLive: Bool = false
+    ) -> FocusReport.Session {
+        FocusReport.Session(
+            id: id, startedAt: ms(from), endedAt: ms(to), isLive: isLive,
+            onTaskMs: 0, offTaskMs: 0)
+    }
+
+    /// The band's three registers: session time gold, tracked time outside a
+    /// session receded, untracked stretches still gaps.
+    @Test func sessionIsGoldTrackedContextRecedesAndGapsStay() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [Self.session(1, from: Fixture.at(9), to: Fixture.at(9, 30))],
+            activities: [Fixture.block(from: Fixture.at(9), to: Fixture.at(10))],
+            from: Fixture.at(9), to: Fixture.at(11))
+        #expect(segments.map(\.fill) == [
+            .series(Instrument.warm), .series(Instrument.quiet), .gap
+        ])
+        #expect(segments.first?.caption.hasPrefix("Focus — ") == true)
+    }
+
+    /// A session over an idle screen is still a session — Focus Mode was on,
+    /// and the log says so even where the tracker has nothing.
+    @Test func aSessionWithNothingTrackedUnderItStillDrawsGold() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [Self.session(1, from: Fixture.at(9), to: Fixture.at(10))],
+            activities: [],
+            from: Fixture.at(9), to: Fixture.at(10))
+        #expect(segments.count == 1)
+        #expect(segments.first?.fill == .series(Instrument.warm))
+    }
+
+    /// Bands merge within one session only, so back-to-back sessions keep
+    /// their own tooltips instead of fusing into one long claim.
+    @Test func adjacentSessionsStaySeparateBands() {
+        let segments = LedgerShapes.focusRibbon(
+            sessions: [
+                Self.session(1, from: Fixture.at(9), to: Fixture.at(10)),
+                Self.session(2, from: Fixture.at(10), to: Fixture.at(11))
+            ],
+            activities: [],
+            from: Fixture.at(9), to: Fixture.at(11))
+        #expect(segments.count == 2)
+        #expect(segments[0].caption != segments[1].caption)
+    }
+
+    /// An open session names its start and says it is still running, rather
+    /// than pretending to know its end.
+    @Test func aLiveSessionSaysSince() {
+        let live = Self.session(
+            1, from: Fixture.at(9), to: Fixture.at(10), isLive: true)
+        #expect(LedgerShapes.span(live).hasPrefix("since "))
     }
 }

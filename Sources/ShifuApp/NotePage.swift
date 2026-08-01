@@ -201,8 +201,11 @@ struct NotePage: View {
     @ViewBuilder private func note(_ dossier: VaultLibrary.Dossier) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if let body = dossier.body, !body.isEmpty {
+                // Narrower than the rest of the page on purpose: this is the
+                // one block that is read line after line, and 720pt of 13pt
+                // prose is a 110-character measure.
                 CardTextView(text: body, baseSize: 13)
-                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: 640, alignment: .leading)
                     .padding(.top, 14)
             } else {
                 BlankSlate(
@@ -223,21 +226,30 @@ struct NotePage: View {
 
     @ViewBuilder private func stretches(_ dossier: VaultLibrary.Dossier) -> some View {
         if !dossier.stretches.isEmpty || !dossier.sources.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 9) {
                 SectionHeading("When")
                 if !dossier.stretches.isEmpty {
-                    // Wall clock, not timestamps: these are written into the
-                    // Markdown for a human, and they outlive the raw blocks.
+                    // The same stretches twice, because they answer two
+                    // different questions: the rail says whether this was a
+                    // morning or a night, and the figures are the record —
+                    // wall clock, written into the Markdown for a human, and
+                    // outliving the raw blocks by design.
+                    DayRibbon(
+                        spans: dossier.stretches.map {
+                            NoteProse.Span(start: $0.start, end: $0.end)
+                        })
+                        .frame(maxWidth: 640)
                     Figure(
                         dossier.stretches.map { "\($0.start)–\($0.end)" }
                             .joined(separator: "   ·   "),
                         size: 12.5, color: Instrument.body)
+                        .padding(.top, 2)
                 }
                 if !dossier.sources.isEmpty {
-                    Text(dossier.sources.joined(separator: " · "))
-                        .font(Instrument.sans(12.5))
-                        .foregroundStyle(Instrument.muted)
-                        .frame(maxWidth: 660, alignment: .leading)
+                    FlowRow(spacing: 5, lineSpacing: 4) {
+                        ForEach(dossier.sources, id: \.self) { SourceChip(name: $0) }
+                    }
+                    .frame(maxWidth: 640, alignment: .leading)
                 }
             }
             .padding(.bottom, 4)

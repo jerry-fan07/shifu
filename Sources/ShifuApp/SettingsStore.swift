@@ -6,9 +6,14 @@ import SwiftUI
 /// Read/write model for the Settings window (design.md §9).
 ///
 /// Keyed by setting rather than one property per setting, so adding a catalog
-/// entry costs nothing here — this type never grows. Writes go straight to the
-/// `settings` table; `shifud` picks them up on its own (see
-/// `Daemon.reloadIntervals()`).
+/// entry costs nothing here — this type never grows. Dial edits (steppers,
+/// strips, text fields) are *staged*: they sit in the draft dictionaries until
+/// `save()` writes them to the `settings` table in one gesture, which is when
+/// `shifud` starts picking them up on its own (see `Daemon.reloadIntervals()`).
+/// Staging is what keeps a half-typed API key off the disk. The list gestures —
+/// exclusions, Focus Mode's sites — still write immediately: "Add" and "remove"
+/// are already explicit, and a privacy exclusion must not wait behind a second
+/// button (§8: exclusions are enforced before capture).
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published private(set) var ints: [String: Int] = [:]
@@ -16,6 +21,12 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var choices: [String: String] = [:]
     @Published private(set) var texts: [String: String] = [:]
     @Published private(set) var lastError: String?
+    /// Edits not yet written. An entry exists only while it differs from the
+    /// stored value, so "any entry at all" is the Save bar's whole trigger —
+    /// dialling a setting back to what's stored disarms it.
+    @Published private(set) var draftInts: [String: Int] = [:]
+    @Published private(set) var draftChoices: [String: String] = [:]
+    @Published private(set) var draftTexts: [String: String] = [:]
     /// Which section the page is showing. Held here rather than in the view so
     /// the window's title bar can name it — "Settings · Analysis" — and so
     /// stepping away to another place and back doesn't reset it.
@@ -29,6 +40,12 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var diagnostics: SettingsDiagnostics?
 
     private var database: ShifuDatabase?
+
+    /// The app passes nothing and the store opens ~/Shifu on first use; tests
+    /// hand in an in-memory database.
+    init(database: ShifuDatabase? = nil) {
+        self.database = database
+    }
 
     private func db() throws -> ShifuDatabase {
         if let database { return database }
@@ -102,42 +119,96 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - Save (the staged dials)
+
+    var hasUnsavedChanges: Bool {
+        !draftInts.isEmpty || !draftChoices.isEmpty || !draftTexts.isEmpty
+    }
+
+    /// Writes every staged edit, then re-reads so what's shown is what's
+    /// stored. That write is the whole reload story: `shifud` re-reads the
+    /// settings table on its next heartbeat (`Daemon.reloadIntervals()`), and
+    /// the diagnostics column re-reads here rather than waiting for its timer.
+    ///
+    /// Each draft is cleared as its write lands, so a mid-save failure keeps
+    /// the unwritten ones staged — the bar stays up and Save retries exactly
+    /// what is still pending.
+    func save() {
+        do {
+            let database = try db()
+            for setting in SettingsCatalog.ints {
+                guard let value = draftInts[setting.key] else { continue }
+                try Settings.set(setting, to: value, database: database)
+                draftInts[setting.key] = nil
+            }
+            for setting in SettingsCatalog.choices {
+                guard let value = draftChoices[setting.key] else { continue }
+                try Settings.set(setting, to: value, database: database)
+                draftChoices[setting.key] = nil
+            }
+            for setting in SettingsCatalog.texts {
+                guard let value = draftTexts[setting.key] else { continue }
+                try Settings.set(setting, to: value, database: database)
+                draftTexts[setting.key] = nil
+            }
+            lastError = nil
+        } catch {
+            lastError = "\(error)"
+        }
+        load()
+    }
+
+    /// Drops every staged edit; the dials snap back to what's stored.
+    func discardChanges() {
+        draftInts = [:]
+        draftChoices = [:]
+        draftTexts = [:]
+    }
+
+    /// The answers to "you're leaving with staged edits".
+    enum DepartureChoice {
+        case save, discard, stay
+    }
+
+    /// Applies the user's answer and says whether leaving may proceed. Kept
+    /// apart from the alert that asks (`UnsavedSettingsAlert`) so the logic
+    /// is testable — and so a failed save keeps you on the page with the
+    /// error showing, rather than quietly abandoning the drafts.
+    func resolveDeparture(_ choice: DepartureChoice) -> Bool {
+        switch choice {
+        case .save:
+            save()
+            return !hasUnsavedChanges
+        case .discard:
+            discardChanges()
+            return true
+        case .stay:
+            return false
+        }
+    }
+
     // MARK: - Ints
 
     func value(for setting: IntSetting) -> Int {
-        ints[setting.key] ?? setting.defaultValue
+        draftInts[setting.key] ?? ints[setting.key] ?? setting.defaultValue
     }
 
     func set(_ setting: IntSetting, to value: Int) {
         let clamped = setting.clamp(value)
-        ints[setting.key] = clamped        // optimistic: keeps the Stepper responsive
-        do {
-            try Settings.set(setting, to: clamped, database: db())
-            lastError = nil
-        } catch {
-            // Never leave the optimistic value on screen after a failed write —
-            // the daemon would still be on the old interval and the UI would be
-            // quietly lying about it. Re-read so what's shown is what's stored.
-            lastError = "\(error)"
-            load()
-        }
+        let stored = ints[setting.key] ?? setting.defaultValue
+        draftInts[setting.key] = clamped == stored ? nil : clamped
     }
 
     // MARK: - Choices & text (AI backend config)
 
     func value(for setting: ChoiceSetting) -> String {
-        choices[setting.key] ?? setting.defaultValue
+        draftChoices[setting.key] ?? choices[setting.key] ?? setting.defaultValue
     }
 
     func set(_ setting: ChoiceSetting, to value: String) {
-        choices[setting.key] = setting.normalize(value)
-        do {
-            try Settings.set(setting, to: value, database: db())
-            lastError = nil
-        } catch {
-            lastError = "\(error)"
-            load()
-        }
+        let normalized = setting.normalize(value)
+        let stored = choices[setting.key] ?? setting.defaultValue
+        draftChoices[setting.key] = normalized == stored ? nil : normalized
     }
 
     func binding(for setting: ChoiceSetting) -> Binding<String> {
@@ -145,18 +216,14 @@ final class SettingsStore: ObservableObject {
     }
 
     func value(for setting: TextSetting) -> String {
-        texts[setting.key] ?? ""
+        draftTexts[setting.key] ?? texts[setting.key] ?? ""
     }
 
+    /// The draft keeps the string exactly as typed — trimming happens in
+    /// `Settings.set` on save, not under the cursor.
     func set(_ setting: TextSetting, to value: String) {
-        texts[setting.key] = value
-        do {
-            try Settings.set(setting, to: value, database: db())
-            lastError = nil
-        } catch {
-            lastError = "\(error)"
-            load()
-        }
+        let stored = texts[setting.key] ?? ""
+        draftTexts[setting.key] = value == stored ? nil : value
     }
 
     func binding(for setting: TextSetting) -> Binding<String> {

@@ -11,6 +11,18 @@ struct ShifuApp: App {
     /// Owned by the app rather than the window so the menu bar item and the
     /// ⌘, command can point the dashboard at a place before opening it.
     @StateObject private var router = Router()
+    /// Exists for one interception: quitting with staged settings edits.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    init() {
+        // Keep the bundled daemon registered (and migrate a ~/Shifu/bin dev
+        // install) on every launch — but not before onboarding has shown what
+        // capture means. First-run registration happens when onboarding
+        // finishes instead.
+        if UserDefaults.standard.bool(forKey: "shifu.onboarded") {
+            DaemonService.syncRegistration()
+        }
+    }
 
     var body: some Scene {
         Window("Shifu", id: "dashboard") {
@@ -61,6 +73,24 @@ struct ShifuApp: App {
         }
         .defaultSize(width: 520, height: 500)
         .windowStyle(.hiddenTitleBar)
+    }
+}
+
+/// The one delegate duty SwiftUI can't express: ⌘Q and the menu bar's Quit
+/// both land in `terminate`, and quitting with staged settings edits would
+/// silently drop them. Same three-way question as leaving the Settings place
+/// (`MainWindow`'s departure guard), same resolution rules.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The live Settings model, set by the window that owns it. Weak, so a
+    /// closed window's store can die — and with it, the gate: no drafts can
+    /// outlive the window they were typed into.
+    static weak var settings: SettingsStore?
+
+    func applicationShouldTerminate(
+        _ application: NSApplication
+    ) -> NSApplication.TerminateReply {
+        (Self.settings?.confirmDeparture() ?? true) ? .terminateNow : .terminateCancel
     }
 }
 

@@ -77,6 +77,9 @@ struct ReviewSessionView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
         .background(Instrument.rail)
+        // This window hides its title bar too, so its top strip is the only
+        // handle it has — all of it, not just the system's 28 pt.
+        .overlay(WindowDragArea())
     }
 
     private var fraction: CGFloat {
@@ -92,7 +95,9 @@ struct ReviewSessionView: View {
                 VStack(spacing: 16) {
                     Spacer(minLength: 0)
                     Eyebrow(note.topic)
-                    CardTextView(text: question, baseSize: 19, alignment: .center)
+                    CardTextView(
+                        text: question, baseSize: 19, alignment: .center,
+                        color: Instrument.ink)
                     if revealed {
                         Rectangle()
                             .fill(Instrument.edge)

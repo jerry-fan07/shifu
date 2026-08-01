@@ -1,66 +1,166 @@
-import AppKit
 import ShifuCore
 import SwiftUI
 
-/// First run (design.md §7): four steps — what is captured, the two
-/// permissions, what stays unseen, and whether a model may be consulted.
-/// Local-only is the default, and every screen's job is to make the next one
-/// unsurprising.
+/// First run (design.md §7): six beats — what is captured, the two permissions,
+/// what stays unseen, whether a model may be consulted, what Focus Mode does,
+/// and what the first hour looks like. Local-only is the default, and every
+/// screen's job is to make the next one unsurprising.
+///
+/// It is laid out as the window it hands you: a rail on the left listing the
+/// six beats, a page on the right. Onboarding is the one place a permanent
+/// source list can be *taught* rather than discovered, so it wears one — by
+/// "Begin" the user has already used the window's single navigation idea, and
+/// found the rail's foot, which is where Focus Mode and the capture line live
+/// for the rest of the app's life.
+///
+/// The beats themselves are in OnboardingBeats.swift; what is decided is here.
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var step = 0
-    @State private var backend = "deepseek"
+    @State private var step: Int
+    /// Off until chosen — the consent gate (§8). For a screen observer,
+    /// sending anything anywhere must be the user's affirmative act, so the
+    /// cloud options are never preselected.
+    @State private var backend: String
     @State private var apiKey = ""
+    /// The rail's foot carries the real switch on the Focus Mode beat, writing
+    /// the same control file the app and the CLI read. Off is where it starts,
+    /// and running the demonstration does not change it.
+    @State private var focusModeOn = FocusModeFile.isOn()
+    @StateObject private var demo = NudgeDemo()
 
-    private static let steps = 4
+    /// The panel's own size, centred in whatever window hosts it. Fixed rather
+    /// than filling: a first-run flow stretched to 1280 pt would set forty-word
+    /// lines and preview a rail three times the width of the real one.
+    private static let panelWidth: CGFloat = 660
+    private static let panelHeight: CGFloat = 460
+    private static let railWidth: CGFloat = 196
+
+    /// The parameters exist for WindowShots, which can't click through the
+    /// flow; the app always starts at the first step with analysis off.
+    init(step: Int = 0, backend: String = "off") {
+        _step = State(initialValue: step)
+        _backend = State(initialValue: backend)
+    }
+
+    private var beat: Beat { Beat.allCases[min(max(step, 0), Beat.allCases.count - 1)] }
 
     var body: some View {
+        HStack(spacing: 0) {
+            rail
+            page
+        }
+        .frame(maxWidth: Self.panelWidth, maxHeight: Self.panelHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(Instrument.edge, lineWidth: 1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Instrument.ground)
+        // First run has no title bar of its own, but it is still a window, and
+        // one you can't move is a trap. It gets the same handle along the top
+        // as the shell it hands you — over ground, well clear of the panel.
+        .overlay(alignment: .top) {
+            WindowDragArea().frame(height: Instrument.titleBarHeight)
+        }
+    }
+
+    // MARK: - The rail
+
+    private var rail: some View {
+        RailColumn {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Shifu")
+                    .font(Instrument.sans(14, .semibold))
+                    .tracking(-0.14)
+                    .foregroundStyle(Instrument.ink)
+                Figure(
+                    "first run · \(Beat.allCases.count) steps",
+                    size: 10.5, color: Instrument.faint)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+
+            ForEach(Beat.allCases) { entry in
+                BeatRow(
+                    beat: entry, current: entry == beat,
+                    // Backwards only. The rail is navigation, not a way past a
+                    // page you haven't read.
+                    action: entry.rawValue < step ? { step = entry.rawValue } : nil)
+            }
+        } footer: {
+            railFoot
+        }
+        .frame(width: Self.railWidth)
+        .background(Instrument.rail)
+    }
+
+    /// What the rail's foot says on each beat. It is the app's status corner,
+    /// so it carries the promise that most needs saying here — and on the last
+    /// two beats, the two things that will actually live there.
+    @ViewBuilder private var railFoot: some View {
+        switch beat {
+        case .focus:
+            HStack(spacing: 8) {
+                Text("Focus Mode")
+                    .font(Instrument.sans(12.5))
+                    .foregroundStyle(Instrument.railInk)
+                Spacer(minLength: 0)
+                ToggleSwitch(isOn: focusModeOn) { toggleFocusMode() }
+            }
+            Figure("the switch lives here too", size: 10.5, color: Instrument.ghost)
+        case .firstHour:
+            HStack(spacing: 6) {
+                StatusDot()
+                Text("Watching")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.railInk)
+            }
+            Figure("ledger empty", size: 10.5, color: Instrument.ghost)
+        default:
+            if let promise = beat.promise {
+                Text(promise)
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.railInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if beat == .capture {
+                Figure("ledger empty", size: 10.5, color: Instrument.ghost)
+            }
+        }
+    }
+
+    // MARK: - The page
+
+    private var page: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ticks
-            Text(title)
+            Eyebrow(beat.ordinal, tracking: 1)
+                .padding(.bottom, 6)
+            Text(beat.title)
                 .font(Instrument.sans(24, .semibold))
                 .tracking(-0.36)
                 .foregroundStyle(Instrument.ink)
                 .padding(.bottom, 10)
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    switch step {
-                    case 0: capturePage
-                    case 1: permissionsPage
-                    case 2: exclusionsPage
-                    default: backendPage
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                VStack(alignment: .leading, spacing: 0) { content(of: beat) }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             Rule(weight: .section)
             footer
         }
         .padding(.horizontal, 30)
         .padding(.top, 26)
-        .frame(maxWidth: 560, maxHeight: 460)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(Instrument.ground)
     }
 
-    /// Four ticks, not a percentage: the flow is short enough to count.
-    private var ticks: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<Self.steps, id: \.self) { index in
-                Capsule()
-                    .fill(index <= step ? Instrument.accent : Instrument.well)
-                    .frame(width: 34, height: 3)
-            }
-        }
-        .padding(.bottom, 18)
-    }
-
-    private var title: String {
-        switch step {
-        case 0: return "It watches you work."
-        case 1: return "Two permissions, then it's watching"
-        case 2: return "What stays unseen"
-        default: return "A model may be consulted"
+    @ViewBuilder private func content(of beat: Beat) -> some View {
+        switch beat {
+        case .capture: CaptureBeat()
+        case .permissions: PermissionsBeat()
+        case .exclusions: ExclusionsBeat()
+        case .backend: BackendBeat(backend: $backend, apiKey: $apiKey)
+        case .focus: FocusBeat(demo: demo)
+        case .firstHour: FirstHourBeat()
         }
     }
 
@@ -69,165 +169,29 @@ struct OnboardingView: View {
             if step > 0 {
                 InlineLink("Back", size: 12.5) { step -= 1 }
             }
-            Figure(note, size: 11, color: Instrument.ghost)
-                .fixedSize(horizontal: false, vertical: true)
+            if let note = beat.note {
+                Figure(note, size: 11, color: Instrument.ghost)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
-            if step < Self.steps - 1 {
-                SolidButton(title: "Next") { step += 1 }
-            } else {
+            if beat == .firstHour {
                 SolidButton(title: "Begin", action: finish)
+            } else {
+                SolidButton(title: "Next") { step += 1 }
             }
         }
         .padding(.vertical, 14)
     }
 
-    /// The promise that matters most on each step, in the register that says
-    /// it is a rule rather than a reassurance.
-    private var note: String {
-        switch step {
-        case 0: return "Raw text is deleted after 14 days."
-        case 1: return "Pixels are never saved. Screenshots live in memory for one OCR call."
-        case 2: return "Exclusions are enforced before capture, not filtered after."
-        default: return "Nothing leaves this Mac until you add a key."
+    // MARK: - Actions
+
+    private func toggleFocusMode() {
+        if focusModeOn {
+            FocusModeFile.turnOff()
+        } else {
+            try? FocusModeFile.turnOn()
         }
-    }
-
-    // MARK: - Steps
-
-    private var capturePage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            prose("""
-            Not to judge — to remember. Shifu captures **text and metadata** about what is \
-            on your screen — app, window title, visible text — and turns it into a time \
-            ledger, a knowledge vault, and automation suggestions.
-            """)
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("What it never does")
-                ForEach([
-                    "never records keystrokes",
-                    "never saves screenshots — pixels live in memory only, for OCR",
-                    "never sends raw captures anywhere"
-                ], id: \.self) { line in
-                    HStack(alignment: .firstTextBaseline, spacing: 9) {
-                        Figure("×", size: 12, weight: .medium, color: Instrument.alert)
-                        Text(line)
-                            .font(Instrument.sans(13))
-                            .foregroundStyle(Instrument.body)
-                    }
-                }
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private var permissionsPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            prose("""
-            The capture daemon runs from `~/Shifu/bin` and needs both, from System \
-            Settings → Privacy & Security. Shifu can't read the daemon's grant state from \
-            here — the ledger filling up is the proof.
-            """)
-            permission(
-                "Accessibility",
-                detail: "Window titles and visible text — the cheap path.",
-                url: "x-apple.systempreferences:com.apple.preference.security"
-                    + "?Privacy_Accessibility")
-            permission(
-                "Screen Recording",
-                detail: "The OCR fallback for apps that expose no text. Without it Shifu "
-                    + "keeps working on metadata alone.",
-                url: "x-apple.systempreferences:com.apple.preference.security"
-                    + "?Privacy_ScreenCapture")
-        }
-    }
-
-    private func permission(_ name: String, detail: String, url: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            StatusDot(color: Instrument.alert)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(name)
-                        .font(Instrument.sans(13.5, .semibold))
-                        .foregroundStyle(Instrument.ink)
-                    Spacer(minLength: 0)
-                    SolidButton(title: "Open Settings") {
-                        if let target = URL(string: url) { NSWorkspace.shared.open(target) }
-                    }
-                }
-                Text(detail)
-                    .font(Instrument.sans(12.5))
-                    .foregroundStyle(Instrument.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var exclusionsPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            prose("""
-            Excluded content is never read. Only an opaque "private time" duration is \
-            counted, and it shows on the ribbon as hatching rather than as a gap.
-            """)
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("Never inspected")
-                ForEach([
-                    "password managers and Keychain",
-                    "banking, payment, and health sites",
-                    "private and incognito browser windows — always, not configurable",
-                    "cards, SSNs, and secret-shaped strings, redacted before any write"
-                ], id: \.self) { line in
-                    HStack(alignment: .firstTextBaseline, spacing: 9) {
-                        Figure("·", size: 12, weight: .medium, color: Instrument.ghost)
-                        Text(line)
-                            .font(Instrument.sans(13))
-                            .foregroundStyle(Instrument.body)
-                    }
-                }
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private var backendPage: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            prose("""
-            Task naming, ambiguous-time classification, and knowledge extraction use \
-            DeepSeek. Without a key those stages are skipped and Shifu runs on rules alone.
-            """)
-            SegmentedBar(
-                options: [("DeepSeek", "deepseek"), ("Rules only", "off")],
-                selection: $backend)
-            if backend == "deepseek" {
-                SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
-                    .textFieldStyle(.plain)
-                    .font(Instrument.mono(12))
-                    .foregroundStyle(Instrument.secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Instrument.edge, lineWidth: 1)
-                    }
-                Text("Only derived text samples are sent, after exclusions and redaction. "
-                    + "Never pixels. Defaults: deepseek-v4-flash for classification, "
-                    + "deepseek-v4-pro for grouping — change either in Settings.")
-                    .font(Instrument.sans(11.5))
-                    .foregroundStyle(Instrument.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// Body copy. A literal string, not a concatenation: `Text` only parses
-    /// the **markdown** through its LocalizedStringKey initializer.
-    private func prose(_ text: LocalizedStringKey) -> some View {
-        Text(text)
-            .font(Instrument.sans(14))
-            .lineSpacing(5)
-            .foregroundStyle(Instrument.body)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: 470, alignment: .leading)
+        focusModeOn = FocusModeFile.isOn()
     }
 
     private func finish() {
@@ -238,5 +202,7 @@ struct OnboardingView: View {
             }
         }
         onboarded = true
+        // Now — and only now — the daemon may start watching.
+        DaemonService.syncRegistration()
     }
 }

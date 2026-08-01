@@ -224,6 +224,45 @@ import Testing
         #expect(reset.attempts == 0)
     }
 
+    /// A `sem_key` written by neighbour inheritance rides the same
+    /// span-keyed carry the model's assignments do — pinning the decision
+    /// that inheritance writes the carried column rather than a new one.
+    @Test func rebuildCarriesInheritedSemKeys() async throws {
+        let db = try ShifuDatabase.inMemory()
+        try await db.queue.write { sqlite in
+            // Two Xcode stretches with a 30 s glance between them — three
+            // blocks after sessionizing, gaps well inside one sitting.
+            for (start, lastSeen, bundle) in [
+                (Int64(1_000), Int64(100_000), "com.apple.dt.Xcode"),
+                (Int64(130_000), Int64(130_000), "com.apple.Preview"),
+                (Int64(160_000), Int64(260_000), "com.apple.dt.Xcode")
+            ] {
+                var observation = Observation(
+                    startedAt: start, lastSeen: lastSeen, appBundle: bundle,
+                    windowTitle: "w", captureKind: .ax, text: "t")
+                try observation.insert(sqlite)
+            }
+        }
+        try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                UPDATE activities SET sem_key = 'sem:thesis-writing'
+                WHERE app_bundle = 'com.apple.dt.Xcode'
+                """)
+        }
+        #expect(try SemanticTaskGrouper.inheritFromNeighbors(
+            database: db, from: 0, to: 1_000_000) == 1)
+
+        try LedgerBuilder.rebuild(database: db, classifier: RulesClassifier(), from: 0, to: 1_000_000)
+
+        let inherited = try await db.queue.read { sqlite in
+            try String.fetchOne(sqlite, sql: """
+                SELECT sem_key FROM activities WHERE app_bundle = 'com.apple.Preview'
+                """)
+        }
+        #expect(inherited == "sem:thesis-writing")
+    }
+
     @Test func concreteRuleOutranksCarriedLLMLabel() async throws {
         let db = try ShifuDatabase.inMemory()
         try seed(db)

@@ -177,7 +177,7 @@ final class LedgerStore: ObservableObject {
             themeProposals = (try? ThemeProposals.pending(database: database)) ?? []
             decks = (try? DeckStore.decks(database: database)) ?? []
             deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
-            hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
+            hasLLMBackend = ((try? Settings.llmCredential(database: database)) ?? nil) != nil
         }
         do {
             let now = Date()
@@ -210,10 +210,7 @@ final class LedgerStore: ObservableObject {
     func runAnalysis() {
         if let existing = analyzerProcess, existing.isRunning { return }
         guard Date().timeIntervalSince(lastAnalyzerRun) > 60 else { return }
-        let analyzerURL = ShifuPaths.home
-            .appendingPathComponent("bin", isDirectory: true)
-            .appendingPathComponent("shifu-analyzer")
-        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else { return }
+        guard let analyzerURL = ShifuPaths.helper("shifu-analyzer") else { return }
         let process = Process()
         process.executableURL = analyzerURL
         process.arguments = ["--force"]  // user-initiated: don't skip on battery
@@ -237,6 +234,32 @@ final class LedgerStore: ObservableObject {
             database: database,
             from: Int64(from.timeIntervalSince1970 * 1_000),
             to: Int64(to.timeIntervalSince1970 * 1_000))) ?? []
+    }
+
+    /// The window's Focus Mode sessions, ends resolved — the Focus view's
+    /// rows. An open row counts, running to now, only while Focus Mode really
+    /// is on; otherwise it is a crashed daemon's leftover and the next daemon
+    /// launch will repair it (`FocusModeSessions.closeDangling`).
+    ///
+    /// Reports rather than swallowing: this read depends on the *schema*, and
+    /// a bare `try?` turns "that table isn't there" into "you had no
+    /// sessions", which is indistinguishable from a genuinely quiet week. It
+    /// is not hypothetical — the sessions table was renamed under this branch
+    /// by another workspace's migration, and the page read as empty for a day
+    /// instead of saying so.
+    func focusSessions(from: Date, to: Date) -> [FocusModeSessions.Session] {
+        guard let database = try? db() else { return [] }
+        let liveEnd = FocusModeFile.isOn()
+            ? Int64(Date().timeIntervalSince1970 * 1_000) : nil
+        do {
+            return try FocusModeSessions.overlapping(
+                from: Int64(from.timeIntervalSince1970 * 1_000),
+                to: Int64(to.timeIntervalSince1970 * 1_000),
+                liveEnd: liveEnd, database: database)
+        } catch {
+            report(error)
+            return []
+        }
     }
 
     // MARK: - Vault search (vault-features.md §4)

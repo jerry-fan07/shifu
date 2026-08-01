@@ -28,7 +28,8 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 ## Standing invariants (violations are bugs, no exceptions)
 
 1. **No network code in `shifud`.** Only `shifu-analyzer` may touch the network, and only to the
-   configured DeepSeek endpoint once the user has supplied an API key — the key is the opt-in (§8).
+   configured LLM endpoint (DeepSeek, or the hosted Shifu Cloud proxy) once the user has opted in —
+   their own API key, or the explicit, never-preselected Shifu Cloud choice (§8).
 2. **Redaction is a single choke point** before every DB write — cards, SSNs, key/JWT shapes (§8).
 3. **Exclusions are enforced before capture**, not filtered after (§8).
 4. **Pixels are never persisted** — screenshots live in memory only for the OCR call (§3.2).
@@ -43,3 +44,11 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 
 Cut anything not needed for the current phase's exit criteria (implementation.md).
 Log deferred ideas in design.md §12 instead of building them.
+
+## Parallel workspaces
+
+Several worktrees feed this repo and share one machine-global install
+(/Applications/Shifu.app, the daemon, ~/Shifu). Re-fetch and diff `origin/main` before
+resuming stale work — main moves mid-session and has already landed another workspace's
+version of the same change. "The app looks old" is an install-provenance question before
+it is a code question (skill: `ship`); real-data checks go through a copy (skill: `dogfood`).

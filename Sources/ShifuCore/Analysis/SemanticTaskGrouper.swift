@@ -89,10 +89,19 @@ public enum SemanticTaskGrouper {
         /// says what the domain alone never could.
         public var urls: [String]
         public var textSample: String
+        /// Every activity this candidate speaks for. Usually just `[id]`; a
+        /// coalesced sub-minute run (SemanticTaskSlivers.swift) carries all
+        /// its members, with `id` — the earliest — as the model's handle.
+        public var memberIDs: [Int64]
+        /// Time actually spent, summed over `memberIDs`. For a run this is
+        /// far less than `endedAt - startedAt`, the wall-clock span the
+        /// glances hopped across.
+        public var activeMs: Int64
 
         public init(id: Int64, startedAt: Int64, endedAt: Int64, appBundle: String,
                     domain: String?, topic: String?, card: String? = nil,
-                    titles: [String], urls: [String] = [], textSample: String) {
+                    titles: [String], urls: [String] = [], textSample: String,
+                    memberIDs: [Int64]? = nil, activeMs: Int64? = nil) {
             self.id = id
             self.startedAt = startedAt
             self.endedAt = endedAt
@@ -103,6 +112,8 @@ public enum SemanticTaskGrouper {
             self.titles = titles
             self.urls = urls
             self.textSample = textSample
+            self.memberIDs = memberIDs ?? [id]
+            self.activeMs = activeMs ?? (endedAt - startedAt)
         }
     }
 
@@ -309,36 +320,49 @@ extension SemanticTaskGrouper {
     }
 
     /// Writes one batch: assignments set `sem_key` (upserting task rows);
-    /// every other batch id burns an attempt. Returns tasks actually created.
+    /// every other batch candidate burns an attempt. Both writes cover every
+    /// member row of a candidate — one for a plain block, all of them for a
+    /// coalesced run. Returns tasks actually created; `assigned` counts rows
+    /// written, so the analyzer's "blocks assigned" line stays honest.
     static func apply(
         _ verdict: Verdict, batch: [BlockSample], roster: [RosterEntry],
         database: ShifuDatabase, now: Date = Date()
     ) throws -> (assigned: Int, created: [RosterEntry]) {
         let resolved = resolve(verdict, batch: batch.map(\.id), roster: roster)
-        let batchEnds = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0.endedAt) })
+        let byHandle = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0) })
         let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
         return try database.queue.write { db in
             var created: [RosterEntry] = []
-            var assignedIDs: Set<Int64> = []
+            var assignedHandles: Set<Int64> = []
+            var assignedRows = 0
             for (key, ids) in resolved.assignmentsByKey.sorted(by: { $0.key < $1.key }) {
-                let lastActive = ids.compactMap { batchEnds[$0] }.max() ?? nowMs
+                let lastActive = ids.compactMap { byHandle[$0]?.endedAt }.max() ?? nowMs
                 if let entry = try upsertTask(
                     db, key: key, definition: resolved.newTaskByKey[key],
                     createdAt: nowMs, lastActive: lastActive) {
                     created.append(entry)
                 }
                 for id in ids {
-                    try db.execute(sql: "UPDATE activities SET sem_key = ? WHERE id = ?",
-                                   arguments: [key, id])
-                    assignedIDs.insert(id)
+                    let rows = byHandle[id]?.memberIDs ?? [id]
+                    try db.execute(sql: """
+                        UPDATE activities SET sem_key = ?
+                        WHERE id IN (\(databaseQuestionMarks(count: rows.count)))
+                        """, arguments: [key] + StatementArguments(rows))
+                    assignedHandles.insert(id)
+                    assignedRows += rows.count
                 }
             }
-            for id in Set(batchEnds.keys).subtracting(assignedIDs) {
-                try db.execute(
-                    sql: "UPDATE activities SET sem_attempts = sem_attempts + 1 WHERE id = ?",
-                    arguments: [id])
+            // A declined run burns an attempt on every constituent: exhausted
+            // members drop out of the next sweep and the run re-forms
+            // smaller — no stored run identity, nothing to carry across
+            // rebuilds.
+            for sample in batch where !assignedHandles.contains(sample.id) {
+                try db.execute(sql: """
+                    UPDATE activities SET sem_attempts = sem_attempts + 1
+                    WHERE id IN (\(databaseQuestionMarks(count: sample.memberIDs.count)))
+                    """, arguments: StatementArguments(sample.memberIDs))
             }
-            return (assignedIDs.count, created)
+            return (assignedRows, created)
         }
     }
 
