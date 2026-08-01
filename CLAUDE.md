@@ -28,8 +28,12 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 ## Standing invariants (violations are bugs, no exceptions)
 
 1. **No network code in `shifud`.** Only `shifu-analyzer` may touch the network, and only to the
-   configured LLM endpoint (DeepSeek, or the hosted Shifu Cloud proxy) once the user has opted in —
-   their own API key, or the explicit, never-preselected Shifu Cloud choice (§8).
+   configured LLM endpoint (DeepSeek, the hosted Shifu Cloud proxy, or the local server) once the
+   user has opted in — their own API key, or the explicit, never-preselected Shifu Cloud choice (§8).
+   One narrow carve-out: in the **qwen edition**, `ShifuApp` may perform the one-time model-weights
+   fetch (`ModelFetcher`), a GET of the pinned Hugging Face artifact only, after the user chooses
+   the local backend — setup with a progress bar, carrying nothing about the user. No other network
+   code in the app, ever.
 2. **Redaction is a single choke point** before every DB write — cards, SSNs, key/JWT shapes (§8).
 3. **Exclusions are enforced before capture**, not filtered after (§8).
 4. **Pixels are never persisted** — screenshots live in memory only for the OCR call (§3.2).

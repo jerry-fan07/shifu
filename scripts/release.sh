@@ -55,6 +55,11 @@ SIGN=(codesign --force --options runtime --timestamp --sign "$IDENTITY")
 "${SIGN[@]}" --identifier com.shifu.shifud "$APP/Contents/MacOS/shifud"
 "${SIGN[@]}" --identifier com.shifu.analyzer "$APP/Contents/MacOS/shifu-analyzer"
 "${SIGN[@]}" --identifier com.shifu.cli "$APP/Contents/MacOS/shifu"
+# The qwen edition's bundled model server, signed like the helpers it rides
+# beside. Absent in the standard bundle.
+if [ -x "$APP/Contents/MacOS/llama-server" ]; then
+    "${SIGN[@]}" --identifier com.shifu.llama-server "$APP/Contents/MacOS/llama-server"
+fi
 "${SIGN[@]}" "$APP"
 
 codesign --verify --strict --verbose=2 "$APP"
