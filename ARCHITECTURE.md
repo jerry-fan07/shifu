@@ -182,23 +182,36 @@ order, and some of that ordering is load-bearing:
    render the card instead of re-sampling raw text, so this is the one hourly
    stage that reads OCR. One shot per closed block; `card_attempts` (3) only
    guards failure paths.
-4. **`SemanticTaskGrouper.run`** — the LLM assigns evidence-bearing blocks to
-   intent-level tasks (design.md §5.3): each batch carries a roster of recent
-   `sem:` tasks to join — with the history that makes it a weighted prior
-   (minutes, days active, days since, top sources) — the already-grouped
-   blocks around the batch as stickiness context, and the blocks' own
-   titles/pages/topics/text sampled across their whole span. Confident
-   verdicts write `activities.sem_key` and upsert `tasks` rows (LLM title +
-   `gist`, never overwriting a user rename); unplaced blocks burn one of 3
-   `sem_attempts`. Fail-soft: no backend or a failed call leaves blocks
-   mechanically grouped. What the model is *shown* lives in
-   `SemanticTaskEvidence.swift`; the pipeline around it in
+4. **`SemanticTaskGrouper.inheritFromNeighbors` then `.run`** — semantic
+   grouping's free half first (design.md §5.3): an unplaced sub-minute glance
+   with the same task running on both sides of it, inside one sitting,
+   adopts that task in SQL — zero tokens, so the model's candidate pool is
+   already smaller (`SemanticTaskInheritance.swift`). Then the LLM assigns
+   evidence-bearing candidates to intent-level tasks: each batch carries a
+   roster of recent `sem:` tasks to join — with the history that makes it a
+   weighted prior (minutes, days active, days since, top sources) — the
+   already-grouped blocks around the batch as stickiness context, and the
+   candidates' own titles/pages/topics/text sampled across their whole span.
+   A candidate is a block over 60 s *or* a coalesced run of sub-minute
+   glances (same app+domain, gaps to 15 min,
+   `SemanticTaskSlivers.swift`) whose pooled time clears that same floor —
+   one candidate at one block's token cost, assigned all-or-nothing; the
+   limit is a quota, long blocks first. Confident verdicts write
+   `activities.sem_key` and upsert `tasks` rows (LLM title + `gist`, never
+   overwriting a user rename); every unplaced candidate burns one of 3
+   `sem_attempts` on each of its member blocks. Fail-soft: no backend or a
+   failed call leaves blocks mechanically grouped. What the model is *shown*
+   lives in `SemanticTaskEvidence.swift`; the pipeline around it in
    `SemanticTaskGrouper.swift`.
 5. **`TaskGrouper.run`** — groups activities into tasks by a stable key
    (`sem_key` when the semantic pass set one, else `topic:` → `domain:` →
    `app:`; system shell bundles — lock screen, Dock, Shifu's own UI —
    never mint or join a task at all, `isSystemBundle`) and rebuilds
-   per-day `task_logs`.
+   per-day `task_logs`. With a backend configured the analyzer passes
+   `minting: .lastResort`, and a container key (`domain:`/`app:`) mints or
+   attaches only from blocks the semantic pass has finished declining —
+   `TaskStore.prune` reaps container tasks by the same test and the same
+   flag, so reap and mint cannot disagree.
    **Runs before extraction on purpose** so `activities.task_id` exists when
    notes are born and can be stamped into their frontmatter.
 6. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
@@ -247,13 +260,15 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | How activities group into tasks | [`Analysis/TaskGrouper.swift`](Sources/ShifuCore/Analysis/TaskGrouper.swift) — `key(topic:domain:appBundle:)` |
 | Intent-level (LLM) task grouping, its gates and batching | [`Analysis/SemanticTaskGrouper.swift`](Sources/ShifuCore/Analysis/SemanticTaskGrouper.swift) |
 | What that model is shown — roster prior, stickiness context, block evidence, the prompt | [`Analysis/SemanticTaskEvidence.swift`](Sources/ShifuCore/Analysis/SemanticTaskEvidence.swift) |
+| How sub-minute glances pool into run candidates | [`Analysis/SemanticTaskSlivers.swift`](Sources/ShifuCore/Analysis/SemanticTaskSlivers.swift) — `coalesce`, `sliverRuns` |
+| The token-free sandwich pass that files glances by their neighbours | [`Analysis/SemanticTaskInheritance.swift`](Sources/ShifuCore/Analysis/SemanticTaskInheritance.swift) — `inheritFromNeighbors` |
 | Theme clustering (the high-level mode) + running narratives | [`Analysis/ThemeClusterer.swift`](Sources/ShifuCore/Analysis/ThemeClusterer.swift) |
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
 | Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
 | The Time page's modes, span and lens | [`ShifuApp/TimeView.swift`](Sources/ShifuApp/TimeView.swift) — `TimeView` |
 | How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
-| What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`, both filtered by `TaskGrouper.notSystemBundleSQL` so the lock screen and Shifu's own UI are charted nowhere (design.md §7) |
+| What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`; system shells are charted nowhere because `rebuild` never writes them a block (`TaskGrouper.isSystemBundle`, design.md §7) |
 | The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
 | Focus sessions read back + the focus score | [`Storage/FocusModeSessions.swift`](Sources/ShifuCore/Storage/FocusModeSessions.swift) — `overlapping`; scored by [`Analysis/FocusReport.swift`](Sources/ShifuCore/Analysis/FocusReport.swift) (mirrors `FocusModeController`'s on/off-task split); drawn by [`ShifuApp/FocusViews.swift`](Sources/ShifuApp/FocusViews.swift) behind the Breakdown picker's Focus position |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |

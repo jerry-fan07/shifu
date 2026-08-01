@@ -32,6 +32,7 @@ renderer didn't crash, nothing more.
 |---|---|
 | Empty install | `SHIFU_HOME=$(mktemp -d)` — blank slates, no counts, no crash |
 | Minimum window | `SHIFU_SHOT_WIDTH=960` — the `minWidth` the shell declares |
+| Below the fold | `SHIFU_SHOT_HEIGHT=2600` — the harness can't scroll; a taller film is the only way to see a long page's tail |
 | Dark mode | already covered: Timeline and Deck render dark, the rest light |
 
 ## What real data breaks that mock data doesn't
@@ -71,6 +72,18 @@ one never runs. Keep it one test.
 
 - The harness freezes Core Animation and starves `Task.sleep`, so it cannot
   verify animation timing — only static layout.
+- **The harness rewrites the vault it is pointed at.** `store.refresh()` runs the
+  work-note compile, and a day whose blocks differ from the note's
+  `content_hash` is rewritten *without* its LLM prose — so the copy's newest
+  day-notes lose their narrative after the first run, and the task page
+  photographs as a head with nothing under it. That is correct behaviour on a
+  stale copy; `WindowShots.unrollableTask` picks a subject that survives it.
+- **Only state set *synchronously* in `onAppear` reaches the film.** A read
+  deferred by `Task { @MainActor }` or `DispatchQueue.main.async` resolves —
+  the run loop is pumped for a second — but the redraw it schedules never
+  arrives, so the shot shows the pre-read view with no sign anything is
+  missing. `DayHistoryRow` reads its work note in the appearing pass for this
+  reason. If a section photographs empty, suspect the hop before the data.
 - Interaction (clicks, hover, keyboard) is **not** covered by `WindowShots`.
   `onHover` fires from wherever the real mouse happens to be, which shows up
   as a random row looking selected. A click only lands if the process is

@@ -56,7 +56,7 @@ public enum WorkNoteCompiler {
 
         /// Evidence per activity. A document has to say what actually
         /// happened, which the light tier's 800 chars can't support; a light
-        /// day's three bullets don't need more.
+        /// day's handful of bullets doesn't need more.
         var sampleChars: Int {
             switch self {
             case .light: return WorkNoteCompiler.sampleCharsPerActivity

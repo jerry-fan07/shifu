@@ -119,4 +119,107 @@ import Testing
         }
         #expect(keys == ["app:com.apple.dock", "app:com.mitchellh.ghostty"])
     }
+
+    /// Browser-internal `domain:` tasks (chrome://new-tab-page and kin,
+    /// minted before Sessionizer stopped deriving domains from non-web
+    /// schemes) die on sight like system-bundle tasks — regardless of size
+    /// or recency, spared only by a rename. Real domains of the same shape
+    /// and size survive.
+    @Test func reapsBrowserInternalDomainTasksRegardlessOfSubstance() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        let recent = ms(now) - 3_600_000
+
+        try seedTask(database, key: "domain:contextual-tasks",
+                     name: "contextual-tasks", minutes: 145, endedAt: recent)
+        try seedTask(database, key: "domain:omnibox-popup.top-chrome",
+                     name: "omnibox-popup.top-chrome", minutes: 32, endedAt: recent)
+        try seedTask(database, key: "domain:new-tab-page", name: "Tab triage",
+                     minutes: 42, endedAt: recent)
+        try seedTask(database, key: "domain:github.com", name: "github.com",
+                     minutes: 45, endedAt: recent)
+
+        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
+        #expect(pruned == 2)
+
+        let keys = try database.queue.read { db in
+            try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
+        }
+        #expect(keys == ["domain:github.com", "domain:new-tab-page"])
+    }
+
+    /// Under `.lastResort`, a container task whose lifetime declined time is
+    /// under the mint floor dies on sight — size and recency don't save it,
+    /// because it accrued both precisely through the bypass the gate closed.
+    /// One the model has washed its hands of keeps its row: that is the
+    /// honest-container case (Instagram, Music).
+    @Test func reapsDefaultNamedContainerTasksUnderLastResort() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        let recent = ms(now) - 3_600_000
+
+        let swallowed = try seedTask(database, key: "app:com.google.chrome", name: "chrome",
+                                     minutes: 400, endedAt: recent)
+        let honest = try seedTask(database, key: "app:com.instagram.desktop", name: "desktop",
+                                  minutes: 6, endedAt: recent)
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE activities SET sem_attempts = ? WHERE task_id = ?",
+                           arguments: [SemanticTaskGrouper.maxAttempts, honest])
+        }
+
+        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar,
+                                         minting: .lastResort)
+        #expect(pruned == 1)
+        let state = try database.queue.read { db in
+            (keys: try String.fetchAll(db, sql: "SELECT key FROM tasks"),
+             blocks: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM activities") ?? -1,
+             logs: try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM task_logs WHERE task_id = \(swallowed)
+                """) ?? -1)
+        }
+        #expect(state.keys == ["app:com.instagram.desktop"])
+        #expect(state.blocks == 2)          // the time survives, task-less
+        #expect(state.logs == 0)            // the dead task's logs cascaded
+
+        // Idempotent: the survivors stay put on a re-run.
+        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar,
+                                    minting: .lastResort) == 0)
+    }
+
+    @Test func renamedContainerTasksSurvive() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        try seedTask(database, key: "app:com.apple.mobilesms", name: "Texting the group chat",
+                     minutes: 400, endedAt: ms(now) - 3_600_000)
+        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar,
+                                    minting: .lastResort) == 0)
+    }
+
+    /// §10: with no backend there is no semantic pass to decline anything, so
+    /// container reaping stays off — the mechanical roster is the product
+    /// then, not debris. The flag is shared with the mint gate so reap and
+    /// mint can never disagree.
+    @Test func pruneUnderAlwaysIsUnchanged() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        try seedTask(database, key: "app:com.google.chrome", name: "chrome",
+                     minutes: 400, endedAt: ms(now) - 3_600_000)
+        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar) == 0)
+    }
+
+    /// A container key some blocks explicitly wear as `sem_key` is the
+    /// survivor of a merge into that task; prune spares it the way the mint
+    /// gate attaches it — the two must agree or the merge flaps between
+    /// passes.
+    @Test func containerTargetedBySemKeysSurvivesPrune() throws {
+        let database = try ShifuDatabase.inMemory()
+        let now = day1.addingTimeInterval(86_400)
+        try seedTask(database, key: "app:com.apple.mobilesms", name: "mobilesms",
+                     minutes: 4, endedAt: ms(now) - 3_600_000)
+        try database.queue.write { db in
+            try db.execute(sql: "UPDATE activities SET sem_key = 'app:com.apple.mobilesms'")
+        }
+        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar,
+                                    minting: .lastResort) == 0)
+    }
 }

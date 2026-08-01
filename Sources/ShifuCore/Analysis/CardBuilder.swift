@@ -274,7 +274,7 @@ extension CardBuilder {
             return try rows.map { row in
                 let id: Int64 = row["id"]
                 let evidence = try SemanticTaskGrouper.blockEvidence(
-                    db, blockID: id, textCap: textSampleChars)
+                    db, blockIDs: [id], textCap: textSampleChars)
                 return BlockSample(
                     id: id, appBundle: row["app_bundle"], domain: row["domain"],
                     ambiguous: row["ambiguous"], titles: evidence.titles,

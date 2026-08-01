@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import GRDB
 
@@ -11,10 +12,33 @@ public enum TaskGrouper {
     /// domain, a topic worded once — stay unassigned instead of minting a
     /// permanent task; the idempotent window re-runs grouping, so a key that
     /// keeps accruing time mints and picks up its earlier blocks
-    /// retroactively. Keys with an existing task always attach, however small
-    /// the block, and `sem:` keys are exempt — SemanticTaskGrouper already
-    /// gates them by block length and model confidence.
+    /// retroactively. Under `.always`, keys with an existing task attach
+    /// however small the block; under `.lastResort` a *container* key must
+    /// clear this same floor in semantically-declined time even to attach —
+    /// see the gate in `run`. `sem:` keys are exempt everywhere —
+    /// SemanticTaskGrouper already gates them by block length and model
+    /// confidence.
     public static let minNewTaskMs: Int64 = 5 * 60_000
+
+    /// Whether mechanical container keys may mint and attach freely
+    /// (`.always`, the no-backend §10 fallback) or only once the semantic
+    /// pass has finished declining enough of their time (`.lastResort`).
+    ///
+    /// Callers must derive this from *configuration* — is a backend set up —
+    /// never from whether this pass's LLM calls succeeded. Gating on success
+    /// would let one network timeout mint container rows that the next pass
+    /// has to prune, and the roster would flap with the connection.
+    public enum MechanicalMinting: Sendable {
+        case always
+        case lastResort
+    }
+
+    /// `domain:`/`app:` — the namespaces that name where time went rather
+    /// than what it was for. `topic:` is deliberately not one: it is the
+    /// classifier's own words for what the block was about.
+    public static func isContainerKey(_ key: String) -> Bool {
+        key.hasPrefix("domain:") || key.hasPrefix("app:")
+    }
 
     /// macOS shell surfaces that are never the user's own work: the lock
     /// screen, the Dock, one-shot system dialogs. They carry no topic and no
@@ -64,6 +88,16 @@ public enum TaskGrouper {
         return systemBundles.contains(normalized)
     }
 
+    /// True for hosts that name a browser surface rather than a site — no
+    /// dot ("new-tab-page", "contextual-tasks", "chromewebdata", extension
+    /// ids) or Chrome's WebUI suffix. `Sessionizer.domain(of:)` no longer
+    /// derives domains from non-web schemes, so new blocks can't carry
+    /// these; the predicate exists for `TaskStore.prune` to reap `domain:`
+    /// tasks minted before that gate on sight.
+    public static func isBrowserInternalHost(_ host: String) -> Bool {
+        !host.contains(".") || host.hasSuffix(".top-chrome")
+    }
+
     /// What one `run` did: distinct task keys assigned in the window, and
     /// day-log rows rewritten across every local day those activities touched.
     public struct Summary: Equatable, Sendable {
@@ -88,8 +122,27 @@ public enum TaskGrouper {
     }
 
     /// Initial display name for a new task; the user can rename it later.
+    /// An `app:` fallback asks Launch Services for the installed app's own
+    /// name first: the bundle tail is right for `com.apple.dt.xcode` ("xcode")
+    /// but wrong exactly when it is generic — `com.conductor.app` minted a
+    /// task literally named "app" in the dogfood ledger.
     static func displayName(topic: String?, domain: String?, appBundle: String) -> String {
-        topic ?? domain ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
+        topic ?? domain ?? installedAppName(bundleID: appBundle)
+            ?? (appBundle.split(separator: ".").last.map(String.init) ?? appBundle)
+    }
+
+    /// The user-facing name of the installed app for a bundle id, or nil when
+    /// Launch Services knows no such app (tests, uninstalled apps — callers
+    /// fall back to the bundle tail). CoreServices, deliberately not
+    /// NSWorkspace: ShifuCore links into shifud, which should not pull AppKit.
+    static func installedAppName(bundleID: String) -> String? {
+        guard let urls = LSCopyApplicationURLsForBundleIdentifier(
+                bundleID as CFString, nil)?.takeRetainedValue() as? [URL],
+              let appURL = urls.first else { return nil }
+        return Bundle(url: appURL).flatMap { bundle in
+            bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+        } ?? FileManager.default.displayName(atPath: appURL.path)
     }
 
     /// True while a task still wears the name the machine gave it — i.e. the
@@ -108,9 +161,13 @@ public enum TaskGrouper {
         if key.hasPrefix("topic:") { return slug(name) == String(key.dropFirst(6)) }
         if key.hasPrefix("domain:") { return name.lowercased() == String(key.dropFirst(7)) }
         if key.hasPrefix("app:") {
-            let bundle = key.dropFirst(4)
-            let lastComponent = bundle.split(separator: ".").last.map(String.init) ?? String(bundle)
-            return name.lowercased() == lastComponent
+            let bundle = String(key.dropFirst(4))
+            let lastComponent = bundle.split(separator: ".").last.map(String.init) ?? bundle
+            if name.lowercased() == lastComponent { return true }
+            // The Launch Services name `displayName` now mints with. If the
+            // app is gone the lookup is nil and the task reads as user-named —
+            // spared from prune/auto-merge, which err on keeping.
+            return name == installedAppName(bundleID: bundle)
         }
         return false
     }
@@ -159,6 +216,7 @@ public enum TaskGrouper {
         var domain: String?
         var topic: String?
         var semKey: String?
+        var semAttempts: Int
     }
 
     private struct GroupedItems {
@@ -172,7 +230,8 @@ public enum TaskGrouper {
     ) throws -> GroupedItems {
         let items: [Item] = try database.queue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, started_at, ended_at, app_bundle, domain, topic, sem_key
+                SELECT id, started_at, ended_at, app_bundle, domain, topic,
+                       sem_key, sem_attempts
                 FROM activities
                 WHERE ended_at > ? AND started_at < ? AND category != 'private'
                 ORDER BY started_at
@@ -180,7 +239,7 @@ public enum TaskGrouper {
             ).map { row in
                 Item(id: row["id"], startedAt: row["started_at"], endedAt: row["ended_at"],
                      appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
-                     semKey: row["sem_key"])
+                     semKey: row["sem_key"], semAttempts: row["sem_attempts"])
             }
         }
         var groups: [String: [Item]] = [:]
@@ -194,6 +253,14 @@ public enum TaskGrouper {
         return GroupedItems(groups: groups, order: keyOrder, items: items)
     }
 
+    /// The window time a group has had *finished declining* — members whose
+    /// semantic attempts are exhausted. Blocks still pending (or never
+    /// sampled at all) don't count: last resort means the model got its say.
+    private static func declinedMs(of group: [Item]) -> Int64 {
+        group.filter { $0.semAttempts >= SemanticTaskGrouper.maxAttempts }
+            .reduce(Int64(0)) { $0 + ($1.endedAt - $1.startedAt) }
+    }
+
     /// Assigns `activities.task_id` for the window, creating tasks as needed
     /// (existing names are never overwritten — renames stick; new keys must
     /// clear the minNewTaskMs substance gate), then rebuilds task logs for
@@ -201,7 +268,8 @@ public enum TaskGrouper {
     @discardableResult
     public static func run(
         database: ShifuDatabase, from: Int64, to: Int64,
-        now: Date = Date(), calendar: Calendar = .current
+        now: Date = Date(), calendar: Calendar = .current,
+        minting: MechanicalMinting = .always
     ) throws -> Summary {
         let res = try fetchAndGroupItems(database: database, from: from, to: to)
         guard !res.items.isEmpty else { return Summary(tasksTouched: 0, logsWritten: 0) }
@@ -214,6 +282,28 @@ public enum TaskGrouper {
             var tasksTouched = 0
             for itemKey in res.order {
                 guard let group = res.groups[itemKey] else { continue }
+                // Under `.lastResort` a container key earns the window's time
+                // only from blocks the semantic pass has *finished declining*
+                // (attempts exhausted): "Instagram" is real once the model has
+                // said three times that scrolling it serves no intent task,
+                // while a 40-second message check just stays task-less.
+                //
+                // Sits above the existing-row lookup on purpose — the bypass
+                // below ("keys with an existing task always attach") is
+                // exactly how a container task, once minted, went on
+                // swallowing every later glance. `continue` means no mint, no
+                // `last_active_at` bump, no `task_id` write. And once a
+                // container does clear the floor the *whole* group attaches,
+                // not just the declined members — splitting would drop time
+                // out of `task_logs` and leave the ledger unexplainable.
+                //
+                // A group holding any explicit `sem_key` is exempt: the model
+                // can only write `sem:` keys, so a container-shaped `sem_key`
+                // is a merge the user (or reconciler) made into that task —
+                // gating it would quietly undo the merge on the next rebuild.
+                if minting == .lastResort, isContainerKey(itemKey),
+                   group.allSatisfy({ $0.semKey == nil }),
+                   declinedMs(of: group) < minNewTaskMs { continue }
                 let lastActive = group.map(\.endedAt).max() ?? nowMs
                 let taskID: Int64
                 if let existing = try Int64.fetchOne(

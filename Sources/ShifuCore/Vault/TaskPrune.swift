@@ -14,15 +14,29 @@ extension TaskStore {
     }
 
     /// Ids of the tasks prune would take: quiet, sub-threshold, mechanically
-    /// keyed, and still wearing the name the grouper gave them.
+    /// keyed, and still wearing the name the grouper gave them — plus
+    /// `domain:` tasks for browser-internal hosts
+    /// (TaskGrouper.isBrowserInternalHost), which accrue time daily and so
+    /// never meet the staleness or substance conditions; those die on sight,
+    /// only a rename sparing one.
     ///
-    /// System-bundle `app:` tasks used to need a second clause here, exempt
-    /// from the staleness rule — they accrued time daily, so they were never
-    /// stale enough to take. They cannot exist any more: `LedgerBuilder`
-    /// writes no block for a system shell, so nothing mints the key, and the
-    /// `v26-system-shell-purge` migration deleted the ones already on disk.
+    /// Under `.lastResort`, container tasks join the die-on-sight family by
+    /// the mint gate's own test (TaskGrouper.run): a `domain:`/`app:` task
+    /// whose lifetime *semantically-declined* time is under the mint floor
+    /// exists only because the gate didn't yet — months of pre-gate
+    /// `task_id`s keep it active daily, so the staleness rule alone can never
+    /// reach it. Same flag as the gate, so reap and mint cannot disagree; a
+    /// rename spares one here exactly as it always has, and so does an
+    /// explicit `sem_key` pointing at the key — the trace of a merge into the
+    /// task, which the gate honours for the same reason.
+    ///
+    /// System-bundle `app:` tasks used to need the same die-on-sight clause,
+    /// exempt from the staleness rule. They cannot exist any more:
+    /// `LedgerBuilder` writes no block for a system shell, so nothing mints
+    /// the key, and the `v26-system-shell-purge` migration deleted the ones
+    /// already on disk.
     private static func candidates(
-        database: ShifuDatabase, now: Date
+        database: ShifuDatabase, now: Date, minting: TaskGrouper.MechanicalMinting
     ) throws -> [PruneCandidate] {
         let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
             - Int64(pruneInactiveDays) * 86_400_000
@@ -41,7 +55,35 @@ extension TaskStore {
                                 FROM activities a WHERE a.task_id = tasks.id), 0) < ?
                 """, arguments: [cutoff, TaskGrouper.minNewTaskMs]
             ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
-            return debris.filter { TaskGrouper.isDefaultName($0.name, forKey: $0.key) }
+            // Die-on-sight rule for `domain:` tasks minted from
+            // browser-internal pages (chrome://new-tab-page and kin) before
+            // Sessionizer stopped deriving domains from non-web schemes —
+            // that gate starves them of new blocks, so staleness can't reach
+            // them either.
+            let browser = try Row.fetchAll(db, sql: """
+                SELECT id, key, name FROM tasks WHERE key LIKE 'domain:%'
+                """
+            ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
+                .filter { TaskGrouper.isBrowserInternalHost(String($0.key.dropFirst(7))) }
+            var containers: [PruneCandidate] = []
+            if minting == .lastResort {
+                containers = try Row.fetchAll(db, sql: """
+                    SELECT id, key, name FROM tasks
+                    WHERE (key LIKE 'domain:%' OR key LIKE 'app:%')
+                      AND NOT EXISTS (SELECT 1 FROM activities a
+                                      WHERE a.sem_key = tasks.key)
+                      AND COALESCE((SELECT SUM(a.ended_at - a.started_at)
+                                    FROM activities a
+                                    WHERE a.task_id = tasks.id
+                                      AND a.sem_attempts >= ?), 0) < ?
+                    """, arguments: [SemanticTaskGrouper.maxAttempts,
+                                     TaskGrouper.minNewTaskMs]
+                ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
+            }
+            var seenIDs: Set<Int64> = []
+            return (debris + browser + containers)
+                .filter { TaskGrouper.isDefaultName($0.name, forKey: $0.key) }
+                .filter { seenIDs.insert($0.id).inserted }
         }
     }
 
@@ -57,9 +99,10 @@ extension TaskStore {
     @discardableResult
     public static func prune(
         database: ShifuDatabase, vault: VaultStore? = nil,
-        now: Date = Date(), calendar: Calendar = .current
+        now: Date = Date(), calendar: Calendar = .current,
+        minting: TaskGrouper.MechanicalMinting = .always
     ) throws -> Int {
-        let dying = try candidates(database: database, now: now)
+        let dying = try candidates(database: database, now: now, minting: minting)
         guard !dying.isEmpty else { return 0 }
         let doomed = dying.map(\.id)
         let doomedKeys = dying.map(\.key)

@@ -105,6 +105,14 @@ let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: data
 let reasoningBackend: (any LLMBackend)? =
     try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
 
+// With a backend, `domain:`/`app:` container keys mint and attach only as a
+// last resort (§5.3): the semantic pass gets first claim on their time, and a
+// container becomes a task only from blocks the model finished declining.
+// Derived from configuration, never from whether this pass's calls succeed —
+// one network timeout must not mint container rows the next pass has to
+// prune. With no backend the mechanical fallback stands whole (§10).
+let minting: TaskGrouper.MechanicalMinting = backend == nil ? .always : .lastResort
+
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
 // the same card relabels blocks the rules tier marked ambiguous. Every later
@@ -122,6 +130,21 @@ if let backend {
         // LLM problems never block the ledger (§10); blocks stay queued.
         print("cards (\(backend.name)) failed, blocks stay queued: \(error)")
     }
+}
+
+// The free half of semantic grouping (§5.3), before the model pass so the
+// sliver pool it sweeps is already smaller: an unplaced glance with the same
+// task running on both sides of it, inside one sitting, adopts that task —
+// zero tokens. Outside `if let backend` on purpose: the claim rests on the
+// neighbours, not on a model being configured.
+do {
+    let inherited = try SemanticTaskGrouper.inheritFromNeighbors(
+        database: database, from: from, to: nowMs)
+    if inherited > 0 {
+        print("semantic tasks: \(inherited) blocks inherited from neighbours")
+    }
+} catch {
+    print("semantic inheritance failed (retries next run): \(error)")
 }
 
 // Semantic task grouping (§5.3): the LLM assigns the window's blocks to
@@ -147,10 +170,18 @@ if let backend {
 // Tasks & work logs (§5.3): group the window's activities into ongoing tasks
 // and compile per-day logs. Runs after the LLM passes so semantic keys and
 // topics exist, and *before* extraction so `activities.task_id` exists when
-// notes are born (vault-features.md §3).
-let taskSummary = try TaskGrouper.run(database: database, from: from, to: nowMs)
-if taskSummary.tasksTouched > 0 {
-    print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+// notes are born (vault-features.md §3). Fail-soft like the stages around
+// it: everything after — themes, prune, work notes, the vault index, the
+// digest — is idempotent and self-heals next pass, so a throw here must not
+// take them all down.
+do {
+    let taskSummary = try TaskGrouper.run(
+        database: database, from: from, to: nowMs, minting: minting)
+    if taskSummary.tasksTouched > 0 {
+        print("tasks: \(taskSummary.tasksTouched) touched, \(taskSummary.logsWritten) day logs")
+    }
+} catch {
+    print("task grouping failed (retries next run): \(error)")
 }
 
 // Theme layer (§5.3): the second, independent clustering into broad
@@ -192,9 +223,11 @@ let vault = VaultStore(database: database)
 
 // Prune noise tasks (design.md §5.3): sub-threshold, never renamed, never
 // hand-filed under a theme, stale for a week — debris the gate now stops at the
-// source. Their time stays in the ledger; logs and notes recompile.
+// source. Their time stays in the ledger; logs and notes recompile. Shares
+// `minting` with the grouper so reap and mint can never disagree about
+// container tasks.
 do {
-    let pruned = try TaskStore.prune(database: database, vault: vault)
+    let pruned = try TaskStore.prune(database: database, vault: vault, minting: minting)
     if pruned > 0 { print("tasks: pruned \(pruned) noise tasks") }
 } catch {
     print("task prune failed (retries next run): \(error)")

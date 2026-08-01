@@ -10,11 +10,22 @@ extension WorkNoteCompiler {
     static func prompt(taskName: String, day: String, sessions: [WorkNote.Session],
                        samples: String, tier: Tier = .light) -> String {
         let spans = sessions.map { "\($0.start)–\($0.end)" }.joined(separator: ", ")
+        // "Account for every session" rather than a bullet count: the front
+        // matter declares every stretch, the day view draws them all, and a
+        // stretch no bullet brackets is a visible hole in the record. Merging
+        // is the pressure valve — one lead may span several sessions (the UI
+        // counts them under its span) — and a quiet stretch merges into a
+        // neighbour instead of minting filler, so coverage never licenses
+        // invention.
         let bullets = """
         Summarize one day (\(day)) of work on the task "\(taskName)".
         Session times: \(spans)
-        Write 1-3 markdown bullets, each formatted
+        Write 1-6 markdown bullets, each formatted
         "**HH:MM–HH:MM** — what happened, what was accomplished."
+        Together the bullets must account for every session listed above: merge
+        neighbouring sessions into one bullet spanning both when they carry the
+        same work, or when the samples say nothing about one of them — never
+        invent detail for a quiet stretch.
         """
         guard tier == .detailed else {
             return """
