@@ -37,6 +37,17 @@ public enum SemanticTaskGrouper {
     /// chronological and sticky. A batch is a stretch of the user's day or it
     /// is nothing.
     public static let candidateLimit = 300
+    /// Cap on blocks per *call*, under the token budget. Long runs of
+    /// same-shaped assignment lines make the model's verdicts unstable —
+    /// measured 2026-07-31 by replaying one real 60-block prompt: identical
+    /// replays agreed on 26% (Qwen3.5-4B) / 49% (9B — one replay assigned all
+    /// 60 blocks to a single task) of per-block assignments; batches of 24
+    /// stabilized both at 72% / 66% while 12 overfragmented (near-duplicate
+    /// minted tasks, hallucinated ids). Applied to every backend: the latch
+    /// is a property of generating many uniform lines, not of model size —
+    /// so a run's 300 candidates still reach the model as day-stretches of
+    /// at most 24 consecutive blocks.
+    public static let batchBlockLimit = 24
     /// Existing tasks offered for reuse: the most recently active semantic
     /// tasks of the last `rosterWindowDays`.
     public static let rosterLimit = 40
@@ -344,7 +355,7 @@ extension SemanticTaskGrouper {
         var cursor = 0
         while cursor < samples.count {
             var batch: [BlockSample] = []
-            while cursor < samples.count {
+            while cursor < samples.count, batch.count < batchBlockLimit {
                 batch.append(samples[cursor])
                 cursor += 1
                 if batch.count > 1,

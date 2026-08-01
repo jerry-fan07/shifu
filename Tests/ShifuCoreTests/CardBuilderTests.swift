@@ -140,7 +140,9 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         #expect(!CardBuilder.prompt(for: [sample]).contains("Ongoing tasks"))
     }
 
-    @Test func ongoingTopicsDedupeBySlugNewestFirst() throws {
+    /// Repeated wording collapses to one entry, and the spelling kept is the
+    /// most recent one — that is what a later block has to match verbatim.
+    @Test func ongoingTopicsDedupeBySlugKeepingTheNewestSpelling() throws {
         let db = try ShifuDatabase.inMemory()
         try db.queue.write { sqlite in
             for (topic, endedAt) in [("Debugging Capture Daemon", Int64(1_000_000)),
@@ -153,6 +155,51 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
         }
         let topics = try CardBuilder.ongoingTopics(database: db, before: 4_000_000)
         #expect(topics == ["booking flights", "debugging capture daemon"])
+    }
+
+    /// `activeRoster` renders in key order for a reason: a recency-ordered
+    /// list renders differently on every pass, which moves the bytes of the
+    /// prompt and costs the provider's context-cache prefix. This list rides
+    /// in the same prompt and had the same bug — recency is the right way to
+    /// *choose* the topics, but it must not also be the order they are
+    /// *printed* in, or an hour of ordinary work reshuffles the header.
+    @Test func ongoingTopicsRenderInAStableOrderAsRecencyMoves() throws {
+        func topics(newest: String) throws -> [String] {
+            let db = try ShifuDatabase.inMemory()
+            try db.queue.write { sqlite in
+                for topic in ["zebra migration", "alpha rollout"] {
+                    let endedAt: Int64 = topic == newest ? 3_000_000 : 1_000_000
+                    var activity = Activity(
+                        startedAt: endedAt - 600_000, endedAt: endedAt,
+                        appBundle: "com.app", category: .work, topic: topic)
+                    try activity.insert(sqlite)
+                }
+            }
+            return try CardBuilder.ongoingTopics(database: db, before: 4_000_000)
+        }
+        let alphaWorkedLast = try topics(newest: "alpha rollout")
+        let zebraWorkedLast = try topics(newest: "zebra migration")
+        #expect(alphaWorkedLast == zebraWorkedLast)
+        #expect(alphaWorkedLast == ["alpha rollout", "zebra migration"])
+    }
+
+    /// Choosing by recency still has to survive the reordering: the window's
+    /// most recent topics are the ones that make the cut, they just print in
+    /// a stable order once chosen.
+    @Test func theMostRecentTopicsAreStillTheOnesKept() throws {
+        let db = try ShifuDatabase.inMemory()
+        try db.queue.write { sqlite in
+            for (topic, endedAt) in [("aaa stale", Int64(1_000_000)),
+                                     ("mmm recent", Int64(2_000_000)),
+                                     ("zzz recent", Int64(3_000_000))] {
+                var activity = Activity(startedAt: endedAt - 600_000, endedAt: endedAt,
+                                        appBundle: "com.app", category: .work, topic: topic)
+                try activity.insert(sqlite)
+            }
+        }
+        // The stalest topic loses the cut even though it sorts first.
+        let topics = try CardBuilder.ongoingTopics(database: db, before: 4_000_000, limit: 2)
+        #expect(topics == ["mmm recent", "zzz recent"])
     }
 
     @Test func batchesFitTokenBudgetAndPreserveAllSamples() {

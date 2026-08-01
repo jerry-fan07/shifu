@@ -4,14 +4,14 @@ import FoundationNetworking
 #endif
 import ShifuCore
 
-/// DeepSeek chat-completions backend (design.md §4.2 tier 2) — the only LLM
-/// backend since the on-device Foundation Models tier was dropped (4k window,
-/// macOS 26+ only, weak labels). Speaks the OpenAI-compatible protocol, so
-/// `deepseek.base_url`/`deepseek.model` can point at any /chat/completions
-/// server. Analyzer-only: this file must never move into ShifuCore, or
-/// network symbols would link into shifud (CLAUDE.md invariant 1). Only
-/// post-exclusion, post-redaction text samples are ever sent, and only once
-/// the user has supplied an API key — the key *is* the opt-in (§8).
+/// Chat-completions backend (design.md §4.2 tier 2) — one wire client for
+/// every tier that speaks the OpenAI-compatible protocol: DeepSeek with the
+/// user's key, the hosted Shifu Cloud proxy, or a local server the user runs
+/// (`analysis.backend = local`, e.g. llama-server with Qwen). Analyzer-only:
+/// this file must never move into ShifuCore, or network symbols would link
+/// into shifud (CLAUDE.md invariant 1). Only post-exclusion, post-redaction
+/// text samples are ever sent, and only after the user's affirmative opt-in
+/// (§8) — a pasted key, or choosing the cloud or local tier outright.
 ///
 /// Thinking mode is stated on every call and never left to the provider:
 /// DeepSeek defaults it to *enabled* on both slots, so a body that merely
@@ -42,11 +42,30 @@ struct DeepSeekBackend: LLMBackend {
     /// the codebase that ever sees a provider's `usage` object, so if it isn't
     /// written here the cost of a day's analysis is gone for good.
     let database: ShifuDatabase
+    /// Which analyzer stage this handle serves, stamped on every row it
+    /// records — see `labeled`. Nil means unattributed, which is what the
+    /// column meant for every row written before v27.
+    var stage: String?
+
+    /// Duty-cycle governor for a local endpoint — see `paced`. Nil (cloud,
+    /// interactive runs) means every call fires as soon as its stage asks.
+    var pacer: LLMPacer?
+
+    /// Prompt + response budget per call. Every stage sizes its batches to
+    /// it (invariant 7), so this one number is how the local tier adapts the
+    /// whole pipeline: state the window the server actually serves, and
+    /// every prompt shrinks to fit.
+    var contextWindowTokens = DeepSeekBackend.defaultContextWindowTokens
 
     /// Conservative: v4 models advertise up to 1M, but 60k keeps individual
     /// batches sane and works with any OpenAI-compatible endpoint the user
-    /// points the base URL at. Batching sizes prompts to it (invariant 7).
-    let contextWindowTokens = 60_000
+    /// points the base URL at.
+    static let defaultContextWindowTokens = 60_000
+
+    /// What `local.context_tokens` may claim. Below 8k even a compact-
+    /// roster grouping prompt stops fitting; 200k covers any server worth
+    /// pointing the base URL at.
+    static let contextWindowTokenRange = 8_000...200_000
 
     /// The `max_tokens` floor for a *thinking* call: observed reasoning runs
     /// are 2-3k tokens, so this is generous while staying inside the output
@@ -112,18 +131,18 @@ struct DeepSeekBackend: LLMBackend {
         }
     }
 
-    /// Nil until the user has opted in (§8): pasted their own key, or chosen
+    /// Nil until the user has opted in (§8): pasted their own key, chosen
     /// the hosted Shifu Cloud backend (whose device token main.swift
     /// provisions before any backend is built — a still-missing token means
-    /// registration failed, and the stages skip like a keyless install).
-    /// Either way the wire protocol is identical; the proxy only moves who
-    /// holds the DeepSeek credentials.
+    /// registration failed, and the stages skip like a keyless install), or
+    /// chosen the local tier. The wire protocol is identical throughout;
+    /// only who holds the credentials — and whether any exist — moves.
     static func ifConfigured(
-        database: ShifuDatabase, role: Role = .fast
+        database: ShifuDatabase, role: Role = .fast, edition: Edition = .current
     ) throws -> DeepSeekBackend? {
         let credential: String
         let base: String
-        switch try Settings.llmCredential(database: database) {
+        switch try Settings.llmCredential(database: database, edition: edition) {
         case nil:
             return nil
         case .deepseek(let key):
@@ -134,6 +153,8 @@ struct DeepSeekBackend: LLMBackend {
             guard let token else { return nil }
             credential = token
             base = ShifuCloud.baseURL(database: database)
+        case .localServer:
+            return localServer(role: role, database: database)
         }
         let model = (try? Settings.get(role.settingsKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
@@ -142,6 +163,68 @@ struct DeepSeekBackend: LLMBackend {
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
             responseHeadroomTokens: role.responseHeadroomTokens,
             thinks: role.thinks, database: database)
+    }
+
+    /// The local tier: one self-hosted model serves both slots — it is one
+    /// server with one model loaded, so the roles differ only in which
+    /// stages call them. Thinking stays off on both: at a local-sized window
+    /// the stock 32k chain-of-thought headroom would turn every
+    /// reasoning-slot prompt budget negative — TaskReconciler sheds its
+    /// roster to 2 entries and the `max(512, …)` stages batch degenerately.
+    /// The window comes from `local.context_tokens` and resizes every
+    /// stage's batches through invariant 7.
+    private static func localServer(role: Role, database: ShifuDatabase) -> DeepSeekBackend {
+        let base = (try? Settings.get(Settings.localBaseURLKey, database: database))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.baseURL
+        let model = (try? Settings.get(Settings.localModelKey, database: database))
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.model
+        return DeepSeekBackend(
+            // llama-server ignores auth; the placeholder only fills the header.
+            name: model, apiKey: "local", model: model,
+            baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
+            responseHeadroomTokens: 0,
+            thinks: false, database: database,
+            contextWindowTokens: localContextWindow(database: database))
+    }
+
+    /// `local.context_tokens`, clamped to `contextWindowTokenRange`; blank,
+    /// absent or unparseable means `LocalLLMDefaults.contextWindowTokens`.
+    /// Clamped on read (like `IntSetting.clamp`) so a hand-edited row can't
+    /// zero every stage's budget.
+    static func localContextWindow(database: ShifuDatabase) -> Int {
+        guard let raw = try? Settings.get(Settings.localContextTokensKey, database: database),
+              let parsed = Int(raw.trimmingCharacters(in: .whitespaces))
+        else { return LocalLLMDefaults.contextWindowTokens }
+        return min(max(parsed, contextWindowTokenRange.lowerBound),
+                   contextWindowTokenRange.upperBound)
+    }
+
+    /// A copy of this backend that stamps `stage` on every row it records.
+    ///
+    /// The label rides on the handle rather than on each call because a stage
+    /// holds one backend for the whole of its run — and because the obvious
+    /// alternative, threading a `stage:` argument through
+    /// `LLMBackend.complete`, is worse twice over: Swift forbids default
+    /// arguments in protocol requirements, so it cannot be added compatibly,
+    /// and every one of the protocol's conformers would have to take a
+    /// parameter that only this one implementation has any use for.
+    func labeled(_ stage: String) -> DeepSeekBackend {
+        var copy = self
+        copy.stage = stage
+        return copy
+    }
+
+    /// A copy of this backend whose calls wait on `pacer` (design.md §4.2):
+    /// rest before each request, sized to the one before it, so a local
+    /// GPU works in bursts instead of one fan-spinning block. The actor
+    /// reference rides through every later `labeled` copy, and one pacer is
+    /// shared across both model slots — their calls interleave on one
+    /// sequential pipeline, and the duty only means something measured over
+    /// the whole stream.
+    func paced(_ pacer: LLMPacer?) -> DeepSeekBackend {
+        var copy = self
+        copy.pacer = pacer
+        return copy
     }
 
     /// The `max_tokens` one call asks for, clamped so prompt + response still
@@ -223,7 +306,15 @@ struct DeepSeekBackend: LLMBackend {
         request.httpBody = try JSONSerialization.data(
             withJSONObject: requestBody(prompt: prompt, maxTokens: maxTokens))
 
+        // Pace around the request alone: that is the span the server spends
+        // computing, and the escalated retry in `complete` is a second full
+        // burst that must pay its own rest. A throw records nothing — the
+        // previous burst's measurement stands.
+        await pacer?.willCall()
+        let began = DispatchTime.now().uptimeNanoseconds
         let (data, response) = try await URLSession.shared.data(for: request)
+        await pacer?.didCall(
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - began) / 1_000_000_000)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? ""
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -238,7 +329,8 @@ struct DeepSeekBackend: LLMBackend {
         // precisely the runs that cost the most.
         if let call = LLMUsage.Call.parse(response: json, requested: model) {
             LLMUsage.record(
-                call, at: Int64(Date().timeIntervalSince1970 * 1_000), database: database)
+                call, at: Int64(Date().timeIntervalSince1970 * 1_000),
+                stage: stage, database: database)
         }
         guard let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any] else {

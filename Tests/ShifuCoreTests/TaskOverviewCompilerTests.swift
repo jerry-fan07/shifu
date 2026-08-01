@@ -233,4 +233,47 @@ private final class OverviewBackend: LLMBackend, @unchecked Sendable {
         #expect(text.contains("2026-07-08"))
         #expect(!text.contains("2026-07-01"))
     }
+
+    /// The heaviest prompt in the pipeline (10-25k tokens) against the one
+    /// piece of it that changes every single run. The overview is rewritten
+    /// wholesale on each pass, so every byte placed after it is a guaranteed
+    /// cache miss — and what used to sit after it was up to 30 day notes,
+    /// which are append-only oldest-first and so the most cacheable material
+    /// Shifu ever sends. The revised overview belongs at the end.
+    @Test func revisingTheOverviewDoesNotMoveTheDayNotes() {
+        let days = (1...5).map { index in
+            TaskOverviewCompiler.DayNote(
+                day: "2026-07-0\(index)", summary: "Safari — research",
+                sessionsProse: "**09:00–11:00** — read papers.", detailProse: nil)
+        }
+        func rendered(previous: String) -> String {
+            TaskOverviewCompiler.prompt(
+                taskName: "NMF research", gist: "Matrix factorization",
+                previous: previous, days: days)
+        }
+        let early = rendered(previous: "## Status\nEarly days.")
+        let later = rendered(
+            previous: "## Status\nMuch further along now, with several open threads.")
+
+        let shared = String(zip(early, later).prefix { $0 == $1 }.map(\.0))
+        for day in days {
+            #expect(shared.contains(day.rendered), "day \(day.day) fell outside the cached prefix")
+        }
+    }
+
+    /// The prefix has to be stable across runs *and* still contain everything
+    /// the model needs — a cheap prompt that lost its instructions is not a
+    /// saving. Belt and braces on the reordering above.
+    @Test func theOverviewToReviseIsStillInThePrompt() {
+        let days = [TaskOverviewCompiler.DayNote(
+            day: "2026-07-01", summary: "Safari — research",
+            sessionsProse: nil, detailProse: nil)]
+        let text = TaskOverviewCompiler.prompt(
+            taskName: "NMF research", gist: "Matrix factorization",
+            previous: "## Status\nEarly days.", days: days)
+        #expect(text.contains("## Status\nEarly days."))
+        #expect(text.contains("Matrix factorization"))
+        #expect(text.contains("Respond with ONLY the document."))
+        #expect(text.contains("2026-07-01"))
+    }
 }

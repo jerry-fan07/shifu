@@ -38,15 +38,27 @@ import Testing
 @Suite struct LLMPriceBookTests {
     /// The invoice may carry a dated snapshot of the requested alias; either
     /// direction of prefix match must price it as the reasoning slot, and
-    /// everything unrecognized prices as fast — there are only two slots.
+    /// everything unrecognized prices as fast.
     @Test func theReasoningSlotIsMatchedByPrefixEitherWay() {
         let book = LLMPriceBook(
             fast: LLMPrices.fastDefault, reasoning: LLMPrices.reasoningDefault,
-            reasoningModel: "deepseek-v4-pro")
+            reasoningModel: "deepseek-v4-pro", localModel: "qwen3.5-9b")
         #expect(book.prices(forModel: "deepseek-v4-pro") == LLMPrices.reasoningDefault)
         #expect(book.prices(forModel: "deepseek-v4-pro-0728") == LLMPrices.reasoningDefault)
         #expect(book.prices(forModel: "deepseek-v4-flash") == LLMPrices.fastDefault)
         #expect(book.prices(forModel: "some-proxy-model") == LLMPrices.fastDefault)
+    }
+
+    /// The blind week's phantom: local rows priced as flash because
+    /// "everything unrecognized is fast". A local-tier row costs the user's
+    /// own electricity, and the estimate must say $0, not a DeepSeek rate.
+    @Test func theLocalModelPricesAsFree() {
+        let book = LLMPriceBook(
+            fast: LLMPrices.fastDefault, reasoning: LLMPrices.reasoningDefault,
+            reasoningModel: "deepseek-v4-pro", localModel: "qwen3.5-9b")
+        #expect(book.prices(forModel: "qwen3.5-9b") == LLMPrices.free)
+        // llama-server's invoice may carry a longer file-ish name.
+        #expect(book.prices(forModel: "qwen3.5-9b-instruct-q4") == LLMPrices.free)
     }
 
     @Test func loadFallsBackToPublishedRatesAndConfiguredModel() throws {
@@ -55,14 +67,17 @@ import Testing
         #expect(blank.fast == LLMPrices.fastDefault)
         #expect(blank.reasoning == LLMPrices.reasoningDefault)
         #expect(blank.reasoningModel == "deepseek-v4-pro")
+        #expect(blank.localModel == LocalLLMDefaults.model)
 
         try Settings.set(LLMPrices.fastKey, to: "1/0.1/2", database: database)
         try Settings.set(LLMPrices.reasoningKey, to: "not a triple", database: database)
         try Settings.set(Settings.deepseekReasoningModelKey, to: "my-pro", database: database)
+        try Settings.set(Settings.localModelKey, to: "my-qwen", database: database)
         let configured = LLMPriceBook.load(database: database)
         #expect(configured.fast == LLMPrices(inPerM: 1, cachedPerM: 0.1, outPerM: 2))
         #expect(configured.reasoning == LLMPrices.reasoningDefault)
         #expect(configured.reasoningModel == "my-pro")
+        #expect(configured.localModel == "my-qwen")
     }
 
     @Test func windowCostSumsBothSlotsAtTheirOwnRates() throws {

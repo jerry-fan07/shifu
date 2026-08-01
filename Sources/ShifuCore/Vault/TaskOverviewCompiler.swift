@@ -62,11 +62,24 @@ public enum TaskOverviewCompiler {
 
     // MARK: - Prompt (pure, testable)
 
+    /// Ordered stablest-first, which is what the provider's context cache
+    /// rewards: it discounts a shared *prefix*, so one volatile line early in
+    /// the prompt forfeits the discount on everything behind it.
+    ///
+    /// This is the heaviest prompt Shifu sends (10-25k tokens), and the day
+    /// notes are the most cacheable material in it — append-only and
+    /// oldest-first, so run N's notes are run N-1's plus a suffix. The
+    /// overview being revised is the opposite: rewritten wholesale on every
+    /// successful pass. It therefore goes last, after the notes rather than
+    /// ahead of them, or it invalidates all thirty of them every time.
     static func prompt(
         taskName: String, gist: String?, previous: String?, days: [DayNote]
     ) -> String {
         let intro = gist.map { "What it is about: \($0)\n" } ?? ""
-        let prior = previous.map { "\nThe current overview, to revise:\n\($0)\n" } ?? ""
+        let prior = previous.map {
+            "\nThe current overview, to revise — supersede it wherever the notes above "
+                + "have moved on:\n\($0)\n"
+        } ?? ""
         return """
         Maintain the living overview document for the task "\(taskName)".
         \(intro)\
@@ -82,9 +95,10 @@ public enum TaskOverviewCompiler {
         "## Key knowledge" — what was learned that outlives the task, with the why.
         "## Open threads" — what is unfinished, unanswered, or waiting.
         Use ONLY the material below as evidence. Respond with ONLY the document.
-        \(prior)
+
         Day notes, oldest first:
         \(days.map(\.rendered).joined(separator: "\n\n"))
+        \(prior)
         """
     }
 

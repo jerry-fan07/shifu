@@ -28,6 +28,8 @@ public struct LLMPrices: Sendable, Equatable {
     public static let fastDefault = LLMPrices(inPerM: 0.14, cachedPerM: 0.0028, outPerM: 0.28)
     public static let reasoningDefault = LLMPrices(
         inPerM: 0.435, cachedPerM: 0.003625, outPerM: 0.87)
+    /// The local tier's rates: the user's own electricity, not an invoice.
+    public static let free = LLMPrices(inPerM: 0, cachedPerM: 0, outPerM: 0)
 
     public init(inPerM: Double, cachedPerM: Double, outPerM: Double) {
         self.inPerM = inPerM
@@ -58,15 +60,18 @@ public struct LLMPrices: Sendable, Equatable {
     }
 }
 
-/// Both slots' rates plus the one fact needed to pick between them: which
-/// model name the reasoning slot answers to. `llm_usage.model` is whatever
-/// the server put on the invoice — possibly a dated snapshot of the requested
-/// alias — so matching is by prefix either way, and everything that isn't the
-/// reasoning model prices as fast (there are only two slots).
+/// Both hosted slots' rates plus the two facts needed to pick between them:
+/// which model name the reasoning slot answers to, and which the local tier
+/// does. `llm_usage.model` is whatever the server put on the invoice —
+/// possibly a dated snapshot of the requested alias — so matching is by
+/// prefix either way. Local-tier rows price at zero (the rows still matter:
+/// token counts are how a local server's load is read); everything else
+/// that isn't the reasoning model prices as fast.
 public struct LLMPriceBook: Sendable {
     public let fast: LLMPrices
     public let reasoning: LLMPrices
     let reasoningModel: String
+    let localModel: String
 
     /// A blank `deepseek.reasoning_model` means this — must stay in step with
     /// `DeepSeekBackend.defaultReasoningModel` (analyzer target, so it can't
@@ -83,7 +88,13 @@ public struct LLMPriceBook: Sendable {
         let model = ((try? Settings.get(
             Settings.deepseekReasoningModelKey, database: database)) ?? nil)
             .flatMap { $0.isEmpty ? nil : $0 } ?? defaultReasoningModel
-        return LLMPriceBook(fast: fast, reasoning: reasoning, reasoningModel: model)
+        // Read even when the backend is no longer "local": a week of Qwen
+        // rows must not start pricing as flash the day the user switches.
+        let localModel = ((try? Settings.get(
+            Settings.localModelKey, database: database)) ?? nil)
+            .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.model
+        return LLMPriceBook(
+            fast: fast, reasoning: reasoning, reasoningModel: model, localModel: localModel)
     }
 
     /// Daily estimated spend above which the analyzer's spend line carries a
@@ -98,7 +109,11 @@ public struct LLMPriceBook: Sendable {
     }
 
     public func prices(forModel model: String) -> LLMPrices {
-        model.hasPrefix(reasoningModel) || reasoningModel.hasPrefix(model) ? reasoning : fast
+        if model.hasPrefix(localModel) || localModel.hasPrefix(model) {
+            return .free
+        }
+        return model.hasPrefix(reasoningModel) || reasoningModel.hasPrefix(model)
+            ? reasoning : fast
     }
 
     public func cost(of totals: LLMUsage.Totals) -> Double {

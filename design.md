@@ -230,7 +230,7 @@ Contiguous observations are folded into **activity blocks**: same app/domain, ga
 ### 4.2 Classification (tiered, cheap-first)
 
 1. **Rules layer** (instant, covers ~80%): a user-editable mapping of bundle IDs and URL domains → categories. Ships with sensible defaults (`Xcode → work`, `youtube.com → entertainment*`, `mail → admin`, …). `*` marks *ambiguous* defaults that always escalate.
-2. **LLM layer (DeepSeek)**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by DeepSeek; prompt returns `{category, confidence, topic}`. Two model slots share one key and endpoint (`deepseek.base_url` accepts any OpenAI-compatible server): the **fast slot** (`deepseek.model`, default `deepseek-v4-flash` — cheap, non-reasoning) runs the high-volume stages — this classification, knowledge extraction, work-note narratives, radar descriptions; the **reasoning slot** (`deepseek.reasoning_model`, default `deepseek-v4-pro`, a thinking model) runs the roster reconciliation and the weekly radar (§5.3) — the judgement calls, made once over a whole roster rather than per block. *(Corrected 2026-08-01: this line claimed the reasoning slot ran semantic task grouping and theme clustering, which stopped being true when the cost pass moved every hourly stage to the fast slot; both had been on the fast slot for two days by then. The claim mattered because it pointed at the wrong fix — see §12's note on what the fast slot actually costs in grouping quality.)* Only redacted, post-exclusion text samples are sent, and only once the user has opted in — their own API key, or the hosted **Shifu Cloud** proxy (`analysis.backend = shifu-cloud`, no user key; the analyzer mints a device token from `shifu_cloud.base_url` and speaks the identical wire protocol through it). Without either opt-in this layer is skipped and rules-only output stands. *(Revised 2026-07: this tier was originally an on-device model — Apple Foundation Models or bundled MLX — with cloud as an opt-in third tier. The 4k combined window forced tiny batches, labels were weak, and Foundation Models needs macOS 26+; the on-device tier was dropped and DeepSeek promoted to the sole LLM backend.)*
+2. **LLM layer (DeepSeek)**: ambiguous blocks (unknown apps, mixed-content sites like YouTube/Twitter/Reddit) are classified from their text sample by DeepSeek; prompt returns `{category, confidence, topic}`. Two model slots share one key and endpoint (`deepseek.base_url` accepts any OpenAI-compatible server): the **fast slot** (`deepseek.model`, default `deepseek-v4-flash` — cheap, non-reasoning) runs the high-volume stages — this classification, knowledge extraction, work-note narratives, radar descriptions; the **reasoning slot** (`deepseek.reasoning_model`, default `deepseek-v4-pro`, a thinking model) runs the roster reconciliation and the weekly radar (§5.3) — the judgement calls, made once over a whole roster rather than per block. *(Corrected 2026-08-01: this line claimed the reasoning slot ran semantic task grouping and theme clustering, which stopped being true when the cost pass moved every hourly stage to the fast slot; both had been on the fast slot for two days by then. The claim mattered because it pointed at the wrong fix — see §12's note on what the fast slot actually costs in grouping quality.)* Only redacted, post-exclusion text samples are sent, and only once the user has opted in — their own API key, or the hosted **Shifu Cloud** proxy (`analysis.backend = shifu-cloud`, no user key; the analyzer mints a device token from `shifu_cloud.base_url` and speaks the identical wire protocol through it). Without an opt-in this layer is skipped and rules-only output stands. The third opt-in is the **local tier** (`analysis.backend = local`): the same wire protocol pointed at an OpenAI-compatible server the user runs themselves — `local.base_url`, default `http://127.0.0.1:8080`, e.g. llama-server with Qwen. One model (`local.model`) serves both slots, with thinking always off: at a local-sized window the stock 32k chain-of-thought headroom would turn every reasoning-slot prompt budget negative, shedding TaskReconciler's roster and degenerating every batcher. `local.context_tokens` (default 16,000, clamped 8k–200k) is the window every stage sizes its batches to (invariant 7) — state what the server serves and the whole pipeline adapts with no other dial. A loopback `local.base_url` is additionally **paced** (`LLMPacer`; `llm.duty_active` default 40%, `llm.duty_idle` default 75%): the analyzer rests before each call in proportion to the previous call's length — harder while the user is present, gentler once the screen locks or input idles five minutes, halved again under `.serious` thermal pressure and paused outright at `.critical` — so a catch-up run reads as bursts with cool-down gaps instead of minutes of pinned GPU, and the fans stay quiet. Total work is unchanged; only wall time stretches, and the daemon already skips a tick while a run is still going. Interactive launches (`--build-deck`, `--radar`, `--digest`) and cloud endpoints are never paced. Launching llama-server with `-ub 256 -b 512` shrinks each prefill burst's power draw further. Which of these backend choices *exist* is decided per **edition** — one codebase, two bundles, distinguished only by an Info.plist stamp (`ShifuEdition`, written by bundle-app.sh like the version and read back by `Edition.current`; `SHIFU_EDITION` overrides for dev builds). The **standard** bundle offers `shifu-cloud`/`deepseek`/`off`; the **qwen** bundle (shipped as `Shifu-qwen-<v>.dmg`) offers `local`/`off` — Qwen in place of the cloud server and API keys, defaulting to rules-only until the user points it at their server. The gate is enforced at `Settings.llmCredential`, the same choke point as the opt-in itself: a stored backend value the running edition doesn't offer reads as rules-only, never as some other backend, so a database that has met both bundles cannot silently reroute text to an endpoint the user never chose in this one. *(Revised 2026-07: this tier was originally an on-device model — Apple Foundation Models or bundled MLX — with cloud as an opt-in third tier. The 4k combined window forced tiny batches, labels were weak, and Foundation Models needs macOS 26+; the on-device tier was dropped and DeepSeek promoted to the sole LLM backend.)*
 
 Categories (v1, user-extensible): `work`, `learning`, `entertainment`, `social`, `communication`, `admin`, `idle`. Every block also gets a free-text `topic` ("debugging shifu capture daemon", "watching F1 highlights") used by the knowledge and automation stages.
 
@@ -585,11 +585,34 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   consecutive eligible runs until the cap (3). A backoff (next run, +4h, +24h)
   would spread them, but the closed-block gate plus the cap already bound the
   waste to two extra calls per stubborn block; not worth a timestamp column.
-- **Cross-run prompt-cache alignment as its own effort (§4.2)** — rosters now
-  render in stable key order, which is the free win. Going further (quantizing
-  roster stats, freezing block rendering across attempts) chases input-token
-  discounts on prompts that card evidence already made small; revisit only if
-  `llm_usage` shows cache misses dominating a real bill.
+- **Cross-run prompt-cache alignment as its own effort (§4.2)** — the ordering
+  wins are taken: rosters render in stable key order, `CardBuilder.ongoingTopics`
+  in slug order, and the task-overview prompt puts the overview it is revising
+  *after* the day notes rather than ahead of them (it is rewritten every pass,
+  so anything behind it was a guaranteed miss). What is left is the part that
+  costs something to keep: the roster's per-task counters (`2.4h over 3d · last
+  2d ago`) move hourly and sit inline with the names, so the byte-identical
+  prefix still ends at the instruction header — splitting them into their own
+  section after the stable name/gist block is the fix. Alongside it, the
+  grouping and clustering prompts append their output-format spec *after* the
+  block list, where it can never be cached. Measure both against the per-stage
+  attribution below before spending anything on them; note also that input is
+  only worth chasing once thinking mode is off the fast slot — with
+  chain-of-thought billed as output, input was under a fifth of the bill.
+- **Per-stage attribution in `llm_usage` (§4.2)** — *done, v27.* The table
+  recorded what each response cost but never what it bought, so "which stage
+  is expensive?" could only be answered by lining rows up against the order
+  main.swift runs its stages — an inference that batching, truncation retries,
+  `LLMStageGate` skips, fail-soft throws, and the second process `--build-deck`
+  starts each break independently. `llm_usage.stage` is now stamped by the
+  backend handle each stage is handed (`DeepSeekBackend.labeled`), and
+  `shifu status` prints the split beneath the per-model lines. The label rides
+  on the handle rather than through `LLMBackend.complete` because Swift forbids
+  default arguments in protocol requirements: a `stage:` parameter could not
+  have been added compatibly, and all twenty-odd conformers would have taken an
+  argument only one implementation uses. Rows written before v27 stay NULL
+  rather than `'unknown'` — they are the baseline the first before/after
+  comparison is made against.
 - **Card-fed light-tier work notes and radar/deck evidence (§5.3)** — cards
   could stand in for raw screen-text in the light day-note prompt and the
   weekly evidence dossiers. After the open-day throttle those stages are
@@ -681,7 +704,20 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 - ~~**Bundled MLX local model** (deferred from Phase 3)~~ — mooted 2026-07:
   the on-device tier was dropped altogether (§4.2) and DeepSeek is the only
   LLM backend. On-device analysis returns only if a local model ever matches
-  cloud quality at ledger-scale batch sizes.
+  cloud quality at ledger-scale batch sizes. **Measured 2026-07-31 (base
+  M4/24 GB, llama.cpp, 16k window, thinking off): that condition is now
+  arguably met.** Qwen3.5-9B (Q4, 5.7 GB weights, 6.1 GB server RSS) ran the
+  full pipeline end to end — 48h catch-up in 18.8 min, 89% (32/36) card
+  category agreement with a same-state DeepSeek run, grouping spread over
+  sensible tasks, minted titles at the intent-level bar. Qwen3.5-4B is
+  feasibility-fine (31.8 min, ~3.5 GB — inside an 8 GB Mac) but its grouping
+  verdicts destabilize on 60-block batches; capping batches at 24 blocks
+  (§5.3, measured) brings its replay stability to parity with the 9B. The
+  reopening path: the §4.2 local profile ships the power-user shape today
+  (llama-server); a native MLX backend in shifu-analyzer is the release
+  shape, gated on the user's blind dogfood week (title quality — the one
+  axis agreement numbers don't settle) and on re-measuring prefill under
+  MLX before any code.
 - Signed + notarized DMG packaging (needs Developer ID certs; `install-daemon.sh`
   + `install-app.sh` cover the from-source path until then — the latter bundles
   ShifuApp into a standalone menu bar `Shifu.app` in /Applications).
@@ -856,7 +892,7 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 ## 13. Open Questions
 
 1. Should the heartbeat interval adapt to category (e.g., 30 s during `work` for finer ledger resolution, 5 min during `entertainment`)?
-2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2).
+2. ~~Local model choice: Apple Foundation Models framework (zero bundle cost, OS-version-gated) vs. bundled MLX model (~2 GB, works everywhere) — ship both with runtime selection?~~ Resolved 2026-07: neither. Foundation Models shipped first and lost on its 4k window, weak labels, and macOS 26+ gate; both on-device paths were dropped for DeepSeek (`deepseek-v4-flash` default) as the sole backend (§4.2). *Reopened 2026-07-31 with different candidates and a measured go (§12): Qwen3.5-9B at a 16k window matches DeepSeek on cards (89%) and groups plausibly on Apple Silicon ≥16 GB; the 4B serves 8 GB Macs under the 24-block grouping cap. Model choice by `hw.memsize`; Intel stays rules-only/BYO-key. Final ship gate is the user's blind week on task-title quality.*
 3. Is glow-pulse enough for Focus Mode, or is an optional hard mode (block-list with confirm-to-continue) worth its complexity and adversarial feel?
 4. Vault dedupe: how aggressively should near-duplicate knowledge candidates merge across days (same fact re-encountered is itself an SRS signal)?
 5. Should `excluded` time still count toward the ledger as an opaque "private" category (better totals) or vanish entirely (better deniability)? Default proposal: opaque category, toggleable.

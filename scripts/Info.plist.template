@@ -11,6 +11,11 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>__VERSION__</string>
     <key>CFBundleVersion</key><string>__BUILD__</string>
+    <!-- Which Shifu this bundle is sold as (Edition.current): "standard"
+         offers the hosted backends, "qwen" only the local one. Stamped by
+         bundle-app.sh like the version, so a bundle cannot claim an edition
+         other than the one it was assembled as. -->
+    <key>ShifuEdition</key><string>__EDITION__</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Jerry Fan</string>

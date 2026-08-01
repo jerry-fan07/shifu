@@ -126,6 +126,14 @@ public enum Settings {
     /// Reasoning model (default deepseek-v4-pro): semantic task grouping and
     /// theme clustering, where naming the user's intent is the whole job.
     public static let deepseekReasoningModelKey = "deepseek.reasoning_model"
+    /// The local tier (§4.2): an OpenAI-compatible server the user runs
+    /// themselves. One model serves both slots — it is one server with one
+    /// model loaded — with thinking always off, so the context window (blank
+    /// means `LocalLLMDefaults.contextWindowTokens`) is spent on prompts, not
+    /// chain-of-thought headroom.
+    public static let localBaseURLKey = "local.base_url"
+    public static let localModelKey = "local.model"
+    public static let localContextTokensKey = "local.context_tokens"
     public static let digestHourKey = "digest.hour"
 
     public static func get(_ key: String, database: ShifuDatabase) throws -> String? {
@@ -152,7 +160,24 @@ public enum Settings {
     /// work without one. A credential here is not a promise the endpoint
     /// answers; it is the difference between "will try" and "cannot".
     public static func llmCredential(database: ShifuDatabase) throws -> LLMCredential? {
-        switch try get(analysisBackendKey, database: database) {
+        try llmCredential(database: database, edition: .current)
+    }
+
+    /// The edition-explicit form the default above resolves to; tests are
+    /// the only callers that pass one. A backend value the edition doesn't
+    /// offer — one database has met both bundles — reads as rules-only,
+    /// never as some other backend: silently rerouting the Qwen bundle's
+    /// text to a cloud endpoint over a leftover key would be an opt-in
+    /// nobody made.
+    public static func llmCredential(
+        database: ShifuDatabase, edition: Edition
+    ) throws -> LLMCredential? {
+        // A pre-choice install stored nothing; the key was the opt-in then,
+        // and the edition default keeps that reading.
+        let choice = try get(analysisBackendKey, database: database)
+            ?? edition.defaultAnalysisBackend
+        guard edition.analysisBackends.contains(choice) else { return nil }
+        switch choice {
         case "off":
             return nil
         case "shifu-cloud":
@@ -160,6 +185,11 @@ public enum Settings {
             // the analyzer on its next run when nil.
             let token = try get(shifuCloudTokenKey, database: database)
             return .shifuCloud(token: (token?.isEmpty ?? true) ? nil : token)
+        case "local":
+            // No credential to hold: the endpoint is a server the user runs,
+            // and choosing it is the whole opt-in. Non-nil so both binaries
+            // read "an LLM backend exists" the same way they do for a key.
+            return .localServer
         default:
             guard let key = try ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]
                 ?? get(deepseekAPIKeyKey, database: database), !key.isEmpty
@@ -170,11 +200,13 @@ public enum Settings {
 }
 
 /// How the analyzer may talk to an LLM once the user has opted in: their own
-/// DeepSeek key, or the hosted Shifu Cloud proxy (whose device token may not
-/// exist yet — the analyzer mints one on first use).
+/// DeepSeek key, the hosted Shifu Cloud proxy (whose device token may not
+/// exist yet — the analyzer mints one on first use), or a local server they
+/// run themselves, which needs no credential at all.
 public enum LLMCredential: Equatable, Sendable {
     case deepseek(key: String)
     case shifuCloud(token: String?)
+    case localServer
 }
 
 // MARK: - Catalog-typed access

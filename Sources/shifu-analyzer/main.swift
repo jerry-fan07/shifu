@@ -61,7 +61,8 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
     let deckVault = VaultStore(database: database)
     do {
         if let cards = try await DeckBuilder.build(
-            deckKey: deckKey, database: database, vault: deckVault, backend: deckBackend) {
+            deckKey: deckKey, database: database, vault: deckVault,
+            backend: deckBackend.labeled("deck-build")) {
             print("deck \(deckKey): \(cards) cards")
         } else {
             print("deck \(deckKey): already building elsewhere")
@@ -93,17 +94,33 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
 
-// One wire protocol, two ways in — the user's own DeepSeek key, or the
-// hosted Shifu Cloud proxy. Without either opt-in (or with backend "off")
-// every LLM stage is skipped and the rules-only ledger stands (§10
-// fallback). Two model slots share the one opt-in (§4.2): the fast model
-// runs everything hourly — cards, grouping, themes, notes — over card
-// evidence; the reasoning model is reserved for the daily roster
-// reconciliation and the weekly radar, the judgment calls where its billed
-// chain-of-thought earns its price.
-let backend: (any LLMBackend)? = try DeepSeekBackend.ifConfigured(database: database)
-let reasoningBackend: (any LLMBackend)? =
-    try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
+// One wire protocol, three ways in — the user's own DeepSeek key, the
+// hosted Shifu Cloud proxy, or a local server they run themselves. Without
+// an opt-in (or with backend "off") every LLM stage is skipped and the
+// rules-only ledger stands (§10 fallback). Two model slots share the one
+// opt-in (§4.2): the fast model runs everything hourly — cards, grouping,
+// themes, notes — over card evidence; the reasoning model is reserved for
+// the daily roster reconciliation and the weekly radar, the judgment calls
+// where its billed chain-of-thought earns its price. On the local tier both
+// slots are the one model the server has loaded.
+// The local tier means the GPU doing analysis sits under the user's hands,
+// so its calls are paced (LLMPacer): rest between bursts, harder while the
+// user is present, gentler once the screen locks or input goes idle — except
+// when a flag says someone is watching this very run, where sleeping between
+// calls would punish the person who asked. Cloud tiers get no pacer; the
+// `--build-deck` path above builds its own backend and stays unpaced for the
+// same someone-is-watching reason.
+let watched = args.contains("--radar") || args.contains("--digest")
+let pacer: LLMPacer? = watched
+    ? nil : LLMPacer.ifLocal(database: database, userIsAway: { Presence.userIsAway() })
+let backend: DeepSeekBackend? =
+    try DeepSeekBackend.ifConfigured(database: database)?.paced(pacer)
+let reasoningBackend: DeepSeekBackend? =
+    try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)?.paced(pacer)
+if let pacer {
+    print("local endpoint — pacing LLM calls at \(pacer.activeDutyPercent)% duty "
+        + "(\(pacer.idleDutyPercent)% away)")
+}
 
 // With a backend, `domain:`/`app:` container keys mint and attach only as a
 // last resort (§5.3): the semantic pass gets first claim on their time, and a
@@ -116,12 +133,14 @@ let minting: TaskGrouper.MechanicalMinting = backend == nil ? .always : .lastRes
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
 // the same card relabels blocks the rules tier marked ambiguous. Every later
-// stage renders cards instead of re-sampling raw text, so this is the one
-// place OCR text meets a prompt on the hourly path.
+// *grouping* stage renders cards instead of re-sampling raw text, so this is
+// where OCR text meets a prompt on the hourly path — with one exception the
+// ledger stages don't own: WorkNoteCompiler still samples `observations.text`
+// directly for its day narratives (design.md §12).
 if let backend {
     do {
         let cardSummary = try await CardBuilder.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("cards"), from: from, to: nowMs)
         if cardSummary.built > 0 {
             print("cards (\(backend.name)): \(cardSummary.built) built, "
                 + "\(cardSummary.relabeled) ambiguous blocks relabeled")
@@ -157,7 +176,8 @@ do {
 if let backend {
     do {
         let semSummary = try await SemanticTaskGrouper.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("semantic-tasks"),
+            from: from, to: nowMs)
         // Printed whenever the stage had anything to judge, declines
         // included: gating this on `assigned > 0` made the two failures
         // that matter — a model placing nothing, and a model that was
@@ -213,13 +233,13 @@ do {
 if let backend {
     do {
         let themeSummary = try await ThemeClusterer.run(
-            database: database, backend: backend, from: from, to: nowMs)
+            database: database, backend: backend.labeled("themes"), from: from, to: nowMs)
         if themeSummary.assigned > 0 || themeSummary.themesProposed > 0 {
             print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
         let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend)
+            database: database, backend: backend.labeled("theme-narratives"))
         if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")
@@ -273,7 +293,7 @@ if let reasoningBackend,
                     now: nowMs, database: database) {
     do {
         let reconciled = try await TaskReconciler.run(
-            database: database, backend: reasoningBackend)
+            database: database, backend: reasoningBackend.labeled("reconcile"))
         LLMStageGate.stamp("reconcile.last_ran", now: nowMs, database: database)
         if reconciled.mergesSuggested > 0 || reconciled.gistsFilled > 0 {
             print("reconcile (\(reasoningBackend.name)): "
@@ -293,7 +313,7 @@ if let backend {
     // query when there is nothing waiting.
     do {
         let built = try await DeckBuilder.drainPending(
-            database: database, vault: vault, backend: backend)
+            database: database, vault: vault, backend: backend.labeled("decks"))
         if built > 0 { print("decks: \(built) built") }
     } catch {
         print("deck build failed (retries next run): \(error)")
@@ -312,8 +332,8 @@ let openDayDue = LLMStageGate.due(
     now: nowMs, database: database)
 do {
     let workSummary = try await WorkNoteCompiler.run(
-        database: database, vault: vault, backend: backend, from: from, to: nowMs,
-        regenerateOpenDay: openDayDue)
+        database: database, vault: vault, backend: backend?.labeled("worknotes"),
+        from: from, to: nowMs, regenerateOpenDay: openDayDue)
     if openDayDue, backend != nil {
         LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
     }
@@ -332,7 +352,7 @@ do {
 if let backend {
     do {
         let overviewSummary = try await TaskOverviewCompiler.run(
-            database: database, vault: vault, backend: backend)
+            database: database, vault: vault, backend: backend.labeled("task-overviews"))
         if overviewSummary.written > 0 {
             print("task overviews: \(overviewSummary.written) compiled")
         }
@@ -382,7 +402,8 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
     if let reasoningBackend {
         do {
             let summary = try await Radar.describe(
-                database: database, backend: reasoningBackend, candidates: candidates)
+                database: database, backend: reasoningBackend.labeled("radar"),
+                candidates: candidates)
             if summary.accepted > 0 || summary.rejected > 0 {
                 print("radar (\(reasoningBackend.name)): \(summary.accepted) suggestions, "
                     + "\(summary.rejected) judged not worth it")
@@ -418,7 +439,8 @@ if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
     // unevaluated task simply waits for next week.
     if let backend {
         do {
-            let proposed = try await DeckSuggester.run(database: database, backend: backend)
+            let proposed = try await DeckSuggester.run(
+                database: database, backend: backend.labeled("deck-suggest"))
             if proposed > 0 { print("decks: \(proposed) deck suggestions") }
         } catch {
             print("deck suggester failed (retry next week): \(error)")

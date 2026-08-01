@@ -385,6 +385,59 @@ private struct TaskRowSnapshot: Sendable {
 
 // Extension keeps the suite's type body inside the lint budget.
 extension SemanticTaskGrouperTests {
+    /// The backend's window decides the roster tier at exactly
+    /// `fullRosterMinContextTokens`: a sub-16k backend (the local profile)
+    /// gets compact roster lines — names and gists only — while 16k and up
+    /// keeps the history facts the prior weighting rests on.
+    @Test func sub16kWindowsGetTheCompactRoster() async throws {
+        let nowMs: Int64 = 1_000_000_000_000
+        let day: Int64 = 86_400_000
+        for (window, expectFacts) in [(12_000, false), (16_000, true)] {
+            let db = try ShifuDatabase.inMemory()
+            try await db.queue.write { sqlite in
+                try sqlite.execute(sql: """
+                    INSERT INTO tasks (id, key, name, created_at, last_active_at)
+                    VALUES (1, 'sem:sf-trip', 'Planning the SF trip', ?, ?)
+                    """, arguments: [nowMs - 5 * day, nowMs - 2 * day])
+                try sqlite.execute(sql: """
+                    INSERT INTO task_logs (task_id, day_start, duration_ms, summary)
+                    VALUES (1, ?, 3600000, 'united.com — flights')
+                    """, arguments: [nowMs - 2 * day])
+            }
+            var ids: [Int64] = []
+            try seedBlock(db, id: &ids, startedAt: nowMs - 3_600_000)
+            let backend = GroupingBackend(contextWindowTokens: window)
+            _ = try await SemanticTaskGrouper.run(
+                database: db, backend: backend, from: nowMs - day, to: nowMs,
+                now: Date(timeIntervalSince1970: Double(nowMs) / 1_000))
+            let prompt = try #require(backend.prompts.first)
+            #expect(prompt.contains("t1: Planning the SF trip"))
+            #expect(prompt.contains("60m over 1d") == expectFacts, "window \(window)")
+        }
+    }
+
+    /// Even under a huge token budget, one call carries at most
+    /// `batchBlockLimit` blocks: replaying a real 60-block prompt showed the
+    /// model's verdicts destabilize with long runs of same-shaped assignment
+    /// lines (identical replays agreed on as little as 26% of assignments,
+    /// or collapsed onto a single task), while 24-block batches stabilized
+    /// them — see the constant.
+    @Test func batchesCapAtTheBlockLimitEvenInsideTheTokenBudget() async throws {
+        let db = try ShifuDatabase.inMemory()
+        var ids: [Int64] = []
+        for index in 0..<(SemanticTaskGrouper.batchBlockLimit + 6) {
+            try seedBlock(db, id: &ids, startedAt: Int64(index) * 3_600_000)
+        }
+        let backend = GroupingBackend(contextWindowTokens: 100_000)
+        let summary = try await SemanticTaskGrouper.run(
+            database: db, backend: backend, from: 0, to: 1_000_000_000)
+        #expect(summary.assigned == SemanticTaskGrouper.batchBlockLimit + 6)
+        let sizes = backend.prompts.map { prompt in
+            prompt.components(separatedBy: "\nid=").count - 1
+        }
+        #expect(sizes == [SemanticTaskGrouper.batchBlockLimit, 6])
+    }
+
     /// A block whose `ended_at` is within a sessionizer gap of `to` may still
     /// be growing — its verdict would be discarded by the next rebuild when
     /// the span moves, so it must not be bought at all.

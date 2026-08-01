@@ -83,14 +83,19 @@ public struct IntSetting: Identifiable, Sendable {
     public let range: ClosedRange<Int>
     public let step: Int
     public let unit: Unit
+    /// Same gate as `TextSetting.visibleWhen`: hides the row unless another
+    /// setting has the given value, so backend-specific dials only show for
+    /// their backend.
+    public let visibleWhen: (key: String, value: String)?
 
     public var id: String { key }
 
-    public enum Unit: Sendable { case seconds, minutes, days }
+    public enum Unit: Sendable { case seconds, minutes, days, percent }
 
     public init(
         key: String, section: SettingsSection, title: String, help: String,
-        defaultValue: Int, range: ClosedRange<Int>, step: Int, unit: Unit
+        defaultValue: Int, range: ClosedRange<Int>, step: Int, unit: Unit,
+        visibleWhen: (key: String, value: String)? = nil
     ) {
         self.key = key
         self.section = section
@@ -100,6 +105,7 @@ public struct IntSetting: Identifiable, Sendable {
         self.range = range
         self.step = step
         self.unit = unit
+        self.visibleWhen = visibleWhen
     }
 
     /// The single source of truth for this setting's bounds — applied on both
@@ -113,6 +119,7 @@ public struct IntSetting: Identifiable, Sendable {
         case .seconds: return "\(value)s"
         case .minutes: return "\(value / 60) min"
         case .days: return value == 1 ? "1 day" : "\(value) days"
+        case .percent: return "\(value)%"
         }
     }
 }
@@ -182,17 +189,23 @@ public struct ChoiceSetting: Identifiable, Sendable {
     public let help: String
     public let options: [Option]
     public let defaultValue: String
+    /// Same gate as `TextSetting.visibleWhen`: hides the row unless another
+    /// setting has the given value, so backend-specific dials only show for
+    /// their backend.
+    public let visibleWhen: (key: String, value: String)?
 
     public var id: String { key }
 
     public init(key: String, section: SettingsSection, title: String, help: String,
-                options: [Option], defaultValue: String) {
+                options: [Option], defaultValue: String,
+                visibleWhen: (key: String, value: String)? = nil) {
         self.key = key
         self.section = section
         self.title = title
         self.help = help
         self.options = options
         self.defaultValue = defaultValue
+        self.visibleWhen = visibleWhen
     }
 
     /// Unknown stored values collapse to the default — applied on read *and*
@@ -271,13 +284,25 @@ public enum SettingsCatalog {
     // AI backend (design.md §4.2, §8). All LLM calls are analyzer-only, and
     // every option is inert until the user's affirmative act: choosing Shifu
     // Cloud is that act for the hosted backend; pasting a key is it for
-    // DeepSeek. Without either, analysis is rules-only and nothing ever
-    // leaves this Mac.
-    public static let analysisBackend = ChoiceSetting(
-        key: Settings.analysisBackendKey, section: .analysis,
-        title: "AI backend",
-        help: "Backend analysis engine",
-        options: [
+    // DeepSeek; choosing Local is it for a server the user runs themselves.
+    // Without one, analysis is rules-only and nothing ever leaves this Mac.
+    // Which of these choices *exist* is the edition's call (§4.2): the
+    // standard bundle offers the hosted tiers, the Qwen bundle only the
+    // local one. The copy below is written once for all editions.
+    public static let analysisBackend = analysisBackend(for: .current)
+
+    static func analysisBackend(for edition: Edition) -> ChoiceSetting {
+        ChoiceSetting(
+            key: Settings.analysisBackendKey, section: .analysis,
+            title: "AI backend",
+            help: "Backend analysis engine",
+            options: analysisBackendOptions.filter {
+                edition.analysisBackends.contains($0.value)
+            },
+            defaultValue: edition.defaultAnalysisBackend)
+    }
+
+    private static let analysisBackendOptions: [ChoiceSetting.Option] = [
             .init(
                 value: "shifu-cloud", label: "Shifu Cloud",
                 detail: "No key and no account. Redacted, post-exclusion text samples go "
@@ -285,15 +310,21 @@ public enum SettingsCatalog {
                     + "pixels, never raw captures, never stored."),
             // The label says what the user brings ("API Key"); the value stays
             // "deepseek" because it is a stored identifier, not copy — the
-            // default below, the text rows' `visibleWhen` gates, onboarding's
-            // write and every existing settings row all say "deepseek", and
-            // renaming the value would orphan them all.
+            // edition default, the text rows' `visibleWhen` gates,
+            // onboarding's write and every existing settings row all say
+            // "deepseek", and renaming the value would orphan them all.
             .init(
                 value: "deepseek", label: "API Key",
                 detail: "Redacted, post-exclusion text samples go straight to DeepSeek — "
                     + "an AI provider based in China — with your own key, never through "
                     + "Shifu's server. Never pixels, never raw captures, and the calls "
                     + "are billed to your own account."),
+            .init(
+                value: "local", label: "Local model",
+                detail: "Nothing leaves this Mac. Analysis runs against a model server "
+                    + "you host yourself — any OpenAI-compatible endpoint, such as "
+                    + "llama-server with Qwen. Slower than the cloud, free forever, and "
+                    + "paced so the GPU stays quiet while you work."),
             .init(
                 value: "off", label: "Rules only",
                 detail: "Nothing leaves this Mac. Time is still captured, categorized "
@@ -302,9 +333,7 @@ public enum SettingsCatalog {
                     + "Themes, the radar, work-note narratives and new decks need a "
                     + "model, so they stand still; nothing already written is lost, and "
                     + "turning an engine on later picks up the last two days.")
-        ],
-        defaultValue: "deepseek"
-    )
+    ]
 
     public static let shifuCloudBaseURL = TextSetting(
         key: Settings.shifuCloudBaseURLKey, section: .analysis,
@@ -350,6 +379,64 @@ public enum SettingsCatalog {
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
+    // The local tier (design.md §4.2). One model serves both slots — it is
+    // one server with one model loaded — with thinking always off: at a
+    // local-sized window the stock chain-of-thought reserve would swallow
+    // every reasoning-slot prompt budget whole. State the window the server
+    // actually serves and every stage re-sizes its batches through invariant
+    // 7 — no other dial has to move.
+    public static let localBaseURL = TextSetting(
+        key: Settings.localBaseURLKey, section: .analysis,
+        title: "Endpoint",
+        help: "Any OpenAI-compatible /chat/completions server you run "
+            + "yourself. Blank uses llama-server's stock address.",
+        placeholder: LocalLLMDefaults.baseURL,
+        visibleWhen: (key: Settings.analysisBackendKey, value: "local")
+    )
+
+    public static let localModel = TextSetting(
+        key: Settings.localModelKey, section: .analysis,
+        title: "Model",
+        help: "The model name sent on each call. llama-server ignores it; "
+            + "servers that route by name (Ollama, LM Studio) need the real one.",
+        placeholder: LocalLLMDefaults.model,
+        visibleWhen: (key: Settings.analysisBackendKey, value: "local")
+    )
+
+    public static let localContextTokens = TextSetting(
+        key: Settings.localContextTokensKey, section: .analysis,
+        title: "Context window",
+        help: "Tokens per call, prompt and response combined — analysis sizes "
+            + "its batches to fit. Enter what the server actually serves; "
+            + "blank uses \(LocalLLMDefaults.contextWindowTokens).",
+        placeholder: String(LocalLLMDefaults.contextWindowTokens),
+        visibleWhen: (key: Settings.analysisBackendKey, value: "local")
+    )
+
+    // Pacing (LLMPacer): only the local tier is ever paced — these dials
+    // do nothing for a cloud host, whose network round trips are rest enough.
+    public static let llmDutyActive = IntSetting(
+        key: "llm.duty_active", section: .analysis,
+        title: "Local model pacing",
+        help: "How hard the local server may work while you're at the Mac, as "
+            + "a duty cycle: at 40% the analyzer rests 1.5× each call's length "
+            + "between calls, so the GPU stays cool and the fans stay quiet. "
+            + "100 turns pacing off. Cloud endpoints are never paced.",
+        defaultValue: 40, range: 10...100, step: 5, unit: .percent,
+        visibleWhen: (key: Settings.analysisBackendKey, value: "local")
+    )
+
+    public static let llmDutyIdle = IntSetting(
+        key: "llm.duty_idle", section: .analysis,
+        title: "Pacing when away",
+        help: "The duty cycle once the screen locks or input has been idle a "
+            + "few minutes — higher, so analysis catches up while nobody can "
+            + "hear it. Thermal pressure still throttles either mode before "
+            + "the machine runs hot.",
+        defaultValue: 75, range: 10...100, step: 5, unit: .percent,
+        visibleWhen: (key: Settings.analysisBackendKey, value: "local")
+    )
+
     // Cost estimation (LLMPrices). Rates as settings, not code: they change
     // without warning, and an estimate that can be corrected in a text field
     // beats one that waits for a release.
@@ -381,13 +468,15 @@ public enum SettingsCatalog {
     )
 
     public static let ints: [IntSetting] = [
-        heartbeatSeconds, analysisIntervalSeconds, textRetentionDays
+        heartbeatSeconds, analysisIntervalSeconds, textRetentionDays,
+        llmDutyActive, llmDutyIdle
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
         shifuCloudBaseURL,
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,
+        localBaseURL, localModel, localContextTokens,
         llmPriceFast, llmPriceReasoning, llmDailyWarn
     ]
 }

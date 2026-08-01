@@ -232,7 +232,19 @@ final class SettingsStore: ObservableObject {
 
     /// Whether a text row should show, given its `visibleWhen` gate.
     func isVisible(_ setting: TextSetting) -> Bool {
-        guard let gate = setting.visibleWhen else { return true }
+        isVisible(gate: setting.visibleWhen)
+    }
+
+    func isVisible(_ setting: ChoiceSetting) -> Bool {
+        isVisible(gate: setting.visibleWhen)
+    }
+
+    func isVisible(_ setting: IntSetting) -> Bool {
+        isVisible(gate: setting.visibleWhen)
+    }
+
+    private func isVisible(gate: (key: String, value: String)?) -> Bool {
+        guard let gate else { return true }
         let current = SettingsCatalog.choices.first { $0.key == gate.key }
             .map(value(for:)) ?? choices[gate.key]
         return current == gate.value

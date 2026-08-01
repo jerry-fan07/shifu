@@ -10,6 +10,9 @@
 #   SHIFU_VERSION         marketing version (default: the version in ShifuCore)
 #   SHIFU_BUILD           CFBundleVersion (default: git commit count)
 #   SHIFU_NOTARY_PROFILE  notarytool keychain profile (default: shifu)
+#   SHIFU_EDITION         standard | qwen (default standard) — the qwen
+#                         edition offers only the local backend and ships as
+#                         Shifu-qwen-<v>.dmg
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -34,11 +37,14 @@ echo "signing as: $IDENTITY"
 scripts/bundle-app.sh "$APP"
 
 # Name the DMG after what the bundle actually says it is, rather than resolving
-# SHIFU_VERSION a second time — the disk image and the About page then can't
-# disagree.
+# SHIFU_VERSION or SHIFU_EDITION a second time — the disk image and the About
+# page then can't disagree.
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
     "$APP/Contents/Info.plist")"
+EDITION="$(/usr/libexec/PlistBuddy -c 'Print ShifuEdition' \
+    "$APP/Contents/Info.plist")"
 DMG="dist/Shifu-$VERSION.dmg"
+[ "$EDITION" != "standard" ] && DMG="dist/Shifu-$EDITION-$VERSION.dmg"
 
 # Sign inside-out, hardened runtime + secure timestamp on everything. No
 # entitlements: the app is not sandboxed, and Accessibility/Screen Recording

@@ -6,7 +6,8 @@
 # notarization) so bundle layout is defined exactly once.
 #
 # Env: SHIFU_VERSION (default: the version in ShifuCore), SHIFU_BUILD (default:
-# git commit count).
+# git commit count), SHIFU_EDITION (standard | qwen, default standard — which
+# backend choices the bundle offers; see Edition in ShifuCore).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -23,6 +24,16 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 BUILD="${SHIFU_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
+
+# The edition is a stamp, not a build variant: the binaries are identical,
+# and Edition.current reads this plist key back at runtime. Validated here
+# because a typo would silently assemble a standard bundle.
+EDITION="${SHIFU_EDITION:-standard}"
+case "$EDITION" in
+    standard|qwen) ;;
+    *) echo "ERROR: SHIFU_EDITION must be 'standard' or 'qwen', got '$EDITION'" >&2
+       exit 1 ;;
+esac
 
 swift build -c release --product ShifuApp
 swift build -c release --product shifud
@@ -60,6 +71,7 @@ for BINARY in ShifuApp shifud shifu-analyzer shifu; do
 done
 
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" \
+    -e "s/__EDITION__/$EDITION/" \
     scripts/Info.plist.template > "$APP/Contents/Info.plist"
 
-echo "assembled $APP (version $VERSION, build $BUILD) — unsigned"
+echo "assembled $APP (version $VERSION, build $BUILD, edition $EDITION) — unsigned"

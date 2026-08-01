@@ -133,4 +133,84 @@ import Testing
         #expect(totals[0].calls == 5)
         #expect(totals[0].promptTokens == 500)
     }
+
+    /// The whole point of the column (v27): which stage bought the call.
+    /// Without it, per-stage cost is inferred from call ordering, and a stage
+    /// that batches, retries, or is skipped breaks that inference silently.
+    @Test func totalsSplitByStageWhenAsked() throws {
+        let database = try ShifuDatabase.inMemory()
+        LLMUsage.record(call("flash", prompt: 1_000, completion: 200),
+                        at: 500, stage: "cards", database: database)
+        LLMUsage.record(call("flash", prompt: 3_000, completion: 400),
+                        at: 600, stage: "cards", database: database)
+        LLMUsage.record(call("flash", prompt: 200, completion: 50),
+                        at: 700, stage: "themes", database: database)
+
+        let byStage = try LLMUsage.totals(
+            from: 0, to: 1_000, byStage: true, database: database)
+        #expect(byStage.count == 2)
+        #expect(byStage[0].stage == "cards")
+        #expect(byStage[0].calls == 2)
+        #expect(byStage[0].promptTokens == 4_000)
+        #expect(byStage[0].completionTokens == 600)
+        #expect(byStage[1].stage == "themes")
+        #expect(byStage[1].calls == 1)
+    }
+
+    /// Splitting by stage must not lose the model: `LLMPriceBook` picks its
+    /// rates off the model name, so a rollup keyed on stage alone could not be
+    /// turned into dollars at all. Two stages on two slots stay four rows, and
+    /// each one still knows what it was billed as.
+    @Test func theStageSplitKeepsTheModelItMustBePricedBy() throws {
+        let database = try ShifuDatabase.inMemory()
+        for (model, stage) in [("flash", "cards"), ("flash", "themes"),
+                               ("pro", "reconcile"), ("pro", "radar")] {
+            LLMUsage.record(call(model, prompt: 1_000, completion: 100),
+                            at: 500, stage: stage, database: database)
+        }
+        let byStage = try LLMUsage.totals(
+            from: 0, to: 1_000, byStage: true, database: database)
+        #expect(byStage.count == 4)
+        #expect(byStage.allSatisfy { ["flash", "pro"].contains($0.model) })
+        let book = LLMPriceBook(fast: .fastDefault, reasoning: .reasoningDefault,
+                                reasoningModel: "pro", localModel: "qwen")
+        // Same tokens, different slot ⇒ different money. If the model were
+        // dropped, every stage would price at the fast rate.
+        let cards = try #require(byStage.first { $0.stage == "cards" })
+        let radar = try #require(byStage.first { $0.stage == "radar" })
+        #expect(book.cost(of: radar) > book.cost(of: cards))
+    }
+
+    /// The per-model rollup is unchanged by the new dimension — it is what the
+    /// CLI, the app, and the analyzer's spend line all still read.
+    @Test func theDefaultRollupIgnoresStageEntirely() throws {
+        let database = try ShifuDatabase.inMemory()
+        LLMUsage.record(call("flash", prompt: 1_000, completion: 200),
+                        at: 500, stage: "cards", database: database)
+        LLMUsage.record(call("flash", prompt: 3_000, completion: 400),
+                        at: 600, stage: "themes", database: database)
+        // Nil stage is a real case: rows written before v27, and any future
+        // call site that forgets to label itself.
+        LLMUsage.record(call("flash", prompt: 100, completion: 10),
+                        at: 700, database: database)
+
+        let totals = try LLMUsage.totals(from: 0, to: 1_000, database: database)
+        #expect(totals.count == 1)
+        #expect(totals[0].calls == 3)
+        #expect(totals[0].promptTokens == 4_100)
+        #expect(totals[0].stage == nil)
+    }
+
+    /// An unlabelled row is unattributed, not "unknown" — the distinction is
+    /// the point of leaving the column nullable, since the pre-v27 rows are
+    /// the baseline any before/after comparison is made against.
+    @Test func anUnlabelledCallRecordsANullStageRatherThanAPlaceholder() throws {
+        let database = try ShifuDatabase.inMemory()
+        LLMUsage.record(call("flash", prompt: 100, completion: 10),
+                        at: 500, database: database)
+        let byStage = try LLMUsage.totals(
+            from: 0, to: 1_000, byStage: true, database: database)
+        #expect(byStage.count == 1)
+        #expect(byStage[0].stage == nil)
+    }
 }
