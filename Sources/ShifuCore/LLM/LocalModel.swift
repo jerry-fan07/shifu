@@ -40,7 +40,10 @@ public enum LocalModel {
         }
     }
 
-    static let repoOwner = "Qwen"
+    /// Qwen publishes no first-party GGUF for these models; unsloth's quants
+    /// are the published artifacts the 2026-07-31 spike actually measured —
+    /// verified 2026-08-01 by exact byte size against the spike's files.
+    static let repoOwner = "unsloth"
 
     /// Apple Silicon ≥16 GB (design.md §12): matched DeepSeek on cards 32/36
     /// with grouping spread over sensible tasks.

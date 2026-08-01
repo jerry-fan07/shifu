@@ -26,12 +26,15 @@ import Testing
     }
 
     /// The URLs are assembled, so pin what they assemble to — a typo here
-    /// would 404 on the very first user's very first run.
+    /// would 404 on the very first user's very first run. unsloth, not Qwen:
+    /// there is no first-party GGUF repo for these models, and unsloth's
+    /// artifacts are the ones the spike measured, matched by exact byte size
+    /// (checked against the live tree API 2026-08-01).
     @Test func downloadURLsPointAtThePublishedQuants() {
         #expect(LocalModel.nineB.downloadURL.absoluteString
-            == "https://huggingface.co/Qwen/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf")
+            == "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf")
         #expect(LocalModel.fourB.downloadURL.absoluteString
-            == "https://huggingface.co/Qwen/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf")
+            == "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf")
     }
 
     /// Preflight fails toward the most fundamental unmet requirement, and
