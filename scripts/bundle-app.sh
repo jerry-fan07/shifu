@@ -24,8 +24,17 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" \
          "$APP/Contents/Resources" "$APP/Contents/Library/LaunchAgents"
 
-cp "$BIN_DIR/ShifuApp" "$APP/Contents/MacOS/Shifu"
+# The GUI executable keeps its product name: as "Shifu" it collides with the
+# CLI "shifu" on case-insensitive filesystems, and the last copy silently
+# wins — v0.1.0 shipped with the CLI in the app's seat.
+cp "$BIN_DIR/ShifuApp" "$APP/Contents/MacOS/ShifuApp"
 cp "$BIN_DIR/shifud" "$BIN_DIR/shifu-analyzer" "$BIN_DIR/shifu" "$APP/Contents/MacOS/"
+for PRODUCT in ShifuApp shifu; do
+    cmp -s "$BIN_DIR/$PRODUCT" "$APP/Contents/MacOS/$PRODUCT" || {
+        echo "ERROR: $PRODUCT in the bundle is not the built $PRODUCT — name collision?" >&2
+        exit 1
+    }
+done
 cp -R "$BIN_DIR/GRDB.framework" "$APP/Contents/Frameworks/"
 cp "Sources/ShifuApp/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "scripts/com.shifu.shifud.bundled.plist" \
@@ -34,7 +43,7 @@ cp "scripts/com.shifu.shifud.bundled.plist" \
 # Build products resolve GRDB via @loader_path (framework beside the binary);
 # inside the bundle it lives in Contents/Frameworks instead. install_name_tool
 # invalidates the linker signature, so callers must always re-sign after this.
-for BINARY in Shifu shifud shifu-analyzer shifu; do
+for BINARY in ShifuApp shifud shifu-analyzer shifu; do
     if ! otool -l "$APP/Contents/MacOS/$BINARY" | grep -q '@executable_path/../Frameworks'; then
         install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/$BINARY"
     fi
