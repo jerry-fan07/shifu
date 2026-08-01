@@ -9,6 +9,11 @@ sequence of clicks performed for the hundredth time without anyone noticing it
 had become a ritual. Attention leaves no residue. By evening the day has
 already begun rounding itself off to a story.
 
+<img width="707" height="482" alt="Screenshot 2026-08-01 at 6 51 40 PM" src="https://github.com/user-attachments/assets/10b7938d-15ea-4275-ba79-cbc0a5c82fe8" />
+
+
+
+
 **Shifu (师傅: mentor, master in martial arts)** is a quiet observer that keeps the residue. It sits on your Mac, watches
 the screen the way a patient teacher watches a student — not to judge, to
 remember — and help you do four things:
@@ -26,6 +31,10 @@ to leave at all — is narrow, redacted, and yours to switch off. The full
 specification lives in [design.md](design.md); the privacy model has its own
 section below, because for software like this the privacy model *is* the
 product.
+
+
+https://github.com/user-attachments/assets/461f9d6a-557e-40c2-8a7d-31166282e023
+
 
 ## Install
 
@@ -64,6 +73,15 @@ Onboarding offers three positions, and **off is the default**:
   **Settings → Analysis → Endpoint**.
 
 Change your mind anytime in **Settings → Analysis**.
+
+
+<img width="322" height="241" alt="Screenshot 2026-07-31 at 12 34 26 AM" src="https://github.com/user-attachments/assets/aed711ec-2b00-47b0-a441-ec5942ca560e" />
+
+<img width="546" height="326" alt="Screenshot 2026-07-31 at 8 15 27 PM" src="https://github.com/user-attachments/assets/080d126a-cc9d-4aa1-8e5f-a8bb258f0624" />
+
+
+
+
 
 ## CLI
 
