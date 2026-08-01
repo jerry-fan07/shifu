@@ -5,16 +5,17 @@ import SwiftUI
 import Testing
 @testable import ShifuApp
 
-/// A camera pointed at one thing: the Timeline chart with a legend row under
-/// the pointer, so the recede is judged against a real week rather than
-/// reasoned about.
+/// A camera pointed at one thing: the Timeline chart with one group under the
+/// pointer — a legend row or one of that group's own bands, which set the same
+/// state — so the recede is judged against a real week rather than reasoned
+/// about.
 ///
 /// `WindowShots` can't answer this. `onHover` fires from wherever the real
 /// mouse happens to be, which offscreen means nowhere — so the hover state is
 /// unreachable through the window, and the only honest way to see the lit
 /// chart is to hand `StackedBars` the `highlight` its legend would have set.
-/// That leaves the five lines of `.onHover` wiring unphotographed; they are
-/// `BreakdownTable`'s, verbatim.
+/// That leaves the `.onHover` wiring at both ends unphotographed; it is
+/// `BreakdownTable`'s, verbatim, through one shared handler.
 ///
 ///     SHIFU_SHOTS=/tmp/shifu-shots SHIFU_HOME=/tmp/shifu-verify \
 ///         swift test --filter BarHighlightShots

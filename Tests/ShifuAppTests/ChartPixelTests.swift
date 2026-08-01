@@ -29,7 +29,9 @@ import Testing
 /// Interaction is *not* covered, and can't be: `onHover` fires from wherever
 /// the real mouse is, which offscreen is nowhere. The highlight is exercised
 /// by passing `StackedBars.highlight` directly, which is the state a legend
-/// row sets.
+/// row — or a band under the pointer — sets. What *is* covered is the shape a
+/// band offers that pointer, because widening it is a change to the layout the
+/// bands are drawn in: `theHitAreaDoesNotMoveTheMark`.
 @Suite struct ChartPixelTests {
     // MARK: - The claims
 
@@ -113,6 +115,45 @@ import Testing
         }
     }
 
+    /// A band's hit area is not the band. `StackedBars` widens each band into
+    /// half the ground on either side of it, so a pointer running down a
+    /// column can't fall through a 2pt hole and drop the highlight — and it
+    /// does that by padding the band and then taking the padding back. If the
+    /// take-back ever stops being exact, nothing throws and nothing looks
+    /// wrong at a glance: the bands just quietly grow, and every column stops
+    /// standing at its own total. That is a chart that lies, so it is measured
+    /// rather than trusted.
+    ///
+    /// Seven hourly blocks in one slot: a 7h column, ruled in 2h steps (the
+    /// smallest step of `StackedBars.steps` that rules 7h in four marks or
+    /// fewer), so the scale tops out at 8h and the column stands at 7/8 of the
+    /// 107pt plot — 93.6pt. A leak would put each of the seven bands 2pt taller
+    /// and stand the column 14pt past that, which is most of a grid step.
+    @MainActor @Test func theHitAreaDoesNotMoveTheMark() throws {
+        let bitmap = try #require(
+            Self.render(StackedBars(stacks: Self.oneColumn(Self.categories)), dark: false))
+        let painted = Set(Self.scan(bitmap).map(Self.hex))
+        try #require(
+            painted.count == Self.categories.count,
+            "expected \(Self.categories.count) bands, scanned \(painted.count)")
+
+        // The same several x `scan` reads, unioned for the same reason: one
+        // column of a 200pt chart is 34pt of it, and where exactly it lands
+        // is arithmetic this test has no business repeating.
+        let rows = (0..<bitmap.pixelsHigh).filter { row in
+            Self.probes(bitmap).contains { column in
+                painted.contains(Self.hex(bitmap.colorAt(x: column, y: row) ?? .black))
+            }
+        }
+        let top = try #require(rows.first)
+        let bottom = try #require(rows.last)
+        let scale = Double(bitmap.pixelsHigh) / Double(Self.size.height)
+        let drawn = Double(bottom - top + 1) / scale
+        #expect(
+            abs(drawn - 93.6) <= 2,
+            "a 7-of-8-hours column stood \(drawn)pt tall in a 107pt plot, not 93.6pt")
+    }
+
     /// Both scales a chart can draw with: the hashed one theme groups take
     /// hues from, and the fixed one the categories wear.
     @MainActor static var scales: [(TimeLens, [String])] {
@@ -176,20 +217,27 @@ import Testing
             limit: lens == .category ? nil : TimeBreakdown.maxGroups)
     }
 
+    /// Every group stacked into a single slot — one column carrying the whole
+    /// scale, which is what a scan down it can read in one pass.
+    @MainActor static func oneColumn(_ groups: [String], lens: TimeLens = .category) -> [BarStack] {
+        let span = window(groups)
+        let ranked = slices(groups, lens: lens)
+        let colors = Dictionary(uniqueKeysWithValues: ranked.map { ($0.name, $0.color) })
+        return LedgerShapes.bars(
+            blocks(groups, lens: lens), lens: lens, colors: colors,
+            order: ranked.map(\.name),
+            slots: [LedgerShapes.Slot(tick: "", from: span.from, to: span.to)])
+    }
+
     /// The distinct colours the chart paints down its one column, ground and
     /// the hairlines between bands dropped.
     @MainActor static func bands(
         _ groups: [String], lens: TimeLens = .theme, highlight: String? = nil, dark: Bool
     ) throws -> [NSColor] {
-        let span = window(groups)
-        let slices = slices(groups, lens: lens)
-        let colors = Dictionary(uniqueKeysWithValues: slices.map { ($0.name, $0.color) })
-        let stacks = LedgerShapes.bars(
-            blocks(groups, lens: lens), lens: lens, colors: colors,
-            order: slices.map(\.name),
-            slots: [LedgerShapes.Slot(tick: "", from: span.from, to: span.to)])
         let bitmap = try #require(
-            render(StackedBars(stacks: stacks, highlight: highlight), dark: dark))
+            render(
+                StackedBars(stacks: oneColumn(groups, lens: lens), highlight: highlight),
+                dark: dark))
         return scan(bitmap)
     }
 
@@ -220,13 +268,8 @@ import Testing
         return bitmap
     }
 
-    /// Runs of one colour down the column, long enough to be a band.
-    ///
-    /// The column is centred in the plot, which starts after the axis gutter,
-    /// so the middle fifths of the width are inside it wherever the gutter
-    /// lands. Scanning several x and unioning costs nothing and survives the
-    /// column being drawn a point wider or narrower than the arithmetic here
-    /// would guess.
+    /// Runs of one colour down the column, long enough to be a band, read at
+    /// each of `probes` and unioned.
     ///
     /// Two things get dropped: the ground — which is also what shows through
     /// the 2pt gaps the stack leaves between bands — and any run too short to
@@ -242,10 +285,8 @@ import Testing
     /// at all — compare what was drawn, never what was asked for.
     static func scan(_ bitmap: NSBitmapImageRep) -> [NSColor] {
         let minimumRun = max(4, bitmap.pixelsHigh / 40)
-        let columns = Array(
-            stride(from: bitmap.pixelsWide / 2, to: bitmap.pixelsWide * 7 / 10, by: 4))
         var tally: [String: Int] = [:]
-        for column in columns {
+        for column in probes(bitmap) {
             for row in 0..<bitmap.pixelsHigh {
                 tally[hex(bitmap.colorAt(x: column, y: row) ?? .black), default: 0] += 1
             }
@@ -253,7 +294,7 @@ import Testing
         let ground = tally.max { $0.value < $1.value }?.key
 
         var found: [String: NSColor] = [:]
-        for column in columns {
+        for column in probes(bitmap) {
             var runStart = 0
             var previous = ""
             for row in 0...bitmap.pixelsHigh {
@@ -269,6 +310,15 @@ import Testing
             }
         }
         return found.keys.sorted().compactMap { found[$0] }
+    }
+
+    /// The x to read the column at. Several, unioned: the column is centred in
+    /// the plot, which starts after the axis gutter, so the middle fifths of
+    /// the width are inside it wherever the gutter lands — and a single x
+    /// isn't, as the exact centre of a 200pt chart proves by falling a point
+    /// short of a 34pt column.
+    static func probes(_ bitmap: NSBitmapImageRep) -> [Int] {
+        Array(stride(from: bitmap.pixelsWide / 2, to: bitmap.pixelsWide * 7 / 10, by: 4))
     }
 
     // MARK: - Colour arithmetic (shared shape with PaletteSeparationTests)

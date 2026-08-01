@@ -198,6 +198,12 @@ struct StackedBars: View {
     /// other band recedes — how the legend answers "and where was *that* one".
     /// Nil draws every column at full strength, which is the resting state.
     var highlight: String?
+    /// Called as the pointer enters or leaves one band, with that band's group
+    /// name and whether it is now on it. The chart doesn't own `highlight`, so
+    /// asking a band where its group went is the same question the legend asks
+    /// — it just gets asked from the mark instead of from its name. Nil leaves
+    /// the bands inert, which is what a chart with no legend beside it wants.
+    var onHoverBand: ((String, Bool) -> Void)?
 
     /// Between slots — the columns themselves sit centred in what's left.
     private static let spacing: CGFloat = 4
@@ -341,6 +347,17 @@ struct StackedBars: View {
                 fill(for: segment)
                     .frame(height: max(
                         1, room * CGFloat(Double(segment.ms) / Double(max(1, stack.totalMs)))))
+                    // Half the ground on each side counts as the band, so a
+                    // column reads as one continuous strip of bands to the
+                    // pointer: crossing between two of them can't drop into a
+                    // 2pt hole and un-dim the whole chart for a frame. It also
+                    // gives the thinnest bands — which floor at 1pt — an area
+                    // worth aiming at. The negative padding puts the layout
+                    // back, so only the hit area grew.
+                    .padding(.vertical, Self.gap / 2)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, -Self.gap / 2)
+                    .onHover { inside in onHoverBand?(segment.name, inside) }
                     .help(segment.caption)
             }
         }
