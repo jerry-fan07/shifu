@@ -35,6 +35,18 @@ enum Instrument {
     static let well = Color(
         light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.07)
 
+    /// The only ground the app fills rather than rules: the theme page's title
+    /// banner and the story panel under it, both printed white on rust.
+    ///
+    /// Its own token rather than `overdue`, which these two used to borrow.
+    /// `overdue` is a *mark* colour, and its dark step is a salmon lifted to
+    /// carry as a figure on a near-black ground — the opposite of what a
+    /// filled panel needs. At banner scale that step is a glare, and white on
+    /// it clears 3:1: enough for a 46 pt name, nowhere near it for the mono
+    /// figures underneath. Deepening in dark instead keeps the panel a panel
+    /// and puts every line on it past 7:1.
+    static let banner = Color(light: 0x9C3D1E, dark: 0x7A2F15)
+
     // MARK: - Ink
 
     /// Titles, figures, the row you are reading.

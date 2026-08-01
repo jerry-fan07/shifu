@@ -339,7 +339,11 @@ struct CampaignHero: View {
             CampaignChart(
                 campaign: campaign,
                 wipe: ramp(travel, from: 60, to: 450),
-                fade: ramp(travel, from: 40, to: 300),
+                // A floor rather than nothing: the title screen above puts the
+                // chart's first frame under the fold, and an empty plot there
+                // reads as a page that ran out rather than as a chart waiting
+                // for the scroll that fills it.
+                fade: max(0.3, ramp(travel, from: 40, to: 300)),
                 litTask: litTask)
                 .padding(.top, 20)
             taskRows(travel: travel)

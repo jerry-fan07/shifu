@@ -111,11 +111,20 @@ struct ThemePage: View {
         store.themes.first { $0.id == themeID }?.weekMs ?? 0
     }
 
+    private var hasCampaign: Bool {
+        !(campaign?.blocks.isEmpty ?? true)
+    }
+
     private func page(_ detail: ThemeStore.Detail) -> some View {
-        VStack(spacing: 0) {
-            header(detail)
+        // The title screen is sized off the page, so it has to know how tall
+        // the page is before the scroll view lays its content out.
+        GeometryReader { proxy in
             SectionScroll {
                 PageBody {
+                    ThemeTitleScreen(
+                        detail: detail, weekMs: weekMs, pageHeight: proxy.size.height,
+                        cue: hasCampaign
+                            ? "Scroll for the campaign" : "Scroll for the story")
                     if let campaign, !campaign.blocks.isEmpty {
                         CampaignHero(campaign: campaign) { router.open(.task($0)) }
                             .sectionAnchor(ThemeSection.campaign.rawValue)
@@ -131,51 +140,9 @@ struct ThemePage: View {
                     recent(detail)
                 }
             }
-            // The hero reads its own scroll position out of this space to
-            // drive the reveal; the name has to sit on the scroll view.
+            // The hero and the title screen read their own scroll position out
+            // of this space; the name has to sit on the scroll view.
             .coordinateSpace(.named(CampaignHero.scrollSpace))
-        }
-    }
-
-    private func header(_ detail: ThemeStore.Detail) -> some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(detail.overview.name)
-                    .font(Instrument.sans(21, .semibold))
-                    .tracking(-0.31)
-                    .foregroundStyle(Instrument.ink)
-                if let gist = detail.overview.gist, !gist.isEmpty {
-                    Text(gist)
-                        .font(Instrument.sans(13))
-                        .foregroundStyle(Instrument.secondary)
-                        .frame(maxWidth: 620, alignment: .leading)
-                        .padding(.top, 4)
-                }
-                HStack(spacing: 18) {
-                    Figure("\(TimeBreakdown.duration(detail.overview.totalMs)) total",
-                           size: 11.5, color: Instrument.muted)
-                    // From the list's overview, not the detail's: the detail
-                    // query doesn't fill `weekMs` in, and a theme page that
-                    // silently drops the week is the one figure you came for.
-                    if weekMs > 0 {
-                        Figure("\(TimeBreakdown.duration(weekMs)) this week",
-                               size: 11.5, color: Instrument.muted)
-                    }
-                    Figure("\(detail.tasks.count) task\(detail.tasks.count == 1 ? "" : "s")",
-                           size: 11.5, color: Instrument.muted)
-                    Figure(
-                        "last active " + Date(
-                            timeIntervalSince1970: Double(detail.overview.lastActiveAt) / 1_000)
-                            .formatted(.relative(presentation: .numeric)),
-                        size: 11.5, color: Instrument.muted)
-                }
-                .padding(.top, 10)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Instrument.gutter)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
-            Rule(weight: .section)
         }
     }
 
@@ -202,7 +169,9 @@ struct ThemePage: View {
         }
         .frame(maxWidth: 760, alignment: .leading)
         .padding(20)
-        .background(Instrument.overdue)
+        // The banner's ground, so the page's two filled panels are one family
+        // in both appearances.
+        .background(Instrument.banner)
         .padding(.top, 44)
         .modifier(ScrollRise())
         .sectionAnchor(ThemeSection.story.rawValue)
