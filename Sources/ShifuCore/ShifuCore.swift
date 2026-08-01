@@ -21,7 +21,7 @@ public enum Shifu {
     /// Compiled in for unbundled binaries, and the number scripts/bundle-app.sh
     /// stamps into the plist — so this literal is where a release is bumped.
     /// That script parses this line: keep it a plain string.
-    static let fallbackVersion = "0.1.1"
+    static let fallbackVersion = "0.1.2"
 }
 
 /// Which Shifu this build is sold as (design.md §4.2): one codebase, two
