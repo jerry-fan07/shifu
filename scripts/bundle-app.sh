@@ -5,13 +5,23 @@
 # rule. Shared by install-app.sh (dev signing) and release.sh (Developer ID +
 # notarization) so bundle layout is defined exactly once.
 #
-# Env: SHIFU_VERSION (default 0.1.0), SHIFU_BUILD (default: git commit count).
+# Env: SHIFU_VERSION (default: the version in ShifuCore), SHIFU_BUILD (default:
+# git commit count).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 APP="${1:-dist/Shifu.app}"
-VERSION="${SHIFU_VERSION:-0.1.0}"
+# The version is written once, in ShifuCore, and stamped from there into the
+# plist below — which Shifu.version reads back at runtime. A bundle therefore
+# cannot report a version other than the one it was assembled as; v0.1.1 shipped
+# an About page saying 0.1.0 because the two were separate constants.
+VERSION="${SHIFU_VERSION:-$(sed -n \
+    's/^ *static let fallbackVersion = "\(.*\)"$/\1/p' Sources/ShifuCore/ShifuCore.swift)}"
+if [ -z "$VERSION" ]; then
+    echo "ERROR: no version in Sources/ShifuCore/ShifuCore.swift — did fallbackVersion move?" >&2
+    exit 1
+fi
 BUILD="${SHIFU_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 
 swift build -c release --product ShifuApp
