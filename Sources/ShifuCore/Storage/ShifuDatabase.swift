@@ -107,12 +107,18 @@ public struct ShifuDatabase: Sendable {
 
 /// Typed access to the `settings` table.
 public enum Settings {
-    /// Analysis backend: "deepseek" (the default and only LLM backend —
-    /// analyzer-only, inert until an API key is set) or "off" (rules-only).
-    /// Legacy values ("auto", "claude", "openai") are folded into these by
+    /// Analysis backend: "shifu-cloud" (hosted proxy, no user key — choosing
+    /// it is the opt-in), "deepseek" (the user's own API key is the opt-in —
+    /// the default, inert until a key is set) or "off" (rules-only). Legacy
+    /// values ("auto", "claude", "openai") are folded into these by
     /// migration v15.
     public static let analysisBackendKey = "analysis.backend"
     public static let deepseekAPIKeyKey = "deepseek.api_key"
+    /// Device token minted by the Shifu Cloud proxy on the analyzer's first
+    /// run — an implementation detail of the hosted backend, never typed by
+    /// the user. The opt-in is the backend choice, not this token existing.
+    public static let shifuCloudTokenKey = "shifu_cloud.token"
+    public static let shifuCloudBaseURLKey = "shifu_cloud.base_url"
     public static let deepseekBaseURLKey = "deepseek.base_url"
     /// Fast model (default deepseek-v4-flash): classification, extraction,
     /// narratives, radar — the high-volume, low-judgment stages.
@@ -138,19 +144,37 @@ public enum Settings {
         }
     }
 
-    /// The configured API key, or nil when the backend is off or no key is
-    /// set — the opt-in that turns every LLM stage on (§8). Lives here rather
-    /// than beside the backend because two binaries need the same answer for
-    /// different reasons: the analyzer builds a backend from the key, and the
-    /// app greys out the actions that can't work without one. A key present
-    /// here is not a promise the endpoint answers; it is the difference
-    /// between "will try" and "cannot".
-    public static func llmAPIKey(database: ShifuDatabase) throws -> String? {
-        guard try get(analysisBackendKey, database: database) != "off" else { return nil }
-        let key = try ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]
-            ?? get(deepseekAPIKeyKey, database: database)
-        return (key?.isEmpty ?? true) ? nil : key
+    /// What the LLM stages may authenticate with, or nil when the user has
+    /// not opted in — the gate that decides whether anything ever leaves this
+    /// Mac (§8). Lives here rather than beside the backend because two
+    /// binaries need the same answer for different reasons: the analyzer
+    /// builds a backend from it, and the app greys out the actions that can't
+    /// work without one. A credential here is not a promise the endpoint
+    /// answers; it is the difference between "will try" and "cannot".
+    public static func llmCredential(database: ShifuDatabase) throws -> LLMCredential? {
+        switch try get(analysisBackendKey, database: database) {
+        case "off":
+            return nil
+        case "shifu-cloud":
+            // The choice itself is the opt-in; the token is provisioned by
+            // the analyzer on its next run when nil.
+            let token = try get(shifuCloudTokenKey, database: database)
+            return .shifuCloud(token: (token?.isEmpty ?? true) ? nil : token)
+        default:
+            guard let key = try ProcessInfo.processInfo.environment["DEEPSEEK_API_KEY"]
+                ?? get(deepseekAPIKeyKey, database: database), !key.isEmpty
+            else { return nil }
+            return .deepseek(key: key)
+        }
     }
+}
+
+/// How the analyzer may talk to an LLM once the user has opted in: their own
+/// DeepSeek key, or the hosted Shifu Cloud proxy (whose device token may not
+/// exist yet — the analyzer mints one on first use).
+public enum LLMCredential: Equatable, Sendable {
+    case deepseek(key: String)
+    case shifuCloud(token: String?)
 }
 
 // MARK: - Catalog-typed access

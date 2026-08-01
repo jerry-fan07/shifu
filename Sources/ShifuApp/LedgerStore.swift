@@ -177,7 +177,7 @@ final class LedgerStore: ObservableObject {
             themeProposals = (try? ThemeProposals.pending(database: database)) ?? []
             decks = (try? DeckStore.decks(database: database)) ?? []
             deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
-            hasLLMBackend = ((try? Settings.llmAPIKey(database: database)) ?? nil) != nil
+            hasLLMBackend = ((try? Settings.llmCredential(database: database)) ?? nil) != nil
         }
         do {
             let now = Date()

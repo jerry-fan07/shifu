@@ -260,20 +260,34 @@ public enum SettingsCatalog {
         placeholder: "reddit.com"
     )
 
-    // AI backend (design.md §4.2, §8). DeepSeek is the only LLM backend and
-    // it is analyzer-only; the API key is the opt-in — without one, analysis
-    // is rules-only and nothing ever leaves this Mac.
+    // AI backend (design.md §4.2, §8). All LLM calls are analyzer-only, and
+    // every option is inert until the user's affirmative act: choosing Shifu
+    // Cloud is that act for the hosted backend; pasting a key is it for
+    // DeepSeek. Without either, analysis is rules-only and nothing ever
+    // leaves this Mac.
     public static let analysisBackend = ChoiceSetting(
         key: Settings.analysisBackendKey, section: .analysis,
         title: "AI backend",
         help: "Names tasks, classifies ambiguous time, and writes work-log narratives. "
-            + "DeepSeek receives only redacted text samples, after exclusions — never "
-            + "pixels or raw captures. \"Rules only\" disables AI entirely.",
+            + "Only redacted text samples are sent, after exclusions — never pixels or "
+            + "raw captures. \"Shifu Cloud\" needs no key: samples go to Shifu's server, "
+            + "which forwards them to DeepSeek (a Chinese AI provider) and holds the "
+            + "credentials. \"DeepSeek\" sends them straight to DeepSeek with your own "
+            + "key. \"Rules only\" disables AI entirely.",
         options: [
+            .init(value: "shifu-cloud", label: "Shifu Cloud"),
             .init(value: "deepseek", label: "DeepSeek"),
             .init(value: "off", label: "Rules only")
         ],
         defaultValue: "deepseek"
+    )
+
+    public static let shifuCloudBaseURL = TextSetting(
+        key: Settings.shifuCloudBaseURLKey, section: .analysis,
+        title: "Cloud endpoint",
+        help: "The Shifu Cloud proxy. Blank uses the built-in endpoint.",
+        placeholder: ShifuCloudDefaults.baseURL,
+        visibleWhen: (key: Settings.analysisBackendKey, value: "shifu-cloud")
     )
 
     public static let deepseekAPIKey = TextSetting(
@@ -348,6 +362,7 @@ public enum SettingsCatalog {
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend]
     public static let texts: [TextSetting] = [
+        shifuCloudBaseURL,
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,
         llmPriceFast, llmPriceReasoning, llmDailyWarn
     ]
