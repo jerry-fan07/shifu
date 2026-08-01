@@ -103,7 +103,8 @@ private struct Places: View {
 }
 
 /// Focus Mode at the rail's foot — the one switch the window carries. The whole
-/// row is the target, like the menu bar's line; the switch is the state.
+/// row is the target, like the menu bar's line; the switch is the state, and
+/// the line under it is the clock (`FocusTimerLine`).
 private struct FocusModeRailRow: View {
     @EnvironmentObject private var store: LedgerStore
 
@@ -111,12 +112,15 @@ private struct FocusModeRailRow: View {
         Button {
             store.toggleFocusMode()
         } label: {
-            HStack(spacing: 8) {
-                Text("Focus Mode")
-                    .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.railInk)
-                Spacer(minLength: 0)
-                ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("Focus Mode")
+                        .font(Instrument.sans(13))
+                        .foregroundStyle(Instrument.railInk)
+                    Spacer(minLength: 0)
+                    ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
+                }
+                FocusTimerLine()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 5)

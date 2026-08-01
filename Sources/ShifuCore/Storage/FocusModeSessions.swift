@@ -61,6 +61,26 @@ public enum FocusModeSessions {
         }
     }
 
+    /// When the last real session before `moment` ended, or nil when there is
+    /// none — the far end of the "since the previous focus session" clock
+    /// (`FocusClock`).
+    ///
+    /// Holds the same two lines as `overlapping`: a row shorter than
+    /// `minSessionMs` is a switch flipping rather than a session, and an open
+    /// row is either the session running right now or a crashed daemon's
+    /// leftover. Neither can be the one you were last focusing in.
+    public static func previousEnd(
+        before moment: Int64, database: ShifuDatabase
+    ) throws -> Int64? {
+        try database.queue.read { db in
+            try Int64.fetchOne(db, sql: """
+                SELECT MAX(ended_at) FROM focus_mode_sessions
+                WHERE ended_at IS NOT NULL AND ended_at <= ?
+                  AND ended_at - started_at >= ?
+                """, arguments: [moment, minSessionMs])
+        }
+    }
+
     /// Closes sessions left open by a daemon that exited while Focus Mode was on
     /// — a crash, a restart, a logout. Those rows keep `ended_at` NULL forever,
     /// so any future duration sum either skips them or treats them as running

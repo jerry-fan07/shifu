@@ -22,6 +22,25 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var vaultCensus = VaultLibrary.Census()
     @Published private(set) var pausedUntil: Date?
     @Published private(set) var focusModeOn = false
+    /// When the running Focus Mode session started, or nil when it is off —
+    /// the near end of the stopwatch (`FocusClock`).
+    @Published private(set) var focusStartedAt: Date?
+    /// When the last session before *this* reading ended: before the running
+    /// session while Focus Mode is on, before now while it is off.
+    @Published private(set) var focusPreviousEnd: Date?
+    /// The moment this process switched Focus Mode off.
+    ///
+    /// The daemon owns `ended_at`, and it writes it a filesystem event after
+    /// the switch — so for a moment after the flip the newest closed session in
+    /// the database is the one *before* the one that just ended, and the clock
+    /// would read "last focus 3h ago" the second you stopped focusing. What we
+    /// saw ourselves stands in until the daemon's own row catches up (and if no
+    /// daemon is running, for the rest of the launch).
+    ///
+    /// Internal, not private: both the switch that sets it and the read that
+    /// consults it live in LedgerStoreControls.swift, and an extension can't
+    /// hold state of its own.
+    var focusEndedHere: Date?
     @Published private(set) var dueNotes: [Note] = []
     /// Every kept, reviewable card (Q/A present), most urgent first.
     @Published private(set) var allCards: [Note] = []
@@ -163,6 +182,7 @@ final class LedgerStore: ObservableObject {
     func refresh() {
         pausedUntil = PauseFile.expiry()
         focusModeOn = FocusModeFile.isOn()
+        refreshFocusClock()
         refreshVaultNotes()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
@@ -260,6 +280,14 @@ final class LedgerStore: ObservableObject {
             report(error)
             return []
         }
+    }
+
+    /// Republishes where each clock starts. The read itself is in
+    /// LedgerStoreControls.swift, with the switch that starts them.
+    private func refreshFocusClock() {
+        let moments = focusMoments()
+        focusStartedAt = moments.startedAt
+        focusPreviousEnd = moments.previousEnd
     }
 
     // MARK: - Vault search (vault-features.md §4)

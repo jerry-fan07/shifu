@@ -54,32 +54,34 @@ struct ThemeContents: View {
 /// The theme page's sections, in the order they appear. The source list lists
 /// these and scrolls to them; the page anchors them by the same raw value.
 enum ThemeSection: String, CaseIterable, Identifiable {
-    case story, history, tasks, sources
+    case campaign, tasks, story, sources, history, recent
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .story: return "Story"
-        case .history: return "History"
+        case .campaign: return "The campaign"
         case .tasks: return "Tasks"
+        case .story: return "Story"
         case .sources: return "Where the time went"
+        case .history: return "History"
+        case .recent: return "Recent activity"
         }
     }
 }
 
 // MARK: - The theme page
 
-/// One theme as a page: the running narrative the analyzer keeps, the
-/// day-by-day history under it, and the two columns that say what the theme
-/// was actually made of.
+/// One theme as a page, opened by its campaign (design 3a): thirty days of
+/// blocks as one scroll-driven chart with the theme's tasks under it, then the
+/// running narrative the analyzer keeps, then where the time went.
 struct ThemePage: View {
     @EnvironmentObject private var store: LedgerStore
     @EnvironmentObject private var router: Router
     let themeID: Int64
 
     @State private var detail: ThemeStore.Detail?
-    @State private var blocks: [LedgerBuilder.LabeledActivity] = []
+    @State private var campaign: ThemeCampaign?
 
     var body: some View {
         Group {
@@ -95,8 +97,14 @@ struct ThemePage: View {
 
     private func reload() {
         detail = store.themeDetail(themeID)
-        blocks = store.activities(sinceWeeksAgo: ThemesView.weeks)
-            .filter { $0.themeName == detail?.overview.name }
+        // Built once per load, not per body pass: the campaign folds weeks of
+        // block rows, and the hero re-renders every frame while it reveals.
+        campaign = detail.map { loaded in
+            ThemeCampaign.build(
+                blocks: store.activities(sinceWeeksAgo: ThemesView.weeks)
+                    .filter { $0.themeName == loaded.overview.name },
+                related: loaded.tasks)
+        }
     }
 
     private var weekMs: Int64 {
@@ -108,11 +116,24 @@ struct ThemePage: View {
             header(detail)
             SectionScroll {
                 PageBody {
+                    if let campaign, !campaign.blocks.isEmpty {
+                        CampaignHero(campaign: campaign) { router.open(.task($0)) }
+                            .sectionAnchor(ThemeSection.campaign.rawValue)
+                    } else {
+                        BlankSlate(
+                            "Nothing in the last 30 days — the campaign draws "
+                                + "itself from the time the ledger files here.")
+                    }
                     story(detail)
+                    statsBand
+                    sources
                     history(detail)
-                    columns(detail)
+                    recent(detail)
                 }
             }
+            // The hero reads its own scroll position out of this space to
+            // drive the reveal; the name has to sit on the scroll view.
+            .coordinateSpace(.named(CampaignHero.scrollSpace))
         }
     }
 
@@ -158,54 +179,116 @@ struct ThemePage: View {
         }
     }
 
-    @ViewBuilder private func story(_ detail: ThemeStore.Detail) -> some View {
+    private func story(_ detail: ThemeStore.Detail) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Eyebrow("The story so far")
-                .padding(.top, 14)
-                .padding(.bottom, 6)
+            Text("The story so far")
+                .font(Instrument.sans(30, .semibold))
+                .tracking(-0.6)
+                .foregroundStyle(.white)
             if let summary = detail.overview.summary, !summary.isEmpty {
                 Text(summary)
-                    .font(Instrument.sans(13.5))
-                    .lineSpacing(4)
-                    .foregroundStyle(Instrument.body)
+                    .font(Instrument.sans(14.5))
+                    .lineSpacing(5.5)
+                    .foregroundStyle(.white)
                     .textSelection(.enabled)
-                    .frame(maxWidth: 700, alignment: .leading)
+                    .padding(.top, 12)
             } else {
                 Text("No narrative yet — the analyzer writes one once the theme has "
                     + "a few days behind it.")
                     .font(Instrument.sans(13))
-                    .foregroundStyle(Instrument.muted)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.top, 12)
             }
         }
+        .frame(maxWidth: 760, alignment: .leading)
+        .padding(20)
+        .background(Instrument.overdue)
+        .padding(.top, 44)
+        .modifier(ScrollRise())
         .sectionAnchor(ThemeSection.story.rawValue)
     }
 
+    /// The campaign's vital signs, popping in one after another on the way
+    /// past: days active, longest run, the peak day.
+    @ViewBuilder private var statsBand: some View {
+        if let campaign, !campaign.blocks.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Eyebrow(campaign.range)
+                HStack(alignment: .firstTextBaseline, spacing: 56) {
+                    ForEach(Array(campaign.stats.enumerated()), id: \.element.id) { entry in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Figure(entry.element.value, size: 28, weight: .medium)
+                            Text(entry.element.caption)
+                                .font(Instrument.sans(12))
+                                .foregroundStyle(Instrument.muted)
+                        }
+                        .modifier(ScrollPop(order: entry.offset))
+                    }
+                }
+                .padding(.top, 10)
+            }
+            .padding(.top, 72)
+        }
+    }
+
+    /// Apps and domains the campaign's time ran through, biggest first, each
+    /// against the longest bar. The bars grow in as the section scrolls up.
+    @ViewBuilder private var sources: some View {
+        if let campaign, !campaign.sources.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Where the time went")
+                    .font(Instrument.sans(30, .semibold))
+                    .tracking(-0.6)
+                    .foregroundStyle(Instrument.ink)
+                    .modifier(ScrollRise())
+                VStack(spacing: 0) {
+                    ForEach(Array(campaign.sources.enumerated()), id: \.element.id) { entry in
+                        sourceRow(entry.element, order: entry.offset)
+                    }
+                }
+                .frame(maxWidth: 660, alignment: .leading)
+                .padding(.top, 16)
+            }
+            .padding(.top, 96)
+            .sectionAnchor(ThemeSection.sources.rawValue)
+        }
+    }
+
+    /// Every day the theme has ever moved, newest first — the campaign shows
+    /// the last thirty; this is the whole record.
     @ViewBuilder private func history(_ detail: ThemeStore.Detail) -> some View {
         if !detail.days.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
-                Eyebrow("History")
-                    .padding(.top, 16)
-                    .padding(.bottom, 6)
-                ForEach(detail.days) { day in
-                    Rule()
-                    HStack(alignment: .firstTextBaseline, spacing: 14) {
-                        Figure(
-                            Date(timeIntervalSince1970: Double(day.dayStart) / 1_000)
-                                .formatted(.dateTime.weekday(.abbreviated).day().month()),
-                            color: Instrument.faint)
-                            .frame(width: 96, alignment: .leading)
-                        // The summary's *what*, as the task page's day rows set
-                        // it — the sources half names windows, not intent.
-                        Text(themeDayTitle(day.summary))
-                            .font(Instrument.sans(12.5))
-                            .foregroundStyle(Instrument.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Figure(TimeBreakdown.duration(day.durationMs), color: Instrument.muted)
-                            .frame(width: 72, alignment: .trailing)
+                Text("History")
+                    .font(Instrument.sans(30, .semibold))
+                    .tracking(-0.6)
+                    .foregroundStyle(Instrument.ink)
+                    .modifier(ScrollRise())
+                VStack(spacing: 0) {
+                    ForEach(detail.days) { day in
+                        Rule()
+                        HStack(alignment: .firstTextBaseline, spacing: 14) {
+                            Figure(
+                                Date(timeIntervalSince1970: Double(day.dayStart) / 1_000)
+                                    .formatted(.dateTime.weekday(.abbreviated).day().month()),
+                                color: Instrument.faint)
+                                .frame(width: 96, alignment: .leading)
+                            // The summary's *what*, as the task page's day rows
+                            // set it — the sources half names windows, not intent.
+                            Text(themeDayTitle(day.summary))
+                                .font(Instrument.sans(12.5))
+                                .foregroundStyle(Instrument.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Figure(TimeBreakdown.duration(day.durationMs),
+                                   color: Instrument.muted)
+                                .frame(width: 72, alignment: .trailing)
+                        }
+                        .padding(.vertical, 6)
                     }
-                    .padding(.vertical, 6)
                 }
+                .padding(.top, 12)
             }
+            .padding(.top, 96)
             .sectionAnchor(ThemeSection.history.rawValue)
         }
     }
@@ -215,60 +298,143 @@ struct ThemePage: View {
         return title.isEmpty ? summary : title
     }
 
-    /// What the theme was made of, two ways: the tasks it ran through, and the
-    /// apps those tasks lived in.
-    private func columns(_ detail: ThemeStore.Detail) -> some View {
-        HStack(alignment: .top, spacing: 40) {
-            VStack(alignment: .leading, spacing: 0) {
-                Eyebrow("Tasks in this theme")
-                    .padding(.bottom, 5)
-                ForEach(detail.tasks) { task in
-                    Rule()
-                    Button { router.open(.task(task.taskID)) } label: {
-                        HStack {
-                            Text(task.name)
-                                .font(Instrument.sans(12.5))
-                                .foregroundStyle(Instrument.ink)
-                                .lineLimit(1)
-                            Spacer()
-                            Figure(TimeBreakdown.duration(task.ms), color: Instrument.muted)
-                        }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+    private func sourceRow(_ row: ThemeCampaign.SourceRow, order: Int) -> some View {
+        VStack(spacing: 0) {
+            Rule()
+            HStack(spacing: 12) {
+                Text(row.name)
+                    .font(Instrument.sans(13.5))
+                    .foregroundStyle(Instrument.ink)
+                    .lineLimit(1)
+                    .frame(width: 150, alignment: .leading)
+                GeometryReader { proxy in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Instrument.accent)
+                        .frame(width: proxy.size.width * row.fraction, height: 5)
+                        .modifier(ScrollGrow(order: order))
                 }
+                .frame(height: 5)
+                .background(RoundedRectangle(cornerRadius: 1).fill(Instrument.well))
+                Figure(row.time, size: 12.5, color: Instrument.muted)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .sectionAnchor(ThemeSection.tasks.rawValue)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Eyebrow("Where the time went")
-                    .padding(.bottom, 5)
-                ForEach(sources.prefix(6), id: \.name) { source in
-                    Rule()
-                    HStack {
-                        Text(source.name)
-                            .font(Instrument.sans(12.5))
-                            .foregroundStyle(Instrument.ink)
-                            .lineLimit(1)
-                        Spacer()
-                        Figure(TimeBreakdown.duration(source.ms), color: Instrument.muted)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .sectionAnchor(ThemeSection.sources.rawValue)
+            .padding(.vertical, 7)
         }
-        .padding(.top, 16)
     }
 
-    /// Apps and domains this theme's blocks ran through, biggest first.
-    private var sources: [(name: String, ms: Int64)] {
-        var totals: [String: Int64] = [:]
-        for block in blocks { totals[block.source, default: 0] += block.durationMs }
-        return totals.sorted { $0.value > $1.value }.map { (name: $0.key, ms: $0.value) }
+    /// The raw tail: the theme's latest blocks, one line each — deliberately
+    /// more than anyone reads, so the page never runs out of bottom.
+    @ViewBuilder private func recent(_ detail: ThemeStore.Detail) -> some View {
+        if !detail.recent.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Recent activity")
+                    .font(Instrument.sans(30, .semibold))
+                    .tracking(-0.6)
+                    .foregroundStyle(Instrument.ink)
+                    .modifier(ScrollRise())
+                VStack(spacing: 0) {
+                    ForEach(detail.recent) { line in
+                        Rule()
+                        recentRow(line)
+                    }
+                }
+                .padding(.top, 12)
+            }
+            .padding(.top, 96)
+            .padding(.bottom, 120)
+            .sectionAnchor(ThemeSection.recent.rawValue)
+        }
+    }
+
+    private func recentRow(_ line: TaskStore.ActivityLine) -> some View {
+        let started = Date(timeIntervalSince1970: Double(line.startedAt) / 1_000)
+        return HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Figure(
+                started.formatted(.dateTime.weekday(.abbreviated).day().month()),
+                color: Instrument.faint)
+                .frame(width: 96, alignment: .leading)
+            Figure(started.formatted(.dateTime.hour().minute()), color: Instrument.faint)
+                .lineLimit(1)
+                .frame(width: 76, alignment: .leading)
+            Text(line.topic ?? line.source)
+                .font(Instrument.sans(12.5))
+                .foregroundStyle(Instrument.body)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Figure(TimeBreakdown.duration(line.endedAt - line.startedAt),
+                   color: Instrument.muted)
+                .frame(width: 72, alignment: .trailing)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Scroll passes
+
+/// Design 3a's motion for the sections after the hero: rise on the way into
+/// the window, dim and step back a touch on the way out. Driven by scroll
+/// position, so it scrubs; skipped whole under Reduce Motion.
+private struct ScrollRise: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else {
+            content.scrollTransition(.interactive, axis: .vertical) { effect, phase in
+                let entering = max(0, phase.value)
+                let leaving = max(0, -phase.value)
+                return effect
+                    .opacity(1 - entering - 0.75 * leaving)
+                    .offset(y: 16 * entering - 14 * leaving)
+                    .scaleEffect(1 - 0.03 * leaving)
+            }
+        }
+    }
+}
+
+/// A figure that pops to size as it scrolls into the window — the stats
+/// band's entrance. `order` staggers a row of them: each later figure waits
+/// until a little more of the band is visible before it lands.
+private struct ScrollPop: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let order: Int
+
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else {
+            content.scrollTransition(
+                .interactive.threshold(.visible(min(0.25 + 0.2 * Double(order), 0.85))),
+                axis: .vertical
+            ) { effect, phase in
+                let entering = max(0, phase.value)
+                let leaving = max(0, -phase.value)
+                return effect
+                    .opacity(1 - entering - 0.75 * leaving)
+                    .scaleEffect(1 - 0.12 * entering, anchor: .bottomLeading)
+                    .offset(y: 12 * entering - 14 * leaving)
+            }
+        }
+    }
+}
+
+/// A meter that swipes out to its length, left to right, as it scrolls into
+/// the window. `order` staggers a column of them into a cascade.
+private struct ScrollGrow: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let order: Int
+
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else {
+            content.scrollTransition(
+                .interactive.threshold(.visible(min(0.2 + 0.1 * Double(order), 0.8))),
+                axis: .vertical
+            ) { effect, phase in
+                effect.scaleEffect(x: 1 - max(0, phase.value), y: 1, anchor: .leading)
+            }
+        }
     }
 }
 
