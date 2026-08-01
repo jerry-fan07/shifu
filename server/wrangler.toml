@@ -7,7 +7,7 @@ compatibility_date = "2026-07-01"
 # then paste the id it prints below.
 [[kv_namespaces]]
 binding = "TOKENS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "cf9ee12ec90c41d394b2f501e6a6a96f"
 
 [vars]
 # Comma-separated model allowlist — exactly the two slots the analyzer uses.

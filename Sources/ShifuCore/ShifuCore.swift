@@ -8,8 +8,6 @@ public enum Shifu {
 /// that talks to it lives in shifu-analyzer, the one binary allowed to touch
 /// the network (§8).
 public enum ShifuCloudDefaults {
-    /// Where the proxy is deployed. Placeholder until the Worker in server/
-    /// is deployed under the real domain; overridable at runtime via the
-    /// shifu_cloud.base_url setting either way.
-    public static let baseURL = "https://api.shifu.jerryfan.dev"
+    /// Where the proxy is deployed.
+    public static let baseURL = "https://shifu-cloud.shifuapp.workers.dev"
 }
