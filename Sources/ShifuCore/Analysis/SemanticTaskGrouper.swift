@@ -193,9 +193,14 @@ public enum SemanticTaskGrouper {
                       let title = item["title"] as? String,
                       !title.trimmingCharacters(in: .whitespaces).isEmpty
                 else { return nil }
+                // A title that is only the prompt's `<…>` slot slugs to
+                // nothing and `resolve` drops the task; a gist has no key to
+                // bottom out on, so it is filtered here.
+                let gist = (item["gist"] as? String)
+                    .flatMap { TaskGrouper.isPlaceholder($0) ? nil : $0 }
                 return NewTask(handle: handle,
                                title: String(title.prefix(80)),
-                               gist: (item["gist"] as? String).map { String($0.prefix(200)) })
+                               gist: gist.map { String($0.prefix(200)) })
             }
         return Verdict(assignments: assignments, newTasks: newTasks)
     }

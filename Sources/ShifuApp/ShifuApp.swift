@@ -4,13 +4,23 @@ import SwiftUI
 // Shifu.app — a full desktop app with a menu bar companion (design.md §7).
 // The main window is one instrument: a permanent source list and one page.
 // The menu bar item stays the always-visible surface for state, pause, and
-// Work Mode.
+// Focus Mode.
 @main
 struct ShifuApp: App {
     @StateObject private var store = LedgerStore()
     /// Owned by the app rather than the window so the menu bar item and the
     /// ⌘, command can point the dashboard at a place before opening it.
     @StateObject private var router = Router()
+
+    init() {
+        // Keep the bundled daemon registered (and migrate a ~/Shifu/bin dev
+        // install) on every launch — but not before onboarding has shown what
+        // capture means. First-run registration happens when onboarding
+        // finishes instead.
+        if UserDefaults.standard.bool(forKey: "shifu.onboarded") {
+            DaemonService.syncRegistration()
+        }
+    }
 
     var body: some Scene {
         Window("Shifu", id: "dashboard") {
@@ -104,7 +114,7 @@ private struct MenuBarPanel: View {
             .padding(.bottom, 7)
 
             separator
-            WorkModeMenuLine()
+            FocusModeMenuLine()
 
             separator
             if store.isPaused {
@@ -154,23 +164,23 @@ private struct MenuBarPanel: View {
     }
 }
 
-/// The Work Mode line wears the switch itself — the same control as the rail's
+/// The Focus Mode line wears the switch itself — the same control as the rail's
 /// foot and the Settings page, so the state looks the same everywhere it can
 /// be flipped. The whole row stays the target, like every other line here.
-private struct WorkModeMenuLine: View {
+private struct FocusModeMenuLine: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var hovering = false
 
     var body: some View {
         Button {
-            store.toggleWorkMode()
+            store.toggleFocusMode()
         } label: {
             HStack(spacing: 8) {
-                Text("Work Mode")
+                Text("Focus Mode")
                     .font(Instrument.sans(13))
                     .foregroundStyle(Instrument.ink)
                 Spacer(minLength: 0)
-                ToggleSwitch(isOn: store.workModeOn) { store.toggleWorkMode() }
+                ToggleSwitch(isOn: store.focusModeOn) { store.toggleFocusMode() }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 4)
@@ -179,7 +189,7 @@ private struct WorkModeMenuLine: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityLabel("Work Mode")
+        .accessibilityLabel("Focus Mode")
     }
 }
 

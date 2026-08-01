@@ -14,16 +14,17 @@ extension TaskStore {
     }
 
     /// Ids of the tasks prune would take: quiet, sub-threshold, mechanically
-    /// keyed, and still wearing the name the grouper gave them — plus `app:`
-    /// tasks for system bundles the grouper now denylists
-    /// (TaskGrouper.isSystemBundle) and `domain:` tasks for browser-internal
-    /// hosts (TaskGrouper.isBrowserInternalHost), both of which accrue time
-    /// daily and so never meet the staleness or substance conditions; those
-    /// die regardless of size or recency. Only a rename spares one — not a hand-filed
-    /// theme: the bundle can never be work, the denylist starves the task of
-    /// new blocks either way, and the dogfood DB showed such filings were UI
-    /// experiments (loginwindow filed under "Shifu Development"). The blocks
-    /// keep their `theme_key`, so filed theme time survives the task.
+    /// keyed, and still wearing the name the grouper gave them — plus
+    /// `domain:` tasks for browser-internal hosts
+    /// (TaskGrouper.isBrowserInternalHost), which accrue time daily and so
+    /// never meet the staleness or substance conditions; those die on sight,
+    /// only a rename sparing one.
+    ///
+    /// System-bundle `app:` tasks used to need the same die-on-sight clause,
+    /// exempt from the staleness rule. They cannot exist any more:
+    /// `LedgerBuilder` writes no block for a system shell, so nothing mints
+    /// the key, and the `v26-system-shell-purge` migration deleted the ones
+    /// already on disk.
     private static func candidates(
         database: ShifuDatabase, now: Date
     ) throws -> [PruneCandidate] {
@@ -44,23 +45,18 @@ extension TaskStore {
                                 FROM activities a WHERE a.task_id = tasks.id), 0) < ?
                 """, arguments: [cutoff, TaskGrouper.minNewTaskMs]
             ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
-            let system = try Row.fetchAll(db, sql: """
-                SELECT id, key, name FROM tasks WHERE key LIKE 'app:%'
-                """
-            ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
-                .filter { TaskGrouper.isSystemBundle(String($0.key.dropFirst(4))) }
-            // Same die-on-sight rule for `domain:` tasks minted from
+            // Die-on-sight rule for `domain:` tasks minted from
             // browser-internal pages (chrome://new-tab-page and kin) before
             // Sessionizer stopped deriving domains from non-web schemes —
-            // that gate starves them of new blocks exactly like the bundle
-            // denylist starves system tasks.
+            // that gate starves them of new blocks, so staleness can't reach
+            // them either.
             let browser = try Row.fetchAll(db, sql: """
                 SELECT id, key, name FROM tasks WHERE key LIKE 'domain:%'
                 """
             ).map { PruneCandidate(id: $0["id"], key: $0["key"], name: $0["name"]) }
                 .filter { TaskGrouper.isBrowserInternalHost(String($0.key.dropFirst(7))) }
             var seenIDs: Set<Int64> = []
-            return (debris + system + browser)
+            return (debris + browser)
                 .filter { TaskGrouper.isDefaultName($0.name, forKey: $0.key) }
                 .filter { seenIDs.insert($0.id).inserted }
         }
@@ -71,11 +67,8 @@ extension TaskStore {
     /// pruneInactiveDays.
     /// That is the debris the substance gate now stops at the source — one-off
     /// subjects minted before the gate existed, and tasks whose activities
-    /// were later re-grouped away. System-bundle `app:` tasks (see
-    /// `candidates`) are the one exception to the staleness rule: minted
-    /// before the grouping denylist existed, they die on sight and never
-    /// re-mint. Semantic (`sem:`) tasks are exempt in the query below and
-    /// renamed ones fail isDefaultName. Deleting is safe:
+    /// were later re-grouped away. Semantic (`sem:`) tasks are exempt in the
+    /// query below and renamed ones fail isDefaultName. Deleting is safe:
     /// the key re-mints the moment it earns real time, and the activities keep
     /// their ledger time, just task-less. Day logs and work notes recompile.
     @discardableResult

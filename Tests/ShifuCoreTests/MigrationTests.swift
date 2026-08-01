@@ -70,7 +70,7 @@ import Testing
             "observations", "activities", "tasks", "task_logs", "themes",
             "theme_proposals", "theme_proposal_blocks", "theme_suggestions",
             "rules", "exclusions", "settings", "suggestions", "srs_reviews",
-            "work_mode_sessions", "task_merge_suggestions",
+            "focus_mode_sessions", "task_merge_suggestions",
             "vault_index", "vault_fts", "vault_vectors"
         ]
         let database = try ShifuDatabase.inMemory()
@@ -79,6 +79,49 @@ import Testing
                 let exists = try db.tableExists(table)
                 #expect(exists, "\(table) is missing")
             }
+        }
+    }
+
+    /// v25 renamed Focus Mode's two stored names. Both hold data the user
+    /// owns and nothing derives — adherence history, and a list they typed
+    /// themselves — so the upgrade has to carry them, not start them over.
+    /// A fresh database says nothing about that; only an upgrade from a
+    /// database that already has rows under the old names does.
+    @Test func theFocusModeRenameCarriesSessionsAndTheSiteListOver() throws {
+        let queue = try DatabaseQueue()
+        try ShifuDatabase.migrator.migrate(queue, upTo: "v24-vault-library")
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO work_mode_sessions (started_at, ended_at) VALUES (100, 200)
+                """)
+            try db.execute(sql: """
+                INSERT INTO work_mode_sessions (started_at) VALUES (300)
+                """)
+            try db.execute(sql: """
+                INSERT INTO settings (key, value)
+                VALUES ('workmode.distracting_domains', 'reddit.com,news.test')
+                """)
+        }
+
+        try ShifuDatabase.migrator.migrate(queue)
+
+        try queue.read { db in
+            let sessions = try Row.fetchAll(
+                db, sql: "SELECT started_at, ended_at FROM focus_mode_sessions ORDER BY started_at")
+            #expect(sessions.count == 2)
+            #expect(sessions.map { $0["started_at"] as Int64? } == [100, 300])
+            // The open session is still open — a rename must not close it.
+            #expect(sessions[1]["ended_at"] as Int64? == nil)
+
+            let sites = try String.fetchOne(
+                db, sql: "SELECT value FROM settings WHERE key = 'focusmode.distracting_domains'")
+            #expect(sites == "reddit.com,news.test")
+
+            // And the old names are gone rather than left as a second copy.
+            #expect(try !db.tableExists("work_mode_sessions"))
+            let stale = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM settings WHERE key LIKE 'workmode.%'")
+            #expect(stale == 0)
         }
     }
 
@@ -198,7 +241,103 @@ import Testing
         }
     }
 
+    /// v26 purges the system-shell rows written under the old rule, where the
+    /// denylist was enforced by each reader rather than at the write boundary.
+    /// Leaving them would leave the four readers that forgot the clause still
+    /// wrong on history — which in the dogfood DB was 849 h of `loginwindow`
+    /// and 8.1 of "Shifu Development"'s 40.5 h.
+    ///
+    /// Seeded against v24 and migrated forward, because a purge that only
+    /// works on rows this test also inserted proves nothing about an upgrade.
+    @Test func theSystemShellPurgeClearsHistoryAndRepairsTheDaysItTouched() throws {
+        let queue = try DatabaseQueue()
+        try ShifuDatabase.migrator.migrate(queue, upTo: "v24-vault-library")
+
+        let dayStart = Int64(Calendar.current.startOfDay(
+            for: Date(timeIntervalSince1970: 1_760_000_000)).timeIntervalSince1970 * 1_000)
+        try Self.seedLegacyShellLedger(queue, dayStart: dayStart)
+
+        try ShifuDatabase.migrator.migrate(queue)
+
+        try queue.read { db in
+            let bundles = try String.fetchAll(
+                db, sql: "SELECT app_bundle FROM activities ORDER BY started_at")
+            #expect(bundles == ["com.apple.dt.Xcode", "com.mitchellh.ghostty"])
+
+            // The shell's own task goes; the renamed one and the real one stay.
+            let keys = try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
+            #expect(keys == ["app:com.apple.dock", "app:com.mitchellh.ghostty", "topic:writing"])
+
+            // The day is recompiled from what survives — 30 minutes, not 90.
+            // Without this the lock's hour would sit in that day's total for
+            // good: the hourly rebuild only recomputes the last 48 h of logs.
+            let logged = try Int64.fetchOne(
+                db, sql: "SELECT duration_ms FROM task_logs WHERE task_id = 1")
+            #expect(logged == 1_800_000)
+
+            // Nothing points at a task that no longer exists — `task_id` has
+            // no foreign key to clean up after a plain DELETE.
+            let dangling = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM activities
+                WHERE task_id IS NOT NULL
+                  AND task_id NOT IN (SELECT id FROM tasks)
+                """)
+            #expect(dangling == 0)
+
+            // The capture behind the deleted block is untouched — that is what
+            // makes deleting derived rows safe, and what `--rebuild` reads to
+            // put them back if the denylist ever loses that bundle.
+            let observed = try String.fetchAll(db, sql: "SELECT app_bundle FROM observations")
+            #expect(observed == ["com.apple.loginwindow"])
+        }
+    }
+
     // MARK: - Helpers
+
+    /// A ledger as the pre-v26 pipeline left one: shell blocks alongside real
+    /// work, an `app:` task the shell minted, a task holding a shell block it
+    /// could never let go of (`TaskGrouper` only ever *set* `task_id`), and a
+    /// day log compiled from all of it.
+    private static func seedLegacyShellLedger(
+        _ queue: DatabaseQueue, dayStart: Int64
+    ) throws {
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO tasks (id, key, name, created_at, last_active_at) VALUES
+                    (1, 'topic:writing', 'writing', 0, ?),
+                    (2, 'app:com.apple.loginwindow', 'loginwindow', 0, ?),
+                    (3, 'app:com.apple.dock', 'Desk setup', 0, ?),
+                    (4, 'app:com.mitchellh.ghostty', 'ghostty', 0, ?)
+                """, arguments: [dayStart, dayStart, dayStart, dayStart])
+
+            // started_at, ended_at, app_bundle, task_id.
+            let blocks: [StatementArguments] = [
+                [dayStart, dayStart + 1_800_000, "com.apple.dt.Xcode", 1],
+                [dayStart + 3_600_000, dayStart + 7_200_000, "com.apple.loginwindow", 1],
+                [dayStart + 7_200_000, dayStart + 7_260_000, "com.shifu.app", 2],
+                [dayStart + 7_260_000, dayStart + 7_320_000, "unknown.4213", 2],
+                [dayStart + 7_320_000, dayStart + 7_380_000, "com.mitchellh.ghostty", 4]
+            ]
+            for arguments in blocks {
+                try db.execute(sql: """
+                    INSERT INTO activities
+                        (started_at, ended_at, app_bundle, category, source, task_id)
+                    VALUES (?, ?, ?, 'work', 'rules', ?)
+                    """, arguments: arguments)
+            }
+
+            // The day log as the old pipeline compiled it: 30 real minutes
+            // plus the lock's 60.
+            try db.execute(sql: """
+                INSERT INTO task_logs (task_id, day_start, duration_ms, summary)
+                VALUES (1, ?, ?, 'Xcode, loginwindow — writing')
+                """, arguments: [dayStart, 5_400_000])
+            try db.execute(sql: """
+                INSERT INTO observations (started_at, last_seen, app_bundle, capture_kind)
+                VALUES (?, ?, 'com.apple.loginwindow', 'meta')
+                """, arguments: [dayStart + 3_600_000, dayStart + 7_200_000])
+        }
+    }
 
     private static func schema(of queue: DatabaseQueue) throws -> [String] {
         try queue.read { db in

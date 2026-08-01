@@ -1,0 +1,32 @@
+name = "shifu-cloud"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Device tokens and usage counters. Create with:
+#   wrangler kv namespace create TOKENS
+# then paste the id it prints below.
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "cf9ee12ec90c41d394b2f501e6a6a96f"
+
+[vars]
+# Comma-separated model allowlist — exactly the two slots the analyzer uses.
+ALLOWED_MODELS = "deepseek-v4-flash,deepseek-v4-pro"
+# Ceiling on a single call's max_tokens. 60000 matches the client's whole
+# context window (DeepSeekBackend.contextWindowTokens), so the thinking-slot
+# escalation retry still fits while runaway requests are refused.
+MAX_TOKENS_CEILING = "60000"
+# Largest accepted request body, bytes. The client's prompts are budgeted to
+# 60k tokens ≈ 180 KB of UTF-8; 256 KB leaves headroom without inviting abuse.
+MAX_BODY_BYTES = "262144"
+# Per-device daily token budget (prompt + completion, from DeepSeek's usage
+# object). A heavy dogfood day measured ~2026-07 runs well under 2M.
+DAILY_TOKEN_BUDGET = "4000000"
+# Per-device requests per minute.
+RATE_LIMIT_PER_MINUTE = "60"
+# New device registrations allowed per IP per day.
+REGISTRATIONS_PER_IP_PER_DAY = "10"
+UPSTREAM = "https://api.deepseek.com"
+
+# The DeepSeek API key never appears in this file or the client:
+#   wrangler secret put DEEPSEEK_API_KEY

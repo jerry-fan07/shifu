@@ -114,11 +114,12 @@ struct Ribbon: View {
 /// The hours the ribbon spans, ticked under it.
 ///
 /// Each label is centred on the instant it names. The obvious layout — an
-/// `HStack` of labels with `Spacer`s between them — is wrong for any rail
-/// whose last tick isn't its last hour: eight ticks over a 24-hour clock cover
-/// 00:00 to 21:00, and spacing them by count stretches seven eighths of a day
-/// across all of it, so every label drifts right of the band it belongs to,
-/// reaching nearly three hours by the end. An axis that disagrees with the
+/// `HStack` of labels with `Spacer`s between them — is wrong for any rail whose
+/// ticks aren't a uniform division of it: a rail from 07:00 to 22:00 ticked
+/// every two hours runs 07, 09 … 21, 22, and the closing hour is one hour past
+/// its neighbour where every other gap is two. Spacing those nine by count puts
+/// 21 seven eighths along when the hour itself falls fourteen fifteenths along,
+/// an hour's drift off the band it names. An axis that disagrees with the
 /// bands above it is worse than no axis, because it is the thing you check
 /// them against.
 ///
@@ -137,7 +138,7 @@ struct RibbonAxis: View {
     var body: some View {
         GeometryReader { proxy in
             ForEach(ticks) { tick in
-                Text(String(format: "%02d", tick.hour))
+                Text(tick.label)
                     .font(Instrument.mono(10))
                     .foregroundStyle(Instrument.ghost)
                     .position(
@@ -159,6 +160,10 @@ struct RibbonAxis: View {
 struct BarStack: Identifiable {
     struct Segment: Identifiable {
         let id: Int
+        /// The group this band came from, spelled the way a `TimeSlice` is —
+        /// so the legend under the chart can point at its own bands across
+        /// every column. Private time carries the category it is.
+        let name: String
         let ms: Int64
         /// `.series` or `.hidden` — a slot with nothing in it draws no column
         /// at all, so `.gap` never occurs here.
@@ -189,6 +194,10 @@ struct StackedBars: View {
     /// closing boundary a per-slot tick can't name. Nil leaves the axis to
     /// the slot ticks alone.
     var endTick: String?
+    /// One group's `BarStack.Segment.name`, held at full strength while every
+    /// other band recedes — how the legend answers "and where was *that* one".
+    /// Nil draws every column at full strength, which is the resting state.
+    var highlight: String?
 
     /// Between slots — the columns themselves sit centred in what's left.
     private static let spacing: CGFloat = 4
@@ -284,6 +293,10 @@ struct StackedBars: View {
             }
         }
         .padding(.leading, Self.axisWidth)
+        // Short enough not to lag a pointer running down the legend, long
+        // enough that the eye follows what receded rather than being handed a
+        // different chart between two frames.
+        .animation(.easeOut(duration: 0.12), value: highlight)
     }
 
     private var ticks: some View {
@@ -344,8 +357,24 @@ struct StackedBars: View {
         return rest == 0 ? "\(minutes / 60)h" : "\(minutes / 60)h\(rest)"
     }
 
+    /// A band the `highlight` passed over recedes to the flat tone of a
+    /// recessed track — *one* tone for all of them, never each faded in
+    /// proportion to its own colour.
+    ///
+    /// Fading by opacity is the obvious way and it is wrong here. This palette
+    /// is three steps of a single accent, so it separates its series by
+    /// lightness, and fading slides a band along that exact axis: at a fifth
+    /// strength the strong step lands on #DDE2E8, four points off where the
+    /// undimmed soft step sits (#C7D3E0). Hover the soft group and the chart
+    /// dims into a field of near-identical pale blues with the answer
+    /// somewhere inside it. Flattening every receded band to one tone lighter
+    /// than any series in the ramp is what makes the lit one findable — and
+    /// it holds in dark, where `well` inverts and the ramp does not.
     @ViewBuilder private func fill(for segment: BarStack.Segment) -> some View {
-        switch segment.fill {
+        let paint: RibbonSegment.Fill = highlight == nil || highlight == segment.name
+            ? segment.fill
+            : .series(Instrument.well)
+        switch paint {
         case .series(let color): Rectangle().fill(color)
         case .gap: Color.clear
         case .hidden: Hatch()

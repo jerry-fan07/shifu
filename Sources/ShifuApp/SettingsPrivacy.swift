@@ -73,7 +73,7 @@ private struct ExcludedAppsRow: View {
     }
 }
 
-/// Excluded domains. Normalized through the same reduction Work Mode's site
+/// Excluded domains. Normalized through the same reduction Focus Mode's site
 /// list uses, so pasting a full URL works here for the same reason it works
 /// there — and so what is stored is the shape `Exclusions` compares against.
 private struct ExcludedDomainsRow: View {
@@ -83,7 +83,7 @@ private struct ExcludedDomainsRow: View {
 
     /// Borrowed for its `normalize` alone: exclusions are not a setting, but
     /// "what counts as a domain" must not be written twice.
-    private var shape: DomainListSetting { SettingsCatalog.workModeDistractingDomains }
+    private var shape: DomainListSetting { SettingsCatalog.focusModeDistractingDomains }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

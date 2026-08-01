@@ -5,7 +5,8 @@ import ShifuCore
 // shifu-analyzer — batch analysis worker (design.md §4). Runs opportunistically
 // (invoked hourly by shifud, or on demand); skips on battery unless forced.
 // This is the only Shifu binary allowed to touch the network, and only to the
-// configured DeepSeek endpoint once the user has supplied an API key (§8).
+// configured LLM endpoint — DeepSeek directly, or the hosted Shifu Cloud
+// proxy — once the user has opted in (§8).
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
@@ -36,6 +37,13 @@ guard force || onACPower() else {
 try ShifuPaths.ensureHomeExists()
 let database = try ShifuDatabase.open(at: ShifuPaths.database)
 
+// Shifu Cloud provisioning: the hosted backend's device token is minted on
+// first use — choosing that backend was the opt-in (§8), the token is just
+// plumbing. Must happen before any backend is built, including --build-deck's.
+if case .shifuCloud(nil) = (try? Settings.llmCredential(database: database)) ?? nil {
+    _ = await ShifuCloud.ensureToken(database: database)
+}
+
 // `--build-deck <key>`: the app asking for one deck to be built (§5.2). Only
 // this binary may reach the network, so a deck build is a launch of it. This
 // runs before the ledger rebuild and exits — the request is interactive, the
@@ -45,9 +53,9 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
     let deckKey = args[flagIndex + 1]
     guard let deckBackend = try DeepSeekBackend.ifConfigured(database: database) else {
         // The UI gates this path on a configured backend, so reaching here
-        // means the key was removed mid-flight. The deck stays `pending` and
-        // the drain picks it up once a key exists — never a failure.
-        print("no DeepSeek key — deck \(deckKey) stays pending")
+        // means the opt-in was revoked mid-flight. The deck stays `pending`
+        // and the drain picks it up once a backend exists — never a failure.
+        print("no LLM backend — deck \(deckKey) stays pending")
         exit(0)
     }
     let deckVault = VaultStore(database: database)
@@ -85,8 +93,9 @@ print("analyzed \(summary.observationsProcessed) observations → "
     + (rebuildAll ? " (full rebuild)" : "")
     + (scrubbed > 0 ? "; scrubbed text from \(scrubbed) expired rows" : ""))
 
-// DeepSeek is the only LLM backend; without an API key (or with backend
-// "off") every LLM stage is skipped and the rules-only ledger stands (§10
+// One wire protocol, two ways in — the user's own DeepSeek key, or the
+// hosted Shifu Cloud proxy. Without either opt-in (or with backend "off")
+// every LLM stage is skipped and the rules-only ledger stands (§10
 // fallback). Two model slots share the one opt-in (§4.2): the fast model
 // runs everything hourly — cards, grouping, themes, notes — over card
 // evidence; the reasoning model is reserved for the daily roster

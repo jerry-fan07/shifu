@@ -29,9 +29,8 @@ extension SemanticTaskGrouper {
 
         var lines: [String] = [
             "Group screen-time blocks into the user's high-level tasks — the goal being",
-            "pursued, phrased as the user would (\"Applying to YC Startup School",
-            "afterparties\", \"Booking flights and planning travel\") — never an app or",
-            "website name.",
+            "pursued, phrased as the user would (\"Studying for the certification exam\",",
+            "\"Booking flights and planning travel\") — never an app or website name.",
             "",
             detail == .full
                 ? "Existing tasks — reuse one whenever a block continues it "
@@ -70,10 +69,9 @@ extension SemanticTaskGrouper {
             "A new task needs a specific goal-level title (3-8 words) and a one-sentence gist.",
             "Omit blocks that fit no task (idle browsing, one-off glances).",
             "Confidence is 0-1; use low confidence when the evidence is thin.",
-            "Respond with ONLY JSON:",
+            "Respond with ONLY JSON, replacing each <…> with your own words:",
             #"{"assignments": [{"id": 12, "task": "t1", "confidence": 0.9}],"#,
-            #" "new_tasks": [{"handle": "n1", "title": "Booking flights for the SF trip","#,
-            #"   "gist": "Comparing fares and picking travel dates."}]}"#
+            #" "new_tasks": [{"handle": "n1", "title": "<…>", "gist": "<…>"}]}"#
         ])
         return lines.joined(separator: "\n")
     }
@@ -201,10 +199,7 @@ extension SemanticTaskGrouper {
     /// Unassigned, evidence-bearing blocks in the window, oldest first.
     /// Evidence means a topic, a window title, or captured text — a bare
     /// metadata block gives the model nothing beyond the app name, which the
-    /// mechanical key already encodes. System-shell blocks
-    /// (`TaskGrouper.isSystemBundle`) are excluded in SQL, not after: they can
-    /// never join a task, and left in they'd hold candidate slots and burn
-    /// tokens and attempts on lock screens and auth prompts.
+    /// mechanical key already encodes.
     ///
     /// Sub-minute blocks are normally not worth tokens (`minBlockMs`), but a
     /// hop-style tool breaks that assumption in bulk: the dogfood ledger
@@ -222,7 +217,6 @@ extension SemanticTaskGrouper {
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = candidateLimit
     ) throws -> [BlockSample] {
-        let denied = TaskGrouper.notSystemBundleSQL()
         let evidenceClause = """
             (card IS NOT NULL OR topic IS NOT NULL OR EXISTS (
                   SELECT 1 FROM observations o WHERE o.session_id = activities.id
@@ -230,7 +224,7 @@ extension SemanticTaskGrouper {
             """
         return try database.queue.read { db in
             let hopApps = try hopAdmittedApps(
-                db, from: from, to: to, denied: denied, evidenceClause: evidenceClause)
+                db, from: from, to: to, evidenceClause: evidenceClause)
             let lengthGate = hopApps.isEmpty
                 ? "ended_at - started_at >= ?"
                 : """
@@ -244,13 +238,11 @@ extension SemanticTaskGrouper {
                   AND category != 'private'
                   AND sem_key IS NULL AND sem_attempts < ?
                   AND \(lengthGate)
-                  AND \(denied.clause)
                   AND \(evidenceClause)
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
                                  maxAttempts, minBlockMs]
-                    + StatementArguments(hopApps)
-                    + StatementArguments(denied.arguments) + [limit])
+                    + StatementArguments(hopApps) + [limit])
             return try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let card: String? = row["card"]
@@ -273,8 +265,7 @@ extension SemanticTaskGrouper {
     /// past the mechanical mint floor in the window — the hop-style tools
     /// whose slivers `pendingSamples` admits despite `minBlockMs`.
     private static func hopAdmittedApps(
-        _ db: Database, from: Int64, to: Int64,
-        denied: (clause: String, arguments: [String]), evidenceClause: String
+        _ db: Database, from: Int64, to: Int64, evidenceClause: String
     ) throws -> [String] {
         try String.fetchAll(db, sql: """
             SELECT app_bundle FROM activities
@@ -282,13 +273,11 @@ extension SemanticTaskGrouper {
               AND category != 'private'
               AND sem_key IS NULL AND sem_attempts < ?
               AND ended_at - started_at < ?
-              AND \(denied.clause)
               AND \(evidenceClause)
             GROUP BY app_bundle
             HAVING SUM(ended_at - started_at) >= ?
             """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
                              maxAttempts, minBlockMs]
-                + StatementArguments(denied.arguments)
                 + [TaskGrouper.minNewTaskMs])
     }
 

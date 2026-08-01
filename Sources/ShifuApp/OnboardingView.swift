@@ -8,11 +8,21 @@ import SwiftUI
 /// unsurprising.
 struct OnboardingView: View {
     @AppStorage("shifu.onboarded") private var onboarded = false
-    @State private var step = 0
-    @State private var backend = "deepseek"
+    @State private var step: Int
+    /// Off until chosen — the consent gate (§8). For a screen observer,
+    /// sending anything anywhere must be the user's affirmative act, so the
+    /// cloud options are never preselected.
+    @State private var backend: String
     @State private var apiKey = ""
 
     private static let steps = 4
+
+    /// The parameters exist for WindowShots, which can't click through the
+    /// flow; the app always starts at the first step with analysis off.
+    init(step: Int = 0, backend: String = "off") {
+        _step = State(initialValue: step)
+        _backend = State(initialValue: backend)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -88,7 +98,7 @@ struct OnboardingView: View {
         case 0: return "Raw text is deleted after 14 days."
         case 1: return "Pixels are never saved. Screenshots live in memory for one OCR call."
         case 2: return "Exclusions are enforced before capture, not filtered after."
-        default: return "Nothing leaves this Mac until you add a key."
+        default: return "Nothing leaves this Mac unless you switch this on. Off is the default."
         }
     }
 
@@ -123,9 +133,9 @@ struct OnboardingView: View {
     private var permissionsPage: some View {
         VStack(alignment: .leading, spacing: 14) {
             prose("""
-            The capture daemon runs from `~/Shifu/bin` and needs both, from System \
-            Settings → Privacy & Security. Shifu can't read the daemon's grant state from \
-            here — the ledger filling up is the proof.
+            The capture daemon starts at login (System Settings → Login Items) and needs \
+            both, from System Settings → Privacy & Security. Shifu can't read the daemon's \
+            grant state from here — the ledger filling up is the proof.
             """)
             permission(
                 "Accessibility",
@@ -192,12 +202,27 @@ struct OnboardingView: View {
     private var backendPage: some View {
         VStack(alignment: .leading, spacing: 14) {
             prose("""
-            Task naming, ambiguous-time classification, and knowledge extraction use \
-            DeepSeek. Without a key those stages are skipped and Shifu runs on rules alone.
+            Task naming, ambiguous-time classification, and knowledge extraction use a \
+            model. Off, those stages are skipped and Shifu runs on rules alone — nothing \
+            ever leaves this Mac.
             """)
             SegmentedBar(
-                options: [("DeepSeek", "deepseek"), ("Rules only", "off")],
+                options: [
+                    ("Rules only", "off"),
+                    ("Shifu Cloud", "shifu-cloud"),
+                    ("Own API key", "deepseek")
+                ],
                 selection: $backend)
+            if backend == "shifu-cloud" {
+                Text("No key and no account: redacted, post-exclusion text samples go to "
+                    + "Shifu's server, which forwards them to DeepSeek — an AI provider "
+                    + "based in China — and holds the credentials. Never pixels, never "
+                    + "raw captures. Choosing this is the switch; flip it back anytime "
+                    + "in Settings.")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if backend == "deepseek" {
                 SecureField("DeepSeek API key (or set DEEPSEEK_API_KEY)", text: $apiKey)
                     .textFieldStyle(.plain)
@@ -209,9 +234,10 @@ struct OnboardingView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .strokeBorder(Instrument.edge, lineWidth: 1)
                     }
-                Text("Only derived text samples are sent, after exclusions and redaction. "
-                    + "Never pixels. Defaults: deepseek-v4-flash for classification, "
-                    + "deepseek-v4-pro for grouping — change either in Settings.")
+                Text("Only derived text samples are sent, after exclusions and redaction — "
+                    + "straight to DeepSeek with your key, never through Shifu's server. "
+                    + "Defaults: deepseek-v4-flash for classification, deepseek-v4-pro "
+                    + "for grouping — change either in Settings.")
                     .font(Instrument.sans(11.5))
                     .foregroundStyle(Instrument.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -238,5 +264,7 @@ struct OnboardingView: View {
             }
         }
         onboarded = true
+        // Now — and only now — the daemon may start watching.
+        DaemonService.syncRegistration()
     }
 }

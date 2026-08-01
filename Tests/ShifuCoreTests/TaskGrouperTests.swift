@@ -46,8 +46,9 @@ import Testing
         #expect(!TaskGrouper.isDefaultName("File wrangling", forKey: "app:com.apple.finder"))
     }
 
-    // The denylist itself is covered in `SystemBundleDenylistTests`, which
-    // asserts the Swift check and its SQL twin against each other.
+    // The denylist itself is covered in `SystemBundleDenylistTests`. It is no
+    // longer this type's business: a shell never reaches the grouper because
+    // `LedgerBuilder` never writes it a block.
 
     @Test func summaryLineReadsWhereThenWhat() {
         #expect(TaskGrouper.summaryLine(sources: ["Xcode", "github.com"],
@@ -203,27 +204,10 @@ import Testing
         #expect(counts.logs == 0)
     }
 
-    /// The lock screen's hours stay in the ledger but never become a task,
-    /// however far past the substance gate they run — even when a topic
-    /// somehow attached, the bundle alone bars the block from grouping.
-    @Test func systemBundlesNeverMintTasks() throws {
-        let database = try makeDB()
-        try insert(database, start: day1.addingTimeInterval(2 * 3_600), minutes: 90,
-                   app: "com.apple.loginwindow", topic: "waiting at the lock screen")
-        try insert(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 30,
-                   app: "com.shifu.app")
-        let summary = try TaskGrouper.run(
-            database: database, from: 0, to: ms(day2), calendar: calendar)
-        #expect(summary.tasksTouched == 0)
-
-        let counts = try database.queue.read { db in
-            (tasks: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks") ?? -1,
-             assigned: try Int.fetchOne(
-                db, sql: "SELECT COUNT(*) FROM activities WHERE task_id IS NOT NULL") ?? -1)
-        }
-        #expect(counts.tasks == 0)
-        #expect(counts.assigned == 0)
-    }
+    // "The lock screen never becomes a task" is now a property of the whole
+    // pipeline rather than of this grouper — see
+    // `SystemBundleDenylistTests.anObservedLockScreenNeverBecomesATask`, which
+    // drives it from observations through `LedgerBuilder`.
 
     @Test func recurringKeyCrossesGateWithinWindowAndMints() throws {
         let database = try makeDB()

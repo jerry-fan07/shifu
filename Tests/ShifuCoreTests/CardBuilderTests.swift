@@ -186,15 +186,19 @@ private final class RecordingBackend: LLMBackend, @unchecked Sendable {
                           domain: nil,
                           text: String(repeating: "dense ocr text ", count: 40))
         }
-        // Window small enough that 10 fat samples cannot fit one prompt.
-        let backend = RecordingBackend(contextWindowTokens: 4_000)
+        // Window small enough that 10 fat samples cannot fit one prompt, but
+        // still larger than the response reserve. Expressed against the
+        // reserve so that raising one cannot silently invert the other — a
+        // fixed 4_000 here went negative the moment the reserve grew.
+        let window = CardBuilder.responseTokenReserve + 1_000
+        let backend = RecordingBackend(contextWindowTokens: window)
         let summary = try await CardBuilder.run(
             database: db, backend: backend, from: 0, to: 100_000_000)
         #expect(backend.prompts.count > 1)
         #expect(summary.built == 10)
         #expect(summary.relabeled == 10)
         for prompt in backend.prompts {
-            #expect(LLMTokens.estimate(prompt) <= 4_000 - CardBuilder.responseTokenReserve)
+            #expect(LLMTokens.estimate(prompt) <= window - CardBuilder.responseTokenReserve)
         }
         // A topic coined in the first batch anchors every later one, so one
         // effort split across batches cannot come back with two wordings.

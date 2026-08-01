@@ -95,44 +95,29 @@ import Testing
         #expect(try TaskStore.prune(database: database, now: now, calendar: calendar) == 0)
     }
 
-    /// System-surface tasks minted before the grouping denylist existed die
-    /// regardless of accrued time, recency, or even a hand-filed theme (the
-    /// dogfood DB had loginwindow filed under a theme from testing the filing
-    /// UI); only a rename protects one, and a real app-keyed task of the same
-    /// size survives untouched.
-    @Test func reapsSystemBundleTasksRegardlessOfSubstance() throws {
+    /// Prune used to carry a second clause for system-surface `app:` tasks,
+    /// exempt from the staleness rule because the lock screen accrued time
+    /// daily and so was never stale enough to take. That clause is gone: no
+    /// such task can be minted (`LedgerBuilder` writes the blocks no more) and
+    /// `v26-system-shell-purge` took the ones on disk. What must not have
+    /// changed is the rest — a busy, recent, app-keyed task is still nobody's
+    /// debris, whatever its bundle looks like.
+    @Test func leavesBusyRecentAppKeyedTasksAlone() throws {
         let database = try ShifuDatabase.inMemory()
         let now = day1.addingTimeInterval(86_400)
         let recent = ms(now) - 3_600_000
 
-        let lock = try seedTask(database, key: "app:com.apple.loginwindow",
-                                name: "loginwindow", minutes: 400, endedAt: recent)
         try seedTask(database, key: "app:com.mitchellh.ghostty", name: "ghostty",
                      minutes: 400, endedAt: recent)
         try seedTask(database, key: "app:com.apple.dock", name: "Desk setup",
                      minutes: 400, endedAt: recent)
-        let dev = try #require(try ThemeStore.create(named: "Shifu Development",
-                                                     database: database))
-        try TaskStore.assignTheme(taskID: lock, themeKey: dev, database: database)
 
-        let pruned = try TaskStore.prune(database: database, now: now, calendar: calendar)
-        #expect(pruned == 1)
+        #expect(try TaskStore.prune(database: database, now: now, calendar: calendar) == 0)
 
         let keys = try database.queue.read { db in
             try String.fetchAll(db, sql: "SELECT key FROM tasks ORDER BY key")
         }
         #expect(keys == ["app:com.apple.dock", "app:com.mitchellh.ghostty"])
-
-        let state = try database.queue.read { db in
-            (orphans: try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM activities WHERE task_id IS NULL
-                """) ?? -1,
-             lockLogs: try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM task_logs WHERE task_id = \(lock)
-                """) ?? -1)
-        }
-        #expect(state.orphans == 1)
-        #expect(state.lockLogs == 0)
     }
 
     /// Browser-internal `domain:` tasks (chrome://new-tab-page and kin,

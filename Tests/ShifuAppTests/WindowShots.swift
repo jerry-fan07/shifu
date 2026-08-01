@@ -36,8 +36,10 @@ import Testing
         store.refresh()
 
         // A crashed run may have left the ledger's persisted Day/Week window
-        // flipped, which would silently turn every day shot into a week shot.
+        // flipped, or its picker parked on Focus — either would silently turn
+        // every Breakdown shot into a different page.
         UserDefaults.standard.removeObject(forKey: "shifu.ledger.week")
+        UserDefaults.standard.removeObject(forKey: "shifu.ledger.lens")
 
         for place in Place.allCases {
             shoot(
@@ -62,6 +64,7 @@ import Testing
         // series — so it is the one thing whose light and dark steps have to
         // be checked against real rails rather than reasoned about.
         shoot(.breakdown, as: "breakdown-week-dark", dark: true, store: store, into: directory)
+        shootFocus(store: store, into: directory)
 
         shootPagesBehindARow(store: store, into: directory)
         shootNotes(store: store, into: directory)
@@ -88,6 +91,12 @@ import Testing
                 .tasks, route: .task(task), as: "task-page-light", dark: false,
                 store: store, into: directory)
         }
+        shootDecks(store: store, into: directory)
+        shootNotes(store: store, into: directory)
+        shootOnboarding(into: directory)
+    }
+
+    @MainActor private func shootDecks(store: LedgerStore, into directory: URL) {
         if let deck = store.decks.first {
             shoot(
                 .decks, route: .deck(deck.id), as: "deck-page", dark: false,
@@ -125,6 +134,38 @@ import Testing
             return !(note?.sessionsProse ?? "").isEmpty
         }
         return (unrollable ?? bySize.first)?.task.id
+    }
+
+    /// The consent page (§8) in each of its three states — the one screen
+    /// where wording is the product, and the disclosure blocks only appear
+    /// for the selection they describe.
+    @MainActor private func shootOnboarding(into directory: URL) {
+        for (backend, slug) in [
+            ("off", "onboarding-consent"),
+            ("shifu-cloud", "onboarding-consent-cloud"),
+            ("deepseek", "onboarding-consent-key")
+        ] {
+            shoot(
+                OnboardingView(step: 3, backend: backend),
+                to: directory.appendingPathComponent("\(slug).png"),
+                dark: backend == "shifu-cloud")
+        }
+    }
+
+    /// The picker's Focus position is view state the same way Day/Week is — a
+    /// persisted raw — so the session bands and the score head get their own
+    /// pass over both windows. Gold on real rails, both appearances: the warm
+    /// slot is the one hue in the band that is not a series.
+    @MainActor private func shootFocus(store: LedgerStore, into directory: URL) {
+        UserDefaults.standard.set("Focus", forKey: "shifu.ledger.lens")
+        defer { UserDefaults.standard.removeObject(forKey: "shifu.ledger.lens") }
+        UserDefaults.standard.set(true, forKey: "shifu.ledger.week")
+        shoot(.breakdown, as: "breakdown-focus-week", dark: false, store: store, into: directory)
+        shoot(
+            .breakdown, as: "breakdown-focus-week-dark", dark: true,
+            store: store, into: directory)
+        UserDefaults.standard.removeObject(forKey: "shifu.ledger.week")
+        shoot(.breakdown, as: "breakdown-focus", dark: false, store: store, into: directory)
     }
 
     /// The Notes place has three states worth looking at and one page behind a

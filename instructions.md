@@ -18,7 +18,7 @@ The user should not feel the presence of the screen information being captured a
 ### Productivity Analysis
 The analyzed data should be used to track exactly how much time the user is spending on certain things, such as work, entertainment, socializing/networking, learning, etc.
 
-An additional feature for this could be to have the ability to enable a work mode, in which the program can detect whether a user is not working and lightly remind the user (a subtle glow pulse on the screen every few minutes)
+An additional feature for this could be to have the ability to enable a focus mode, in which the program can detect whether a user is not working and lightly remind the user (a subtle glow pulse on the screen every few minutes)
 
 ### Storing Information for Review
 New or learned information and knowledge should be stored from the captured data analyzed and become accessible for the user to review.

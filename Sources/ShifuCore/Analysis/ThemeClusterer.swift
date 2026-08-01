@@ -118,10 +118,9 @@ public enum ThemeClusterer {
             "Assign each block to one initiative: existing (t1…) or new (n1, n2…).",
             "A new initiative needs a broad title (2-6 words) and a one-sentence gist.",
             "Omit blocks that fit nothing. Confidence is 0-1.",
-            "Respond with ONLY JSON:",
+            "Respond with ONLY JSON, replacing each <…> with your own words:",
             #"{"assignments": [{"id": 12, "task": "t1", "confidence": 0.9}],"#,
-            #" "new_themes": [{"handle": "n1", "title": "YC Startup School","#,
-            #"   "gist": "Program sessions, applications, and events around it."}]}"#
+            #" "new_themes": [{"handle": "n1", "title": "<…>", "gist": "<…>"}]}"#
         ])
         return lines.joined(separator: "\n")
     }

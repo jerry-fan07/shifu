@@ -18,7 +18,7 @@ import SwiftUI
 /// Still rendered *from* `SettingsCatalog`: adding a numeric setting to the
 /// catalog makes it appear in its section, correctly bounded and labelled,
 /// with no change to this file. The exceptions are the things that aren't
-/// stored settings — Work Mode's own switch, the exclusion table, and About's
+/// stored settings — Focus Mode's own switch, the exclusion table, and About's
 /// facts about the disk — which each section adds under its catalog rows.
 struct SettingsView: View {
     @EnvironmentObject private var store: SettingsStore
@@ -143,10 +143,10 @@ private struct SettingsPanel: View {
             PageHead(section.rawValue, subtitle: section.summary)
             PageBody {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Work Mode's switch is live state, not a stored setting,
+                    // Focus Mode's switch is live state, not a stored setting,
                     // so it stands at the head of its section: the dials under
                     // it read as what the switch does.
-                    if section == .workMode { WorkModeRow() }
+                    if section == .focusMode { FocusModeRow() }
                     // Privacy's exclusions come *before* its one catalog
                     // setting: the section is about what Shifu refuses to
                     // look at, and opening with "how long text is kept"
@@ -188,24 +188,24 @@ private struct SettingsPanel: View {
     }
 }
 
-/// Work Mode's switch — the `work_mode` control file the daemon watches, not a
+/// Focus Mode's switch — the `focus_mode` control file the daemon watches, not a
 /// catalog setting, so it reads through `LedgerStore` like the rail's copy of
 /// the same switch and there is nothing to store here.
-private struct WorkModeRow: View {
+private struct FocusModeRow: View {
     @EnvironmentObject private var ledger: LedgerStore
 
     var body: some View {
         SettingRow(
-            "Work Mode",
+            "Focus Mode",
             help: "On until you turn it off — it doesn't expire. The same switch sits "
                 + "at the source list's foot and in the menu bar, and all three show "
                 + "the same state because all three read the one control file."
         ) {
             HStack(spacing: 10) {
-                Figure(ledger.workModeOn ? "on" : "off", color: Instrument.secondary)
-                ToggleSwitch(isOn: ledger.workModeOn) { ledger.toggleWorkMode() }
+                Figure(ledger.focusModeOn ? "on" : "off", color: Instrument.secondary)
+                ToggleSwitch(isOn: ledger.focusModeOn) { ledger.toggleFocusMode() }
             }
-            .accessibilityLabel("Work Mode")
+            .accessibilityLabel("Focus Mode")
         }
     }
 }

@@ -440,11 +440,8 @@ final class Daemon: NSObject {
     private func runAnalyzer() {
         reloadIntervals()
         if let existing = analyzerProcess, existing.isRunning { return }
-        let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let analyzerURL = selfPath.deletingLastPathComponent()
-            .appendingPathComponent("shifu-analyzer")
-        guard FileManager.default.isExecutableFile(atPath: analyzerURL.path) else {
-            log("analyzer not found next to shifud (\(analyzerURL.path)) — skipping")
+        guard let analyzerURL = ShifuPaths.helper("shifu-analyzer") else {
+            log("analyzer not found next to shifud or in ~/Shifu/bin — skipping")
             return
         }
         let process = Process()
