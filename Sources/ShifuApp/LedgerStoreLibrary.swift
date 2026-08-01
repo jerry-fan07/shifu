@@ -46,6 +46,17 @@ extension LedgerStore {
             noteID: noteID, database: database, vault: vault)) ?? nil
     }
 
+    /// The notes a set of wiki-link targets resolves to, by title. A target
+    /// with nothing indexed under it is absent rather than an error — a note
+    /// can name a page that was never written, and the link is still a fact
+    /// about what the day was about.
+    func linked(_ targets: [String]) -> [String: String] {
+        guard !targets.isEmpty, let database = try? db(),
+              let entries = try? VaultLibrary.entries(linkTargets: targets, database: database)
+        else { return [:] }
+        return Dictionary(entries.map { ($0.title, $0.noteID) }) { first, _ in first }
+    }
+
     /// The id of the task's most recent work note (vault-features.md §2.1), so
     /// the task page can open it on the note page like any other link.
     func latestWorkNoteID(taskID: Int64) -> String? {

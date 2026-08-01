@@ -92,7 +92,9 @@ struct ReviewSessionView: View {
                 VStack(spacing: 16) {
                     Spacer(minLength: 0)
                     Eyebrow(note.topic)
-                    CardTextView(text: question, baseSize: 19, alignment: .center)
+                    CardTextView(
+                        text: question, baseSize: 19, alignment: .center,
+                        color: Instrument.ink)
                     if revealed {
                         Rectangle()
                             .fill(Instrument.edge)

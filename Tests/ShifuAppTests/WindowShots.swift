@@ -63,16 +63,29 @@ import Testing
         // be checked against real rails rather than reasoned about.
         shoot(.breakdown, as: "breakdown-week-dark", dark: true, store: store, into: directory)
 
-        // The pages that only exist behind a row, so the source list has
-        // something to become.
+        shootPagesBehindARow(store: store, into: directory)
+        shootNotes(store: store, into: directory)
+    }
+
+    /// The pages that only exist behind a row, so the source list has something
+    /// to become.
+    @MainActor private func shootPagesBehindARow(
+        store: LedgerStore, into directory: URL
+    ) {
         if let theme = store.themes.first {
             shoot(
                 .themes, route: .theme(theme.id), as: "theme-page", dark: false,
                 store: store, into: directory)
         }
-        if let task = store.filteredTasks.first?.task.id {
+        if let task = Self.unrollableTask(store) {
             shoot(
                 .tasks, route: .task(task), as: "task-page", dark: true,
+                store: store, into: directory)
+            // Twice: the page is mostly a day's *prose*, and the hairline spine
+            // and the eyebrows it is structured with are the two marks that
+            // read differently against a near-white ground.
+            shoot(
+                .tasks, route: .task(task), as: "task-page-light", dark: false,
                 store: store, into: directory)
         }
         if let deck = store.decks.first {
@@ -91,7 +104,27 @@ import Testing
                 .decks, route: .looseCards, as: "loose-cards", dark: true,
                 store: store, into: directory)
         }
-        shootNotes(store: store, into: directory)
+    }
+
+    /// The biggest task whose newest day has a *narrative*, falling back to the
+    /// biggest task at all.
+    ///
+    /// The page opens on its newest day, and the newest day is usually today —
+    /// whose narrative is written by the analyzer an hour behind the blocks, and
+    /// is dropped again by any rebuild that changes the day's content hash
+    /// (which this harness performs on the vault copy it is pointed at). So the
+    /// obvious subject photographs as a head with nothing under it, which is
+    /// correct behaviour and a useless picture.
+    @MainActor private static func unrollableTask(_ store: LedgerStore) -> Int64? {
+        let bySize = store.filteredTasks.sorted { $0.totalMs > $1.totalMs }
+        let unrollable = bySize.first { overview in
+            guard let id = overview.task.id, let detail = store.taskDetail(id),
+                  let newest = detail.days.first
+            else { return false }
+            let note = store.workNote(dayStart: newest.dayStart, taskKey: detail.task.key)
+            return !(note?.sessionsProse ?? "").isEmpty
+        }
+        return (unrollable ?? bySize.first)?.task.id
     }
 
     /// The Notes place has three states worth looking at and one page behind a
@@ -108,6 +141,37 @@ import Testing
             shoot(
                 .notes, route: .note(deepest.noteID), as: "note-page-dark", dark: true,
                 store: store, into: directory)
+        }
+        // A work note: 654 of the vault's 686 documents are one, and it is the
+        // only kind that carries a session timeline and a Captured list.
+        if let work = store.vaultShelf.filter({ $0.kind == .work }).max(by: { $0.words < $1.words }) {
+            shoot(
+                .notes, route: .note(work.noteID), as: "work-note-page", dark: false,
+                store: store, into: directory)
+        }
+        // A task overview, twice: its `## Timeline` renders two ways — dated
+        // leads on the rail, or titled dateless bullets as the claims table —
+        // and each shape needs to be seen on the page it produces. Falls back
+        // to the wordiest when a shape has no example in the vault.
+        let overviews = store.vaultShelf.filter { $0.kind == .taskOverview }
+            .sorted { $0.words > $1.words }
+        func timelineShape(_ noteID: String, dated: Bool) -> Bool {
+            guard let body = store.dossier(noteID: noteID)?.body else { return false }
+            let hasDated = NoteProse.lines(body).contains {
+                if case .dated = $0.kind { return true } else { return false }
+            }
+            return dated == hasDated
+        }
+        if let railed = overviews.first(where: { timelineShape($0.noteID, dated: true) })
+            ?? overviews.first {
+            shoot(
+                .notes, route: .note(railed.noteID), as: "overview-note-page",
+                dark: false, store: store, into: directory)
+        }
+        if let titled = overviews.first(where: { timelineShape($0.noteID, dated: false) }) {
+            shoot(
+                .notes, route: .note(titled.noteID), as: "overview-note-page-titled",
+                dark: false, store: store, into: directory)
         }
         // A trace, so the page's "this is a receipt, not a note" line is
         // visible rather than theoretical.
@@ -163,6 +227,8 @@ import Testing
     /// the layer tree drew.
     /// `SHIFU_SHOT_WIDTH` drives the window to its minimum (960) or wider, so
     /// a column that only fits on a big display is visible as a fault.
+    /// `SHIFU_SHOT_HEIGHT` makes the film taller than any real window — the
+    /// only way to see below a scroll fold, since the harness can't scroll.
     private static var width: CGFloat {
         guard let raw = ProcessInfo.processInfo.environment["SHIFU_SHOT_WIDTH"],
               let width = Double(raw)
@@ -170,9 +236,16 @@ import Testing
         return CGFloat(width)
     }
 
+    private static var height: CGFloat {
+        guard let raw = ProcessInfo.processInfo.environment["SHIFU_SHOT_HEIGHT"],
+              let height = Double(raw)
+        else { return 760 }
+        return CGFloat(height)
+    }
+
     @MainActor private func shoot(
         _ view: some View, to url: URL, dark: Bool,
-        size: CGSize = CGSize(width: Self.width, height: 760)
+        size: CGSize = CGSize(width: Self.width, height: Self.height)
     ) {
         let window = NSWindow(
             contentRect: CGRect(origin: .zero, size: size),

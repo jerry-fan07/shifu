@@ -194,7 +194,9 @@ struct ThemePage: View {
                                 .formatted(.dateTime.weekday(.abbreviated).day().month()),
                             color: Instrument.faint)
                             .frame(width: 96, alignment: .leading)
-                        Text(day.summary)
+                        // The summary's *what*, as the task page's day rows set
+                        // it — the sources half names windows, not intent.
+                        Text(themeDayTitle(day.summary))
                             .font(Instrument.sans(12.5))
                             .foregroundStyle(Instrument.body)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -206,6 +208,11 @@ struct ThemePage: View {
             }
             .sectionAnchor(ThemeSection.history.rawValue)
         }
+    }
+
+    private func themeDayTitle(_ summary: String) -> String {
+        let title = NoteProse.dayTitle(summary)
+        return title.isEmpty ? summary : title
     }
 
     /// What the theme was made of, two ways: the tasks it ran through, and the
