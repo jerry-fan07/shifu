@@ -47,6 +47,10 @@ struct DeepSeekBackend: LLMBackend {
     /// column meant for every row written before v27.
     var stage: String?
 
+    /// Duty-cycle governor for a local endpoint — see `paced`. Nil (cloud,
+    /// interactive runs) means every call fires as soon as its stage asks.
+    var pacer: LLMPacer?
+
     /// Prompt + response budget per call, from `deepseek.context_tokens`.
     /// Every stage sizes its batches to it (invariant 7), so this one number
     /// is how a local profile adapts the whole pipeline: point the base URL
@@ -195,6 +199,19 @@ struct DeepSeekBackend: LLMBackend {
         return copy
     }
 
+    /// A copy of this backend whose calls wait on `pacer` (design.md §4.2):
+    /// rest before each request, sized to the one before it, so a local
+    /// GPU works in bursts instead of one fan-spinning block. The actor
+    /// reference rides through every later `labeled` copy, and one pacer is
+    /// shared across both model slots — their calls interleave on one
+    /// sequential pipeline, and the duty only means something measured over
+    /// the whole stream.
+    func paced(_ pacer: LLMPacer?) -> DeepSeekBackend {
+        var copy = self
+        copy.pacer = pacer
+        return copy
+    }
+
     /// The `max_tokens` one call asks for, clamped so prompt + response still
     /// fit the context window. Only a thinking slot takes the headroom floor;
     /// a non-thinking one asks for exactly what the stage reserved, so a card
@@ -274,7 +291,15 @@ struct DeepSeekBackend: LLMBackend {
         request.httpBody = try JSONSerialization.data(
             withJSONObject: requestBody(prompt: prompt, maxTokens: maxTokens))
 
+        // Pace around the request alone: that is the span the server spends
+        // computing, and the escalated retry in `complete` is a second full
+        // burst that must pay its own rest. A throw records nothing — the
+        // previous burst's measurement stands.
+        await pacer?.willCall()
+        let began = DispatchTime.now().uptimeNanoseconds
         let (data, response) = try await URLSession.shared.data(for: request)
+        await pacer?.didCall(
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - began) / 1_000_000_000)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? ""
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1

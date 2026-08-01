@@ -85,7 +85,7 @@ public struct IntSetting: Identifiable, Sendable {
 
     public var id: String { key }
 
-    public enum Unit: Sendable { case seconds, minutes, days }
+    public enum Unit: Sendable { case seconds, minutes, days, percent }
 
     public init(
         key: String, section: SettingsSection, title: String, help: String,
@@ -112,6 +112,7 @@ public struct IntSetting: Identifiable, Sendable {
         case .seconds: return "\(value)s"
         case .minutes: return "\(value / 60) min"
         case .days: return value == 1 ? "1 day" : "\(value) days"
+        case .percent: return "\(value)%"
         }
     }
 }
@@ -346,6 +347,28 @@ public enum SettingsCatalog {
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
+    // Pacing (LLMPacer): only a *local* endpoint is ever paced — these dials
+    // do nothing for a cloud host, whose network round trips are rest enough.
+    public static let llmDutyActive = IntSetting(
+        key: "llm.duty_active", section: .analysis,
+        title: "Local model pacing",
+        help: "How hard a local endpoint may work while you're at the Mac, as "
+            + "a duty cycle: at 40% the analyzer rests 1.5× each call's length "
+            + "between calls, so the GPU stays cool and the fans stay quiet. "
+            + "100 turns pacing off. Cloud endpoints are never paced.",
+        defaultValue: 40, range: 10...100, step: 5, unit: .percent
+    )
+
+    public static let llmDutyIdle = IntSetting(
+        key: "llm.duty_idle", section: .analysis,
+        title: "Pacing when away",
+        help: "The duty cycle once the screen locks or input has been idle a "
+            + "few minutes — higher, so analysis catches up while nobody can "
+            + "hear it. Thermal pressure still throttles either mode before "
+            + "the machine runs hot.",
+        defaultValue: 75, range: 10...100, step: 5, unit: .percent
+    )
+
     // Cost estimation (LLMPrices). Rates as settings, not code: they change
     // without warning, and an estimate that can be corrected in a text field
     // beats one that waits for a release.
@@ -377,7 +400,8 @@ public enum SettingsCatalog {
     )
 
     public static let ints: [IntSetting] = [
-        heartbeatSeconds, analysisIntervalSeconds, textRetentionDays
+        heartbeatSeconds, analysisIntervalSeconds, textRetentionDays,
+        llmDutyActive, llmDutyIdle
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [analysisBackend, deepseekReasoningThinking]

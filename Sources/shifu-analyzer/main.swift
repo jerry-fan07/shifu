@@ -93,9 +93,24 @@ print("analyzed \(summary.observationsProcessed) observations → "
 // evidence; the reasoning model is reserved for the daily roster
 // reconciliation and the weekly radar, the judgment calls where its billed
 // chain-of-thought earns its price.
-let backend: DeepSeekBackend? = try DeepSeekBackend.ifConfigured(database: database)
+// A local endpoint means the GPU doing analysis sits under the user's hands,
+// so its calls are paced (LLMPacer): rest between bursts, harder while the
+// user is present, gentler once the screen locks or input goes idle — except
+// when a flag says someone is watching this very run, where sleeping between
+// calls would punish the person who asked. Cloud endpoints get no pacer; the
+// `--build-deck` path above builds its own backend and stays unpaced for the
+// same someone-is-watching reason.
+let watched = args.contains("--radar") || args.contains("--digest")
+let pacer: LLMPacer? = watched
+    ? nil : LLMPacer.ifLocal(database: database, userIsAway: { Presence.userIsAway() })
+let backend: DeepSeekBackend? =
+    try DeepSeekBackend.ifConfigured(database: database)?.paced(pacer)
 let reasoningBackend: DeepSeekBackend? =
-    try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)
+    try DeepSeekBackend.ifConfigured(database: database, role: .reasoning)?.paced(pacer)
+if let pacer {
+    print("local endpoint — pacing LLM calls at \(pacer.activeDutyPercent)% duty "
+        + "(\(pacer.idleDutyPercent)% away)")
+}
 
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
