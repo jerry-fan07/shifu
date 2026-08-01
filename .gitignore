@@ -6,3 +6,4 @@ DerivedData/
 .DS_Store
 dist/
 .wrangler/
+shifu-task-labeling/
