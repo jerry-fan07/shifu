@@ -231,14 +231,14 @@ struct NewDeckPage: View {
         }
     }
 
-    /// The ranges stop at 20 because a build answer has a fixed token
-    /// reserve, and twenty full cards already press against it — a bigger
-    /// deck is what Automatic is for.
+    /// The ranges stop at 30 because a build answer has a fixed token
+    /// reserve (`DeckBuilder.responseTokens`), and thirty full cards already
+    /// press against it — a bigger deck is what Automatic is for.
     private var cardCountOptions: [(label: String, value: DeckStore.CardRange?)] {
         [("Automatic", nil),
          ("3–5 cards", DeckStore.CardRange(lower: 3, upper: 5)),
          ("5–10 cards", DeckStore.CardRange(lower: 5, upper: 10)),
-         ("10–20 cards", DeckStore.CardRange(lower: 10, upper: 20))]
+         ("10–30 cards", DeckStore.CardRange(lower: 10, upper: 30))]
     }
 
     // MARK: Review settings

@@ -16,7 +16,18 @@ public enum DeckBuilder {
     /// lately, and forty blocks is already more evidence than any card needs.
     public static let maxBlocks = 40
     public static let blockCharCap = 6_000
-    public static let responseTokens = 4_000
+    /// Sized for a full-range deck, not just `maxCardsPerBatch`: cards
+    /// measured from a real ready deck average ~390 tokens each (body +
+    /// JSON overhead), so 30 cards — the top of the widest range the deck
+    /// UI offers (`NewDeckPage.cardCountOptions`) — need ~11.7k tokens.
+    /// 4,000 was tuned for the no-range default (`maxCardsPerBatch` cards)
+    /// and silently truncated every response on a wide-range deck whose
+    /// blocks all fit one batch, and truncation on this backend's
+    /// non-thinking slot is fatal (no retry — see
+    /// `DeepSeekBackend.complete`), so the build failed identically forever
+    /// with no visible error. 18,000 leaves ~50% margin over the measured
+    /// estimate for denser topics.
+    public static let responseTokens = 18_000
     public static let maxCardsPerBatch = 10
     public static let confidenceFloor = 0.5
 
