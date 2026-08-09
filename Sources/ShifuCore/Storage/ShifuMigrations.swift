@@ -677,6 +677,8 @@ extension ShifuDatabase {
             }
         }
 
+        registerRewindMigrations(into: &migrator)
+
         return migrator
     }
 }

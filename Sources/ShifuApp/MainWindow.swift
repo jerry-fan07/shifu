@@ -91,6 +91,8 @@ struct MainWindow: View {
             MergeReviewView()
         case .note(let noteID):
             NotePage(noteID: noteID)
+        case .rewind(let rewindID):
+            RewindDetailPage(rewindID: rewindID)
         }
     }
 
@@ -112,6 +114,7 @@ struct MainWindow: View {
         case .looseCards: return "Loose cards"
         case .merges: return "Suggestions"
         case .note: return "Note"
+        case .rewind(let rewindID): return store.savedRewind(rewindID)?.title ?? "Rewind"
         }
     }
 }
@@ -131,6 +134,8 @@ enum Route: Hashable {
     /// pages the same way, but with nothing to rename or configure.
     case looseCards
     case merges
+    /// One saved rewind or snip, opened from the Rewind shelf.
+    case rewind(Int64)
     /// One note, read with everything around it (`VaultLibrary.Dossier`).
     /// Keyed by note id rather than by path so the link survives the file
     /// being renamed or moved under it — which a rebuild does routinely.
@@ -382,7 +387,7 @@ enum Region: String, CaseIterable, Identifiable {
 /// Everywhere the source list can take you.
 enum Place: String, CaseIterable, Identifiable {
     case breakdown, timeline
-    case themes, tasks, notes
+    case themes, tasks, notes, rewind
     case due, decks
     case radar
     case settings
@@ -396,6 +401,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .themes: return "Themes"
         case .tasks: return "Tasks"
         case .notes: return "Notes"
+        case .rewind: return "Rewind"
         case .due: return "Due"
         case .decks: return "Decks"
         case .radar: return "Radar"
@@ -408,7 +414,7 @@ enum Place: String, CaseIterable, Identifiable {
     var region: Region? {
         switch self {
         case .breakdown, .timeline: return .ledger
-        case .themes, .tasks, .notes: return .vault
+        case .themes, .tasks, .notes, .rewind: return .vault
         case .due, .decks: return .practice
         case .radar: return .signals
         case .settings: return nil
@@ -426,6 +432,9 @@ enum Place: String, CaseIterable, Identifiable {
         case .themes: return count(store.themes.count)
         case .tasks: return count(store.matchingTaskCount)
         case .notes: return count(store.noteCount)
+        // What is kept, not what is buffered: the buffer is always about to
+        // be five minutes and saying so on a source-list row is noise.
+        case .rewind: return count(store.savedRewinds.count)
         case .due: return count(store.dueNotes.count)
         // Kept decks plus open offers: the number of deck-shaped things the
         // page will show, not the cards inside them — Due already counts
@@ -445,6 +454,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .themes: ThemesView()
         case .tasks: TasksView()
         case .notes: NotesView()
+        case .rewind: RewindView()
         case .due: DueView()
         case .decks: DecksView()
         case .radar: RadarView()
