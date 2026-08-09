@@ -11,6 +11,10 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 
 - `make check` — build all targets + unit tests + SwiftLint + privacy invariants
   (no network symbols in shifud). Must be green before every commit.
+- **Never trust a bare `swift test`** — one suite pumps the main run loop and kills the
+  test process mid-run with status 0, so it reports green over a red suite. Go through
+  `make test` (`scripts/run-tests.sh`), which splits that suite out and fails a run that
+  never printed its closing summary.
 - `make perf` — perf harness: shifud against a synthetic feed, asserts design.md §3.4 budgets.
   **A perf budget regression blocks like a test failure.**
 - Swift Package workspace; macOS 14+ deployment target, Apple Silicon primary.
