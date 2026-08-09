@@ -10,6 +10,12 @@ public enum FrontMatter {
         case knowledge
         case work
         case taskOverview = "task_overview"
+        /// One frame the user kept by hand, filed under whatever task or theme
+        /// was running (design.md §3.6). Its own kind rather than a knowledge
+        /// note because `Note.parse` would then admit it to the review queue,
+        /// and a screenshot is not a flashcard. The *frame* stays in
+        /// `~/Shifu/rewind/` — the note is the words filed beside it.
+        case snip
     }
 
     /// A parsed note file: frontmatter as flat strings, plus the trimmed body.

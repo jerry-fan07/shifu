@@ -107,6 +107,7 @@ public enum VaultLibrary {
             case .work: return "work log"
             case .taskOverview: return "overview"
             case .knowledge: return deckKey == nil ? "captured" : "card"
+            case .snip: return "snip"
             case nil: return rawKind
             }
         }
@@ -182,6 +183,8 @@ public enum VaultLibrary {
         public var work = 0
         public var knowledge = 0
         public var overviews = 0
+        /// Frames kept by hand (design.md §3.6).
+        public var snips = 0
         /// Notes with a body past the trace floor — the honest "how much is
         /// actually written down" number.
         public var substantial = 0
@@ -204,6 +207,7 @@ public enum VaultLibrary {
                 case .work: census.work += count
                 case .knowledge: census.knowledge += count
                 case .taskOverview: census.overviews += count
+                case .snip: census.snips += count
                 case nil: break
                 }
                 let depth = Depth.of(kind: kind, sections: row["sections"], words: row["words"])

@@ -21,6 +21,7 @@ struct SourceList: View {
             case .looseCards: LooseContents()
             case .merges: MergeContents()
             case .note(let noteID): NoteContents(noteID: noteID)
+            case .rewind(let rewindID): RewindContents(rewindID: rewindID)
             }
         }
         .frame(width: Instrument.railWidth)
@@ -145,6 +146,83 @@ private struct FocusModeRailRow: View {
             }
         }
         .animation(.easeOut(duration: 0.22), value: store.focusModeOn)
+    }
+}
+
+/// An open rewind's own contents (design.md §3.6): what is in it, what it
+/// belongs to, and — at the foot, where the capture line sits on every rail —
+/// when it will be deleted and where it lives.
+private struct RewindContents: View {
+    @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
+    let rewindID: Int64
+
+    var body: some View {
+        RailColumn {
+            RailBack(title: "Rewind") { router.go(to: .rewind) }
+            if let rewind = store.savedRewind(rewindID) {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(rewind.title)
+                            .font(Instrument.sans(14, .semibold))
+                            .tracking(-0.14)
+                            .foregroundStyle(Instrument.ink)
+                            .lineLimit(2)
+                        Figure(
+                            "\(TimeBreakdown.duration(rewind.durationMs)) · "
+                                + RewindTransport.megabytes(rewind.bytes),
+                            size: 10.5, color: Instrument.faint)
+                    }
+                    .padding(.horizontal, 16)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        RailHeading("In this rewind")
+                        RailRow(
+                            title: "The footage",
+                            badge: "\(rewind.frameCount)", selected: true) {}
+                        RailRow(title: "Blocks", badge: blockCount(rewind)) {}
+                    }
+
+                    if rewind.taskID != nil || rewind.themeKey != nil {
+                        VStack(alignment: .leading, spacing: 0) {
+                            RailHeading("Belongs to")
+                            if let taskID = rewind.taskID,
+                               let task = store.taskDetail(taskID)?.task {
+                                RailRow(title: task.name) { router.open(.task(taskID)) }
+                            }
+                            if let key = rewind.themeKey,
+                               let theme = store.themes.first(where: { $0.key == key }) {
+                                RailRow(title: theme.name) { router.open(.theme(theme.id)) }
+                            }
+                        }
+                    }
+                }
+            }
+        } footer: {
+            if let rewind = store.savedRewind(rewindID) {
+                Text(rewind.expiresAt == nil
+                    ? "Kept indefinitely."
+                    : "Deleted \(expiry(rewind)) unless kept.")
+                    .font(Instrument.sans(11.5))
+                    .foregroundStyle(Instrument.railInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                Figure(
+                    "~/Shifu/rewind/\(rewind.directory)", size: 10.5, color: Instrument.ghost)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+        }
+    }
+
+    private func blockCount(_ rewind: SavedRewind) -> String? {
+        let count = store.blocks(from: rewind.startedAt, to: rewind.endedAt).count
+        return count > 0 ? "\(count)" : nil
+    }
+
+    private func expiry(_ rewind: SavedRewind) -> String {
+        guard let expires = rewind.expiresAt else { return "" }
+        return Date(timeIntervalSince1970: Double(expires) / 1_000)
+            .formatted(.dateTime.day().month(.abbreviated))
     }
 }
 

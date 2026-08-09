@@ -23,6 +23,7 @@ import Foundation
 /// page decides what a section is worth showing — see `SettingsPanel`.
 public enum SettingsSection: String, CaseIterable, Sendable {
     case capture = "Capture"
+    case rewind = "Rewind"
     case analysis = "Analysis"
     case privacy = "Privacy"
     case focusMode = "Focus Mode"
@@ -34,6 +35,9 @@ public enum SettingsSection: String, CaseIterable, Sendable {
         case .capture:
             return "How often Shifu looks at the frontmost window, and how much "
                 + "it takes when it does."
+        case .rewind:
+            return "The one part of Shifu that keeps pixels: a rolling half "
+                + "hour of low-resolution frames you can scrub back through."
         case .analysis:
             return "How raw captures become tasks, themes and cards — and what "
                 + "leaves this Mac to do it."
@@ -56,8 +60,13 @@ public enum SettingsSection: String, CaseIterable, Sendable {
     public var promise: String {
         switch self {
         case .capture:
-            return "Pixels are never persisted. A screenshot lives in memory for "
-                + "one OCR call."
+            return "The capture ladder never persists pixels — a screenshot "
+                + "lives in memory for one OCR call. Only Rewind writes frames, "
+                + "and it is off until you switch it on."
+        case .rewind:
+            return "Frames live in ~/Shifu/rewind, are excluded before capture "
+                + "the way text is, and are deleted on the schedule above. The "
+                + "daemon still cannot speak — nothing here can leave the Mac."
         case .analysis:
             return "Saved changes reach the running daemon on its next "
                 + "heartbeat. No restart."
@@ -90,7 +99,13 @@ public struct IntSetting: Identifiable, Sendable {
 
     public var id: String { key }
 
-    public enum Unit: Sendable { case seconds, minutes, days, percent }
+    /// How the stored integer is *displayed*. `seconds` and `minutes` are both
+    /// stored in seconds (`minutes` divides on the way out); `rawMinutes` is
+    /// stored in minutes already, which is what a dial the user thinks of in
+    /// minutes should hold.
+    public enum Unit: Sendable {
+        case seconds, minutes, rawMinutes, days, percent, pixels, megabytes, framesPerSecond
+    }
 
     public init(
         key: String, section: SettingsSection, title: String, help: String,
@@ -118,8 +133,12 @@ public struct IntSetting: Identifiable, Sendable {
         switch unit {
         case .seconds: return "\(value)s"
         case .minutes: return "\(value / 60) min"
+        case .rawMinutes: return "\(value) min"
         case .days: return value == 1 ? "1 day" : "\(value) days"
         case .percent: return "\(value)%"
+        case .pixels: return "\(value) px"
+        case .megabytes: return value >= 1_024 ? "\(value / 1_024) GB" : "\(value) MB"
+        case .framesPerSecond: return "\(value) fps"
         }
     }
 }
@@ -271,6 +290,113 @@ public enum SettingsCatalog {
         help: "Captured text is nulled out of older observations after this long. "
             + "The derived ledger — blocks, tasks, themes, notes — is kept indefinitely.",
         defaultValue: Retention.defaultDays, range: 1...90, step: 1, unit: .days
+    )
+
+    // Rewind (design.md §3.6). The one feature that writes pixels, and the
+    // only one whose master switch **defaults to off**. That is not caution
+    // for its own sake: every other promise in this app is "Shifu did not keep
+    // that", and a rolling screen recording is the one thing a user must have
+    // said yes to. Nothing under it does anything until `rewindRecording` is
+    // "on"; switching it back off drops the buffer on the spot.
+    public static let rewindRecording = ChoiceSetting(
+        key: "rewind.recording", section: .rewind,
+        title: "Rewind recording",
+        help: "Keeps the last half hour of your screen as low-resolution "
+            + "frames so you can scrub back through them.",
+        options: [
+            .init(
+                value: "off", label: "Off",
+                detail: "No frames are taken and none are kept. Shifu holds no "
+                    + "pixels at all — the capture ladder's screenshots live in "
+                    + "memory for one OCR call and are discarded."),
+            .init(
+                value: "on", label: "On",
+                detail: "Frames are written to ~/Shifu/rewind at the interval "
+                    + "below and deleted as they age out. Excluded apps and "
+                    + "private windows are skipped before the screenshot, "
+                    + "capture pauses tear the recorder down with everything "
+                    + "else, and nothing is ever sent anywhere.")
+        ],
+        defaultValue: "off"
+    )
+
+    public static let rewindBufferMinutes = IntSetting(
+        key: "rewind.buffer_minutes", section: .rewind,
+        title: "How far back",
+        // The unit is `.days` only in the sense of "print the number and a
+        // word" — minutes have their own display below, so this is `.minutes`
+        // with the value already in minutes, unlike the second-valued dials.
+        help: "How much of the recent past stays on disk. Older frames are "
+            + "deleted as new ones arrive; nothing beyond this window survives.",
+        defaultValue: 30, range: 1...30, step: 1, unit: .rawMinutes,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    public static let rewindFrameSeconds = IntSetting(
+        key: "rewind.frame_seconds", section: .rewind,
+        title: "Frame interval",
+        help: "The cadence the older part of the buffer settles to. Switching "
+            + "window or app takes a frame immediately, so the moments that "
+            + "matter are never a whole interval away.",
+        defaultValue: 5, range: 2...30, step: 1, unit: .seconds,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    // The high-fidelity head of the buffer (design.md §3.6). This is the dial
+    // that costs: depth is retention and free, where cadence is a display grab
+    // and a JPEG encode every tick. At 8 fps the daemon spends ~4.5% of a core
+    // against §3.4's 0.5% — a budget overrun taken **knowingly and by request**
+    // so the shape can be tried on real use, not an oversight. Set the window
+    // to 0 to switch the hot tier off and get the flat, in-budget cadence back.
+    public static let rewindHotMinutes = IntSetting(
+        key: "rewind.hot_minutes", section: .rewind,
+        title: "High-fidelity window",
+        help: "How much of the *recent* past is kept at full frame rate for "
+            + "frame-accurate scrubbing. Older frames thin out to the interval "
+            + "above as they age past it. 0 turns this off — and with it the "
+            + "extra CPU it costs.",
+        defaultValue: 5, range: 0...30, step: 1, unit: .rawMinutes,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    public static let rewindHotFPS = IntSetting(
+        key: "rewind.hot_fps", section: .rewind,
+        title: "High-fidelity rate",
+        help: "Frames per second inside the window above. This is the most "
+            + "expensive dial in Shifu: each frame is a screen grab and a JPEG "
+            + "encode, so the daemon's CPU and the buffer's size both scale "
+            + "with it directly.",
+        defaultValue: 8, range: 1...15, step: 1, unit: .framesPerSecond,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    public static let rewindWidth = IntSetting(
+        key: "rewind.frame_width", section: .rewind,
+        title: "Frame width",
+        help: "Frames are captured at this width — low enough to read what you "
+            + "were doing, not to read a paragraph over your shoulder. Smaller "
+            + "is cheaper on disk and on the daemon.",
+        defaultValue: 960, range: 640...1_920, step: 160, unit: .pixels,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    public static let rewindCeilingMB = IntSetting(
+        key: "rewind.ceiling_mb", section: .rewind,
+        title: "Disk ceiling",
+        help: "The buffer never grows past this. When it would, the oldest "
+            + "frames go early — a shorter rewind beats a full disk.",
+        defaultValue: 512, range: 64...4_096, step: 64, unit: .megabytes,
+        visibleWhen: (key: "rewind.recording", value: "on")
+    )
+
+    public static let rewindRetentionDays = IntSetting(
+        key: "rewind.retention_days", section: .rewind,
+        title: "Keep saved rewinds",
+        help: "A rewind you save is deleted with its frames after this long. "
+            + "\"Keep forever\" on a rewind's own page takes it out of the "
+            + "schedule; nothing else does.",
+        defaultValue: 14, range: 1...365, step: 1, unit: .days,
+        visibleWhen: (key: "rewind.recording", value: "on")
     )
 
     public static let focusModeDistractingDomains = DomainListSetting(
@@ -469,10 +595,12 @@ public enum SettingsCatalog {
 
     public static let ints: [IntSetting] = [
         heartbeatSeconds, analysisIntervalSeconds, textRetentionDays,
+        rewindBufferMinutes, rewindFrameSeconds, rewindHotMinutes, rewindHotFPS, rewindWidth,
+        rewindCeilingMB, rewindRetentionDays,
         llmDutyActive, llmDutyIdle
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
-    public static let choices: [ChoiceSetting] = [analysisBackend]
+    public static let choices: [ChoiceSetting] = [analysisBackend, rewindRecording]
     public static let texts: [TextSetting] = [
         shifuCloudBaseURL,
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,

@@ -111,6 +111,7 @@ private struct MenuBarPanel: View {
     @EnvironmentObject private var store: LedgerStore
     @EnvironmentObject private var router: Router
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -145,6 +146,9 @@ private struct MenuBarPanel: View {
             }
 
             separator
+            RewindMenuLines()
+
+            separator
             MenuLine(
                 title: "Review",
                 trailing: store.dueNotes.isEmpty ? nil : "\(store.dueNotes.count) due",
@@ -168,6 +172,8 @@ private struct MenuBarPanel: View {
         }
         .padding(.vertical, 6)
         .frame(width: 300)
+        // Escape closes the panel, like every other one Shifu draws.
+        .background(MenuBarEscapeCloser(dismiss: dismiss))
         .onAppear {
             store.refresh()       // menu open = refresh
             store.runAnalysis()   // …and fold in the latest captures
@@ -212,6 +218,58 @@ private struct FocusModeMenuLine: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .accessibilityLabel("Focus Mode")
+    }
+}
+
+/// Rewind's two verbs in the menu bar (design.md §3.6) — the surface they were
+/// asked for, because both are things you want *while looking at something
+/// else*, which is exactly when the main window isn't open.
+///
+/// Neither takes a screenshot here. The app writes a `RewindRequest` control
+/// file and the daemon does the work, for the reason there is no IPC in Shifu:
+/// the daemon holds the Screen Recording grant, the exclusion list and the
+/// buffer, and a second process capable of grabbing the screen is a second
+/// thing to have to trust.
+///
+/// Both lines disappear while recording is off and go quiet while capture is
+/// paused. A menu item that silently does nothing is worse than one that isn't
+/// there — and a paused Shifu screenshotting on request would be the exact
+/// thing pause promises it won't do.
+private struct RewindMenuLines: View {
+    @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if store.rewindSettings.recording {
+            if store.isPaused {
+                MenuLine(title: "Rewind", trailing: "paused") { open() }
+            } else {
+                MenuLine(
+                    title: "Save the last \(store.rewindSettings.bufferMinutes) min",
+                    trailing: buffered
+                ) {
+                    store.saveRewind()
+                }
+                MenuLine(title: "Snip a region…") { store.snipRegion() }
+            }
+        } else {
+            MenuLine(title: "Rewind", trailing: "off") { open() }
+        }
+    }
+
+    /// How much is actually rewindable — the one figure that decides whether
+    /// saving is worth doing, and it is only ever known here.
+    private var buffered: String? {
+        let seconds = store.rewindBuffer.spanMs / 1_000
+        guard seconds > 0 else { return "filling" }
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m"
+    }
+
+    private func open() {
+        router.go(to: .rewind)
+        openWindow(id: "dashboard")
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 

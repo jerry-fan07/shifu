@@ -141,6 +141,19 @@ final class LedgerStore: ObservableObject {
     /// first and a search box second, which is the half it used to be missing.
     @Published private(set) var vaultShelf: [VaultLibrary.Entry] = []
     @Published var noteFilter = NoteLibraryFilter()
+
+    // Rewind (design.md §3.6). Four published values, because the page draws
+    // four separate things: what the dials say, what the buffer holds right
+    // now, the frames themselves (the scrubber), and the shelf of kept ones.
+    // Not `private(set)`, for the reason `focusEndedHere` isn't: everything
+    // that writes these lives in LedgerStoreRewind.swift, and `private` is a
+    // *file* boundary in Swift, not a type one.
+    @Published var rewindSettings = RewindSettings()
+    @Published var rewindBuffer = RewindStore.BufferState()
+    /// The rolling buffer, oldest first. Rows only — reading a frame's pixels
+    /// is the player's job, one image at a time.
+    @Published var rewindFrames: [RewindFrame] = []
+    @Published var savedRewinds: [SavedRewind] = []
     /// One reconcile per launch, and whether it has happened — see
     /// `syncLibrary()`.
     var librarySynced = false
@@ -189,6 +202,7 @@ final class LedgerStore: ObservableObject {
         focusModeOn = FocusModeFile.isOn()
         refreshFocusClock()
         refreshVaultNotes()
+        refreshRewind()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
             let dayStart = Int64(

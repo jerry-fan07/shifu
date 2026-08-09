@@ -91,6 +91,29 @@ final class CaptureEngine {
         self.now = now
     }
 
+    /// **Rung 0 as a predicate** (design.md §8, CLAUDE.md invariant 3).
+    ///
+    /// The ladder is not the only thing that has to refuse an excluded window:
+    /// `RewindRecorder` writes pixels, so it must refuse the *same* windows for
+    /// the *same* reasons, and two implementations of "is this excluded" is the
+    /// exact shape of bug the invariant exists to prevent — one of them would
+    /// eventually learn about private windows and the other wouldn't.
+    ///
+    /// Monotone in what it is told, which is what lets the ladder call it three
+    /// times as its AX reads come in (bundle, then title, then URL) and get
+    /// exactly the sequenced behaviour it had when the three checks were
+    /// written out inline. A caller that already holds all three — the
+    /// recorder — asks once.
+    static func isExcluded(
+        bundle: String, title: String? = nil, url: String? = nil, exclusions: Exclusions
+    ) -> Bool {
+        if exclusions.isExcluded(bundleID: bundle) { return true }
+        guard Browsers.isBrowser(bundle) else { return false }
+        if Browsers.isPrivateWindow(title: title) { return true }
+        if let url, exclusions.isExcluded(url: url) { return true }
+        return false
+    }
+
     func captureFrontmost(trigger: String) {
         guard let app = NSWorkspace.shared.frontmostApplication else { return }
         capture(app: app, trigger: trigger)
@@ -110,7 +133,7 @@ final class CaptureEngine {
         let capturedAtMs = Int64(capturedAt.timeIntervalSince1970 * 1_000)
 
         // Rung 0: exclusion by bundle — nothing is captured, duration only (§8).
-        if exclusions.isExcluded(bundleID: bundle) {
+        if Self.isExcluded(bundle: bundle, exclusions: exclusions) {
             record(.init(timestamp: capturedAtMs, appBundle: bundle, captureKind: .excluded))
             return
         }
@@ -126,12 +149,12 @@ final class CaptureEngine {
         var url: String?
         if Browsers.isBrowser(bundle) {
             // Private windows are always excluded, before any content read (§8).
-            if Browsers.isPrivateWindow(title: title) {
+            if Self.isExcluded(bundle: bundle, title: title, exclusions: exclusions) {
                 record(.init(timestamp: capturedAtMs, appBundle: bundle, captureKind: .excluded))
                 return
             }
             url = probe.webAreaURL(window)
-            if let url, exclusions.isExcluded(url: url) {
+            if Self.isExcluded(bundle: bundle, title: title, url: url, exclusions: exclusions) {
                 record(.init(timestamp: capturedAtMs, appBundle: bundle, captureKind: .excluded))
                 return
             }
