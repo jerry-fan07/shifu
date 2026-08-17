@@ -86,15 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// outlive the window they were typed into.
     static weak var settings: SettingsStore?
 
-    private let deadlines = DeadlineNotifier()
+    /// The deadline notifier, reachable by the one thing that has to start it
+    /// late: finishing onboarding, which happens after `applicationDid
+    /// FinishLaunching` has already declined to (`OnboardingView.finish`).
+    static private(set) var deadlineNotifier: DeadlineNotifier?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let notifier = DeadlineNotifier()
+        Self.deadlineNotifier = notifier
         // Not before onboarding, like daemon registration: the first thing a
         // new install should do is explain itself, not ask for permission to
         // interrupt. With no deadlines recorded the notifier asks for nothing
         // anyway, so this gate only matters for a reinstall over old data.
         guard UserDefaults.standard.bool(forKey: "shifu.onboarded") else { return }
-        deadlines.start()
+        notifier.start()
     }
 
     func applicationShouldTerminate(

@@ -26,12 +26,22 @@ final class DeadlineNotifier: NSObject {
 
     private var timer: Timer?
     private var askedForAuthorization = false
-    private let center = UNUserNotificationCenter.current()
+    private var started = false
+    /// Lazy, not stored eagerly: `UNUserNotificationCenter.current()` traps in a
+    /// process with no bundle identity, and this type is constructed before the
+    /// onboarding gate decides whether to use it — so a bare
+    /// `swift run ShifuApp` must be able to build one and never touch it.
+    private lazy var center = UNUserNotificationCenter.current()
 
     /// Starts the poll and takes one tick immediately — a reminder whose moment
     /// passed while Shifu was closed should arrive on launch, not five minutes
     /// into it.
+    ///
+    /// Idempotent: launch calls it, and so does finishing onboarding, which is
+    /// the one path where launch declined to.
     func start() {
+        guard !started else { return }
+        started = true
         center.delegate = self
         tick()
         let timer = Timer(timeInterval: Self.interval, repeats: true) { _ in
@@ -48,8 +58,34 @@ final class DeadlineNotifier: NSObject {
         timer = nil
     }
 
+    /// Traces the delivery path to stdout when `SHIFU_NOTIFY_TRACE` is set.
+    ///
+    /// This exists because the last three inches of this feature —
+    /// authorization, `center.add`, `willPresent` — cannot be reached from a
+    /// test: `UNUserNotificationCenter` needs a signed bundle, and whether the
+    /// user pressed Allow is not something a test can decide. A silent reminder
+    /// is otherwise indistinguishable from a reminder that was never due, so the
+    /// only way to tell them apart is to ask the binary.
+    /// Written to stderr rather than `print`: stdout is block-buffered when it
+    /// is a pipe, so a `print` trace from a GUI app that never exits cleanly is
+    /// a trace you never see.
+    private func trace(_ message: @autoclosure () -> String) {
+        guard ProcessInfo.processInfo.environment["SHIFU_NOTIFY_TRACE"] != nil else { return }
+        FileHandle.standardError.write(Data("deadline-notifier: \(message())\n".utf8))
+    }
+
     private func tick() {
-        guard let database = try? ShifuDatabase.open(at: ShifuPaths.database) else { return }
+        guard let database = try? ShifuDatabase.open(at: ShifuPaths.database) else {
+            trace("no database at \(ShifuPaths.database.path)")
+            return
+        }
+        trace("tick — home \(ShifuPaths.database.path)")
+        center.getNotificationSettings { [weak self] settings in
+            // Read the one field out here: `UNNotificationSettings` is not
+            // Sendable, so hopping it to the main actor is a data race.
+            let status = settings.authorizationStatus.rawValue
+            Task { @MainActor in self?.trace("authorization status \(status)") }
+        }
         // Permission is asked for on the first tick that has something to
         // remind about, never at launch: a user who has typed no dates has
         // nothing to grant, and being asked anyway is how the answer becomes no.
@@ -57,11 +93,20 @@ final class DeadlineNotifier: NSObject {
            DeadlineReminders.preferences(database: database).enabled,
            (try? DeadlineReminders.hasSomethingToRemind(database: database)) == true {
             askedForAuthorization = true
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
+                Task { @MainActor in
+                    self?.trace("authorization requested — granted \(granted)"
+                        + (error.map { ", error \($0)" } ?? ""))
+                }
+            }
         }
         guard let announcements = try? DeadlineReminders.due(database: database),
               !announcements.isEmpty
-        else { return }
+        else {
+            trace("nothing due")
+            return
+        }
+        trace("\(announcements.count) due")
         for announcement in announcements {
             deliver(announcement, database: database)
         }
@@ -81,13 +126,17 @@ final class DeadlineNotifier: NSObject {
         // stack — a second belt behind the row's own ledger.
         let request = UNNotificationRequest(
             identifier: Self.identifier(for: announcement), content: content, trigger: nil)
-        center.add(request) { error in
-            guard error == nil else { return }
+        center.add(request) { [weak self] error in
             // Stamped only on a successful hand-over, and off the main actor's
             // critical path: a reminder the system refused must stay unsaid so
             // the next tick can try again.
             Task { @MainActor in
-                try? DeadlineReminders.record(announcement, database: database)
+                guard let error else {
+                    self?.trace("posted \(Self.identifier(for: announcement))")
+                    try? DeadlineReminders.record(announcement, database: database)
+                    return
+                }
+                self?.trace("post refused: \(error)")
             }
         }
     }

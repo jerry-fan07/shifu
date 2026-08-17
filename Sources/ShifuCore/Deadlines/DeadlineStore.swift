@@ -119,7 +119,12 @@ public enum DeadlineStore {
             // 75% reachable again without re-announcing 25% and 50% on the next
             // tick. Clearing the target lands on 0, which is what a target set
             // again later should measure from.
-            if row.targetMs != before.targetMs {
+            //
+            // Re-pointing the *task* is the larger version of the same edit —
+            // it changes what `loggedMs` measures at all — so it re-arms too.
+            // Without it, moving a deadline whose 100% was announced onto a task
+            // with five hours behind it reports progress never again.
+            if row.targetMs != before.targetMs || row.taskID != before.taskID {
                 row.progressNotch = try earnedNotch(row, db: db)
             }
             try row.update(db)

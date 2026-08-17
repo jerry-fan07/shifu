@@ -222,6 +222,35 @@ import Testing
         #expect(DeadlineHorizon.announcements(for: reArmed, now: 100 * hour).isEmpty)
     }
 
+    /// Re-pointing the task is the larger version of the same edit — it changes
+    /// what the progress figure measures at all — so it re-arms the ledger too.
+    @Test func movingTheTaskReArmsProgressAgainstTheNewOne() throws {
+        let database = try self.database()
+        let busy = try seedTask(database, blocks: [(from: 0, to: 22 * hour)])
+        let quiet = try seedTask(
+            database, name: "Side project", key: "sem:side",
+            blocks: [(from: 0, to: 2 * hour)])
+        let created = try DeadlineStore.create(
+            title: "Thesis draft", dueAt: 900 * hour, taskID: busy,
+            targetMs: 20 * hour, now: 0, database: database)
+        let id = try #require(created.id)
+        try DeadlineStore.stamp(
+            .init(deadlineID: id, kind: .progress(percent: 100), title: "x", body: "y", notch: 100),
+            database: database)
+
+        try DeadlineStore.update(id, taskID: quiet, database: database)
+        // 2 h of 20 h is 10%: no quarter earned, so the ledger falls to 0 and
+        // 25% is live again against the task that is actually being measured.
+        let moved = try #require(try DeadlineStore.find(id, database: database))
+        #expect(moved.deadline.progressNotch == 0)
+        #expect(moved.progressPercent == 10)
+        #expect(moved.loggedMs == 2 * hour)
+
+        // And unlinking the task entirely leaves nothing to measure.
+        try DeadlineStore.update(id, clearTask: true, database: database)
+        #expect(try DeadlineStore.find(id, database: database)?.deadline.progressNotch == 0)
+    }
+
     /// Clearing the target lands the notch on zero, which is what a target set
     /// again later should measure from.
     @Test func clearingTheTargetResetsTheProgressLedger() throws {

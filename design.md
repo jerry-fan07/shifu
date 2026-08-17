@@ -371,6 +371,21 @@ panel naming the nearest pressing date, with the overdue hue when it has passed.
 `DeadlineDate` is the one date parser, shared by the CLI and the app, so the two
 cannot disagree about what "friday" means.
 
+**Verified end to end, 2026-08-17.** The last three inches — `requestAuthorization`,
+`center.add`, the delivered banner — cannot be reached from a test: UN needs a
+signed bundle and no test can decide whether the user pressed Allow. So
+`DeadlineNotifier` carries a `SHIFU_NOTIFY_TRACE` stderr trace, and the path was
+walked with a Developer-ID-signed bundle over a scratch `SHIFU_HOME` holding one
+deadline due today: launch tick → `1 due` (the catch-up path, the 09:00 moment
+having passed) → `granted true` → `posted shifu.deadline.1.lead.0`, and
+`announced_lead` moved to 0. Relaunching reported `nothing due` and left the row
+alone, so the said-once property holds against the real notification centre and
+not only in `DeadlineHorizonTests`. Two traps worth keeping: a bundle under
+`/tmp` is refused registration outright (`UNErrorDomain` 1, "Notifications are
+not allowed for this application") whatever it is signed with — it has to sit in
+a real app location — and the refusal correctly left the row *unstamped*, which
+is the stamp-after-post ordering doing its job.
+
 ---
 
 ## 5. Knowledge Vault & Spaced Repetition (§2 of instructions)
