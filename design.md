@@ -22,7 +22,7 @@ Shifu is a local-first, always-on observer that captures what is on your screen 
 2. **Minimalist.** In every dimension: a UI with the fewest possible surfaces (one menu bar item, one window, one review card), features that earn their place or don't ship, plain formats over clever ones (Markdown, SQLite), and a codebase small enough to audit. When in doubt, leave it out — every addition must justify itself against this principle.
 3. **Private by default.** All raw captures stay on-device. LLM analysis is cloud-based (DeepSeek — see §4.2), but nothing leaves the machine until the user opts in — choosing the hosted Shifu Cloud backend, or supplying their own API key — and even then only derived, redacted text samples are sent — never raw pixels or raw captures. *(Revised 2026-07: v1 aspired to on-device-only analysis; Apple Foundation Models' 4k window, weak labels, and macOS 26+ gate made that path useless in practice.)*
 4. **Trustworthy.** The user can inspect, export, and delete everything. Sensitive apps and sites are excluded by default. There is a single obvious kill switch.
-5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications.
+5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications. *(Qualified 2026-08-17 by §4.5: Shifu does interrupt for a **deadline the user typed themselves**, on a fixed five-notice schedule per promise. What this principle forbids is a feed — Shifu volunteering its own findings — and that stands: nothing infers a deadline, so with none recorded the Mac is silent.)*
 
 ### Non-goals (v1)
 
@@ -283,6 +283,93 @@ A user-invoked focus contract, toggled from the menu bar (and optionally auto-sc
 - Escalation is configurable: off → glow → glow + haptic (on supported trackpads) → gentle notification. Default is glow only.
 - Focus Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
 - **The switch carries two clocks** (`FocusClock`), drawn wherever the switch is drawn — the rail's foot, the menu bar panel, the Focus page, and `shifu focus` in the terminal. The stopwatch alone goes one place further, to the **menu bar item itself** (§7), which is the only surface that is not a switch: it is also the only one visible without opening anything, and a session length you have to click to see is one you stop checking. The first is the running session's stopwatch (`12:04`, seconds and all, because a live reading should look live). The second is the gap: while a session runs it is the time that passed *before* it started, frozen — a gap that grew while you focused would read as punishment for focusing — and while Focus Mode is off it is the time since the last session ended, and it runs. Neither is a counter the app keeps: the stopwatch is measured from the **control file's birth time**, so it starts the instant the switch is flipped, survives a relaunch, and works with no daemon running; the gap is measured from the newest closed `focus_mode_sessions` row long enough to count as a session, with the app's own observation standing in for the moment between switching off and the daemon writing `ended_at`.
+
+### 4.5 Deadlines & progress reminders
+
+A **deadline** is a date the user gave Shifu, optionally with the effort they
+mean to put in before it. It is the only row in the database that is not derived
+from the screen, and the only thing Shifu will interrupt about.
+
+**Shifu does not infer deadlines, and this is a measurement rather than a
+taste.** The obvious design — have `CardBuilder` notice dated commitments while
+it reads OCR text, which it already does once per block for free — was tested
+against a month of the real dogfood database on 2026-08-17 and rejected:
+
+- 875 observations across 479 blocks (7% of all blocks with text) contain
+  "due" or "deadline" language.
+- Sampled across apps, **essentially all of it is noise**: a writing-tool
+  landing page, a college-board flyer about "deadlines in spring of junior
+  year", a newsletter subject line, a LinkedIn bio using the word as a
+  buzzword, and an AI chat transcript *discussing* deadlines in the abstract.
+- Narrowed to `due` followed by anything date-shaped, **14 of 15 hits are
+  Shifu's own window**, reading its SRS review queue back to itself ("due now
+  · median interval 1 day · 4 WEEKS overdue"). The fifteenth is "due to the
+  fact".
+
+So an extractor would produce the `KnowledgeExtractor` outcome (§5.1: 1,162
+proposals against 1 kept card) with two aggravations — the noise arrives as
+notifications rather than as an inbox, and Shifu's own UI is the single richest
+source of false positives, which is a feedback loop. Dates are typed; **progress
+is observed**. That split is the feature: nobody else can tell you that you are
+6 h into a 20 h promise, and Shifu should not pretend to know the promise.
+
+**Storage.** One `deadlines` table, deliberately not a `tasks.due_at` column.
+Tasks are derived: `TaskGrouper` mints them, `TaskPrune.prune` and
+`TaskStore.merge` `DELETE` them. A hand-typed date on a row a pipeline deletes
+is a broken promise, so the link is a nullable FK with `ON DELETE SET NULL` —
+the deadline survives and loses only the thing it was measuring. The same
+nullability buys two more shapes: a commitment before any task exists ("visa
+appointment"), and several dates on one task, which is what makes it a
+*timeline* rather than a due date. `target_ms` is the intended effort; progress
+is `activities` time against `task_id`, **clipped at `created_at`**, because the
+promise is about the work left when it was made.
+
+**What gets said, and when.** `DeadlineHorizon` is pure — clock, calendar and
+reminder hour all arrive as arguments — and answers one question: what should be
+said about this deadline right now, given what has already been said.
+
+- Lead buckets are `[7, 3, 1, 0]` days plus one overdue notice: **five
+  announcements over a deadline's whole life.** A deadline falls through the
+  buckets as its date nears and announces once per bucket, tracked by
+  `announced_lead`, which only ever falls (overdue is `-1`, below every lead,
+  so the same rule silences it too).
+- Distance is **calendar days**, not elapsed hours: at 22:00 a 09:00 deadline
+  the next morning is "tomorrow", and DST is the calendar's problem.
+- The bucket opening is not permission to speak. `reminders.hour` (default 9)
+  gates it, because `daysUntil` changes at local midnight and a reminder at
+  00:01 is worse than none. A bucket whose moment has already passed fires at
+  once, so a deadline entered *inside* its warning window says so immediately.
+- Progress is reported at each quarter of `target_ms` (`progress_notch`,
+  monotonic), and is **not** hour-gated: it is a reaction to work that just
+  happened, and holding it to the morning would report it after the session it
+  belongs to. Moving the target re-arms it to the highest quarter already
+  earned — so raising 20 h to 40 h makes 75% reachable again without
+  re-announcing 25% and 50%.
+
+This is bounded on purpose. §1's fifth principle is "not a stream of
+notifications", and the honest way to keep it is a small fixed schedule per
+promise the user personally made — with zero deadlines recorded, an untouched
+Shifu is exactly as silent as before.
+
+**Who delivers it.** `ShifuApp`, through `UserNotifications`, and **by polling
+the database** — never by handing a future moment to the system.
+`UNUserNotificationCenter` needs a bundle identity that `shifud` (a bare
+LaunchAgent binary) does not have, and the daemon must keep the property that
+makes invariant 1 auditable. Scheduling ahead was rejected for the same reason
+Shifu has no IPC: the pending-request queue would be a second state store
+`shifu due` cannot reach, so marking a deadline done in the terminal could not
+cancel a banner already scheduled, and a notice delivered while the app was
+closed could not stamp the row that stops it repeating. The cost is real and
+stated plainly: **nothing arrives while Shifu is not running**, and reminders
+resume in order, each still only once, on the next launch.
+
+**Surfaces.** `shifu due` (list / add / set / done / open / rm) in the terminal;
+a *Coming up* band above the Tasks list, which is where a deadline is authored
+in the app and always present even when empty; a row per date on the task page,
+with **Add a deadline** in its rail beside Rename; and one line in the menu bar
+panel naming the nearest pressing date, with the overdue hue when it has passed.
+`DeadlineDate` is the one date parser, shared by the CLI and the app, so the two
+cannot disagree about what "friday" means.
 
 ---
 
@@ -982,6 +1069,38 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   - Do **not** "clean up" `shifu-cli/VaultBench.swift`: `scripts/perf-vault.sh`
     invokes `shifu vault bench` and parses its output, so deleting it breaks
     `make perf`.
+- **Deadlines, three follow-ups the shipped shape left open (§4.5).**
+  - **Inferring a deadline from the screen — measured against, not merely
+    deferred.** Do not build this without new evidence. On 2026-08-17 the real
+    dogfood DB carried 875 observations of "due"/"deadline" language across 479
+    blocks, and sampling found no actionable dated commitment in any of them:
+    marketing copy, a newsletter subject, a LinkedIn bio, an AI chat discussing
+    deadlines in the abstract, and — for `due` followed by anything
+    date-shaped — **14 of 15 hits were Shifu's own window reading its SRS queue
+    back to itself**. The cost of getting it wrong is worse than
+    `KnowledgeExtractor`'s was, because the noise arrives as notifications and
+    the loudest false-positive source is Shifu's own UI. If it is ever revisited,
+    the honest version is narrow: an explicit `due <date>` shape, inside a block
+    already filed to a task, in an app that is not Shifu, proposed into a queue
+    the user accepts from (`theme_proposals`' shape) — never notified on
+    directly. Note `activities.card` is still the only stage that reads OCR, so
+    the marginal token cost really would be zero; the token cost was never the
+    objection.
+  - **The digest as a notification.** §4.3 has always specified the daily digest
+    as "delivered as a local notification linking into the dashboard", and it
+    has never been one — `DigestGenerator` writes a Markdown file and nothing
+    announces it. §4.5's `DeadlineNotifier` is now the missing plumbing, so this
+    is a small follow-up rather than a project: it needs a fired-ledger (the
+    digest's date-stamped filename is already one) and a decision about whether
+    a digest may interrupt at all, which is the §1-principle question §4.5 only
+    answered for dates the user typed.
+  - **Shifu as a login item.** §4.5's poll-only delivery means reminders wait
+    while the app is closed. Registering `Shifu.app` with `SMAppService` the way
+    `DaemonService` registers `shifud` would close that gap, and is the one
+    change that would make the reminder schedule dependable. Deliberately not
+    bundled into the deadline work: a login item is a claim on the user's
+    machine that wants its own consent beat in onboarding, not a side effect of
+    typing a date.
 
 ---
 

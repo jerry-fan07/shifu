@@ -75,12 +75,27 @@ struct ShifuApp: App {
 /// both land in `terminate`, and quitting with staged settings edits would
 /// silently drop them. Same three-way question as leaving the Settings place
 /// (`MainWindow`'s departure guard), same resolution rules.
+///
+/// It also homes the deadline notifier (design.md §4.5), for its lifetime: the
+/// dashboard window's own 60 s poll dies with the window, and a reminder that
+/// only arrives while the dashboard is open is not a reminder.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The live Settings model, set by the window that owns it. Weak, so a
     /// closed window's store can die — and with it, the gate: no drafts can
     /// outlive the window they were typed into.
     static weak var settings: SettingsStore?
+
+    private let deadlines = DeadlineNotifier()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Not before onboarding, like daemon registration: the first thing a
+        // new install should do is explain itself, not ask for permission to
+        // interrupt. With no deadlines recorded the notifier asks for nothing
+        // anyway, so this gate only matters for a reinstall over old data.
+        guard UserDefaults.standard.bool(forKey: "shifu.onboarded") else { return }
+        deadlines.start()
+    }
 
     func applicationShouldTerminate(
         _ application: NSApplication
@@ -149,6 +164,7 @@ private struct MenuBarPanel: View {
             RewindMenuLines()
 
             separator
+            DeadlineMenuLine()
             MenuLine(
                 title: "Review",
                 trailing: store.dueNotes.isEmpty ? nil : "\(store.dueNotes.count) due",
@@ -270,6 +286,50 @@ private struct RewindMenuLines: View {
         router.go(to: .rewind)
         openWindow(id: "dashboard")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// The nearest deadline, in the menu bar (design.md §4.5).
+///
+/// One line, and only when something is actually near: the menu bar is the
+/// surface you can see without opening anything, so a deadline a month out
+/// sitting here permanently would train the eye to skip the row that matters.
+/// With nothing pressing it shows the way in instead, because a place you can
+/// only reach when it has contents is a place nobody finds.
+private struct DeadlineMenuLine: View {
+    @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var router: Router
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        let pressing = store.pressingDeadlines
+        MenuLine(
+            title: pressing.first.map { $0.deadline.title } ?? "Deadlines",
+            trailing: trailing(pressing),
+            urgent: isOverdue(pressing.first)
+        ) {
+            router.go(to: .tasks)
+            openWindow(id: "dashboard")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// The nearest one's distance, plus a count when it isn't the only one —
+    /// "tomorrow +2" is the whole state of the queue in nine characters.
+    private func trailing(_ pressing: [DeadlineHorizon.Standing]) -> String? {
+        guard let nearest = pressing.first else {
+            return store.comingUp.isEmpty ? "none" : "\(store.comingUp.count) later"
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        let days = DeadlineHorizon.daysUntil(dueAt: nearest.deadline.dueAt, now: now)
+        let phrase = days < 0 ? "overdue" : DeadlineCopy.whenPhrase(daysLeft: days)
+        return pressing.count > 1 ? "\(phrase) +\(pressing.count - 1)" : phrase
+    }
+
+    private func isOverdue(_ standing: DeadlineHorizon.Standing?) -> Bool {
+        guard let standing else { return false }
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        return DeadlineHorizon.daysUntil(dueAt: standing.deadline.dueAt, now: now) <= 0
     }
 }
 
