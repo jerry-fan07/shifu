@@ -1,7 +1,7 @@
 // Icon iterations, side by side at the sizes that actually matter.
 //
 //     swift scripts/icon-lab.swift            # /tmp/icon-lab/sheet.png, context.png, one PNG each
-//     swift scripts/icon-lab.swift 12         # cut candidate 12 and install it as the app icon
+//     swift scripts/icon-lab.swift 12         # cut candidate 12 alone, to /tmp/ShifuIcon.png
 //
 // An app icon is judged at 32 points in a Dock and 16 in a Finder list, where
 // hairlines vanish and anything under ~12% of the tile is a speck. `sheet.png`
@@ -480,8 +480,8 @@ struct TerraceDaySun: View {
     try? FileManager.default.removeItem(at: directory)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-    // With a number, cut that one candidate for `scripts/generate-icon.sh`
-    // instead of drawing the whole sheet again.
+    // With a number, cut that one candidate on its own instead of drawing the
+    // whole sheet again — the last look before it is redrawn for real.
     if let choice = CommandLine.arguments.dropFirst().first {
         guard let picked = candidates.first(where: { $0.0.hasPrefix("\(choice)-") }),
               let rep = bitmap(picked.1),
@@ -493,8 +493,12 @@ struct TerraceDaySun: View {
         }
         let source = "/tmp/ShifuIcon.png"
         try? png.write(to: URL(fileURLWithPath: source))
-        print("Wrote \(picked.0) to \(source). Now:\n"
-            + "    scripts/generate-icon.sh \(source)")
+        // Not an installable icon: this is one 1,024 master, and the shipped
+        // .icns is drawn at each size instead (see scripts/icon-source.swift
+        // for why a downsample is not good enough at 16 px).
+        print("Wrote \(picked.0) to \(source). To ship it, port the drawing\n"
+            + "into scripts/icon-source.swift and run:\n"
+            + "    swift scripts/icon-source.swift")
         return
     }
 

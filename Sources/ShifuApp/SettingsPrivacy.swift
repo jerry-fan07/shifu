@@ -1,7 +1,6 @@
 import AppKit
 import ShifuCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The two sections that carry no stored settings of their own: Privacy, whose
 /// exclusions live in their own table, and About, whose facts live on disk.

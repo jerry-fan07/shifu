@@ -8,10 +8,11 @@
 // `scripts/icon-lab.swift 9` is this same drawing — the lab is where it was
 // chosen, out of sixteen, at the sizes below.
 //
-// **Every slice is drawn at its own size**, rather than resampled from one
-// 1,024 master the way `generate-icon.sh` does it. That is not fussiness: the
-// same drawing rendered natively at 16 px keeps edges that a downsample turns
-// to porridge. Two things follow from the size:
+// **Every slice is drawn at its own size**, rather than `sips`-resampled down
+// from one 1,024 master the way the icon before it was. That is not fussiness:
+// the same drawing rendered natively at 16 px keeps edges that a downsample
+// turns to porridge — which is why the resampling script this replaced was
+// deleted rather than kept beside it. Two things follow from the size:
 //
 //   - **A floor under the sun.** It is 24% of the body, which is 3 px at Dock
 //     size and falls to 2 with the wrong rounding; below 32 px it is nudged up

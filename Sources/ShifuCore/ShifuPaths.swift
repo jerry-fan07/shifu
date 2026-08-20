@@ -21,15 +21,9 @@ public enum ShifuPaths {
     /// is switched on, and is deleted on the retention schedule in Settings.
     /// Kept out of `vault/` deliberately: the vault is the user's Markdown, and
     /// nothing that syncs it should carry frames.
+    /// Its layout — the rolling `buffer/`, and one `saved/<id>/` folder per kept
+    /// rewind — belongs to `RewindStore`, the only writer.
     public static var rewind: URL { home.appendingPathComponent("rewind", isDirectory: true) }
-    /// The rolling buffer — the last few minutes, and nothing older.
-    public static var rewindBuffer: URL {
-        rewind.appendingPathComponent("buffer", isDirectory: true)
-    }
-    /// One folder per saved rewind or snip, named by its row id.
-    public static var rewindSaved: URL {
-        rewind.appendingPathComponent("saved", isDirectory: true)
-    }
     /// Control file: presence with a future unix-seconds expiry means capture is paused (§8).
     public static var pauseFile: URL { home.appendingPathComponent("pause_until") }
     /// Control file: presence means Focus Mode is on (§4.4).
