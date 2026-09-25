@@ -23,8 +23,8 @@ public struct LLMPrices: Sendable, Equatable {
     public static let reasoningKey = "llm.price.reasoning"
 
     /// DeepSeek's published rates (July 2026) — what a blank setting means.
-    /// The two slots are priced ~3× apart on paper, further in practice: the
-    /// reasoning model bills its chain-of-thought as output.
+    /// The two slots are priced ~3× apart. (A thinking model would also bill
+    /// its chain-of-thought as output; neither slot runs with thinking on.)
     public static let fastDefault = LLMPrices(inPerM: 0.14, cachedPerM: 0.0028, outPerM: 0.28)
     public static let reasoningDefault = LLMPrices(
         inPerM: 0.435, cachedPerM: 0.003625, outPerM: 0.87)

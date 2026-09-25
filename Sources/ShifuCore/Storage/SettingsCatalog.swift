@@ -513,19 +513,17 @@ public enum SettingsCatalog {
     public static let deepseekReasoningModel = TextSetting(
         key: Settings.deepseekReasoningModelKey, section: .analysis,
         title: "Reasoning model",
-        help: "Groups your time into tasks and themes — the judgment-heavy "
-            + "stages. Blank uses deepseek-v4-pro (thinking model, slower and "
-            + "pricier but better at naming intent).",
+        help: "The daily task-roster audit and the weekly automation radar — "
+            + "the judgment calls. Blank uses deepseek-v4-pro (bigger and "
+            + "pricier than the fast model; run without chain-of-thought).",
         placeholder: "deepseek-v4-pro",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
     // The local tier (design.md §4.2). One model serves both slots — it is
-    // one server with one model loaded — with thinking always off: at a
-    // local-sized window the stock chain-of-thought reserve would swallow
-    // every reasoning-slot prompt budget whole. State the window the server
-    // actually serves and every stage re-sizes its batches through invariant
-    // 7 — no other dial has to move.
+    // one server with one model loaded — with thinking off, as on every
+    // tier. State the window the server actually serves and every stage
+    // re-sizes its batches through invariant 7 — no other dial has to move.
     public static let localBaseURL = TextSetting(
         key: Settings.localBaseURLKey, section: .analysis,
         title: "Endpoint",

@@ -123,14 +123,14 @@ public enum Settings {
     /// Fast model (default deepseek-v4-flash): classification, extraction,
     /// narratives, radar — the high-volume, low-judgment stages.
     public static let deepseekModelKey = "deepseek.model"
-    /// Reasoning model (default deepseek-v4-pro): semantic task grouping and
-    /// theme clustering, where naming the user's intent is the whole job.
+    /// Reasoning model (default deepseek-v4-pro): the daily roster audit and
+    /// the weekly radar — the judgment calls. Never run with thinking on.
     public static let deepseekReasoningModelKey = "deepseek.reasoning_model"
     /// The local tier (§4.2): an OpenAI-compatible server the user runs
     /// themselves. One model serves both slots — it is one server with one
-    /// model loaded — with thinking always off, so the context window (blank
-    /// means `LocalLLMDefaults.contextWindowTokens`) is spent on prompts, not
-    /// chain-of-thought headroom.
+    /// model loaded — so the context window (blank means
+    /// `LocalLLMDefaults.contextWindowTokens`) is the one number every
+    /// stage's batches size to.
     public static let localBaseURLKey = "local.base_url"
     public static let localModelKey = "local.model"
     public static let localContextTokensKey = "local.context_tokens"

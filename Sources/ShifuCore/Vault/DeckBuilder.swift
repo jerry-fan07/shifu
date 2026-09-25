@@ -22,11 +22,10 @@ public enum DeckBuilder {
     /// UI offers (`NewDeckPage.cardCountOptions`) — need ~11.7k tokens.
     /// 4,000 was tuned for the no-range default (`maxCardsPerBatch` cards)
     /// and silently truncated every response on a wide-range deck whose
-    /// blocks all fit one batch, and truncation on this backend's
-    /// non-thinking slot is fatal (no retry — see
-    /// `DeepSeekBackend.complete`), so the build failed identically forever
-    /// with no visible error. 18,000 leaves ~50% margin over the measured
-    /// estimate for denser topics.
+    /// blocks all fit one batch, and truncation on this backend is fatal (no
+    /// retry — see `DeepSeekBackend.complete`), so the build failed
+    /// identically forever with no visible error. 18,000 leaves ~50% margin
+    /// over the measured estimate for denser topics.
     public static let responseTokens = 18_000
     public static let maxCardsPerBatch = 10
     public static let confidenceFloor = 0.5

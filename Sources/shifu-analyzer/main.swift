@@ -163,10 +163,10 @@ print("analyzed \(summary.observationsProcessed) observations → "
 // an opt-in (or with backend "off") every LLM stage is skipped and the
 // rules-only ledger stands (§10 fallback). Two model slots share the one
 // opt-in (§4.2): the fast model runs everything hourly — cards, grouping,
-// themes, notes — over card evidence; the reasoning model is reserved for
-// the daily roster reconciliation and the weekly radar, the judgment calls
-// where its billed chain-of-thought earns its price. On the local tier both
-// slots are the one model the server has loaded.
+// themes, notes — over card evidence; the bigger reasoning model is reserved
+// for the daily roster reconciliation and the weekly radar, the judgment
+// calls. Neither slot bills chain-of-thought. On the local tier both slots
+// are the one model the server has loaded.
 // The local tier means the GPU doing analysis sits under the user's hands,
 // so its calls are paced (LLMPacer): rest between bursts, harder while the
 // user is present, gentler once the screen locks or input goes idle — except
@@ -347,17 +347,16 @@ do {
 
 // Roster reconciliation (§5.3): the reasoning model's one scheduled call —
 // it audits the roster the fast-model stages built (duplicate efforts,
-// missing gists) instead of paying its chain-of-thought hourly. Merge
-// proposals join the suggestion queue and its gates. Stamped only on
-// success, like every LLMStageGate caller.
+// missing gists). Merge proposals join the suggestion queue and its gates.
+// Stamped only on success, like every LLMStageGate caller.
 //
-// Every six hours rather than daily (v27): this is the only pass that can
-// undo a duplicate mint, and at 24 h a second name for today's work outlived
-// the day it was minted in — long enough to collect blocks, a work note and
-// a place in the Task log. Four calls a day on the reasoning slot is the
-// one place its chain-of-thought measurably earns its price.
+// Daily, and only over a roster that changed since the last audit
+// (`TaskReconciler.rosterHashKey`). It ran every six hours with thinking on,
+// which measured 19% of the whole bill (2026-09-11..24) for 13 merge
+// proposals in eight weeks — a duplicate living until tomorrow's audit is a
+// smaller cost than that.
 if let reasoningBackend,
-   LLMStageGate.due("reconcile.last_ran", everyMs: 6 * 3_600_000,
+   LLMStageGate.due("reconcile.last_ran", everyMs: 24 * 3_600_000,
                     now: nowMs, database: database) {
     do {
         let reconciled = try await TaskReconciler.run(

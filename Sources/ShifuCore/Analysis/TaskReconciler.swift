@@ -11,6 +11,10 @@ import GRDB
 /// card evidence, pro audits the *roster* once a day for a fraction of a
 /// cent. Merges land in the existing `task_merge_suggestions` queue and ride
 /// its gates; nothing here renames, folds, or deletes anything directly.
+///
+/// A roster the last audit already judged is not judged again
+/// (`rosterHashKey`): the verdict depends on which tasks exist and what they
+/// are called, so an unchanged list would buy the same answer twice.
 public enum TaskReconciler {
     /// Below this the model is guessing, and a guessed merge pair clutters
     /// the queue the auto-merge gates then have to re-judge.
@@ -25,6 +29,9 @@ public enum TaskReconciler {
     /// column separates the scales, so each is judged on its own bar
     /// (`TaskMerges.llmAutoMergeThreshold`) and the score stays honest.
     public static let responseTokens = 2_000
+    /// Settings row holding `fingerprint` of the roster the last successful
+    /// audit left behind.
+    public static let rosterHashKey = "reconcile.roster_hash"
 
     public struct Summary: Equatable, Sendable {
         public var mergesSuggested: Int
@@ -102,15 +109,30 @@ public enum TaskReconciler {
 
     // MARK: - Pipeline
 
+    /// What an audit's verdict depends on: which tasks are on the roster, and
+    /// the names and gists it reads to decide whether two are one effort.
+    /// The hours and recency on each line are left out on purpose — they
+    /// move every day for every active task, and a pair that wasn't one
+    /// effort yesterday doesn't become one because both logged another hour.
+    static func fingerprint(_ roster: [SemanticTaskGrouper.RosterEntry]) -> Int64 {
+        VaultIndexer.contentHash(roster
+            .map { "\($0.key)|\($0.name)|\($0.gist ?? "")" }
+            .joined(separator: "\n"))
+    }
+
     /// One call over the active roster; a roster of one has nothing to
-    /// reconcile. The caller gates this daily (`LLMStageGate`) and stamps
-    /// only on success.
+    /// reconcile, and a roster identical to the one the last audit left
+    /// behind has nothing new to reconcile. The caller gates this daily
+    /// (`LLMStageGate`) and stamps only on success.
     @discardableResult
     public static func run(
         database: ShifuDatabase, backend: any LLMBackend, now: Date = Date()
     ) async throws -> Summary {
         var roster = try SemanticTaskGrouper.activeRoster(database: database, now: now)
         guard roster.count > 1 else { return Summary() }
+        let judged = ((try? Settings.get(rosterHashKey, database: database)) ?? nil)
+            .flatMap(Int64.init)
+        guard judged != fingerprint(roster) else { return Summary() }
         // Invariant 7: shed the roster's tail rather than fail. With the
         // roster capped at 40 entries this loop never fires in practice.
         let budget = backend.contextWindowTokens - backend.responseReserve(responseTokens)
@@ -119,7 +141,13 @@ public enum TaskReconciler {
         }
         let response = try await backend.complete(
             prompt: prompt(roster: roster), maxTokens: responseTokens)
-        return try apply(parse(response), roster: roster, database: database, now: now)
+        let summary = try apply(parse(response), roster: roster, database: database, now: now)
+        // Re-read rather than reuse: the gists this audit just filled are
+        // part of the roster it leaves behind, and must not read as a change
+        // that earns tomorrow's audit.
+        let settled = try SemanticTaskGrouper.activeRoster(database: database, now: now)
+        try Settings.set(rosterHashKey, to: String(fingerprint(settled)), database: database)
+        return summary
     }
 
     /// Writes one verdict: merge pairs land in `task_merge_suggestions`

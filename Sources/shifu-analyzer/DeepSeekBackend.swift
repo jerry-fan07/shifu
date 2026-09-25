@@ -15,29 +15,22 @@ import ShifuCore
 ///
 /// Thinking mode is stated on every call and never left to the provider:
 /// DeepSeek defaults it to *enabled* on both slots, so a body that merely
-/// omits the toggle buys chain-of-thought for the high-volume labeling stages
-/// and bills it as output at the full rate. Measured on 2026-07-30, that was
-/// 76% of a day's spend — flash averaged 9,241 completion tokens on prompts
-/// asking for ~400, and the two calls that ran past the cap returned no
-/// content at all after four minutes.
+/// omits the toggle buys chain-of-thought and bills it as output at the full
+/// rate. Measured on 2026-07-30, that was 76% of a day's spend on the fast
+/// slot — flash averaged 9,241 completion tokens on prompts asking for ~400,
+/// and the two calls that ran past the cap returned no content at all.
 ///
-/// Only the reasoning slot asks for thinking (`Role.thinks`), and only that
-/// slot carries the `thinkingHeadroomTokens` floor: a thinking model streams
-/// its reasoning into `reasoning_content` out of the same `max_tokens` budget
-/// as its answer, so a cap sized for the answer alone truncates it mid-thought
-/// and yields an empty answer. On a non-thinking slot that same floor bounds
-/// nothing and only hides runaway generation.
+/// It is off on **both** slots (design.md §4.2, revised 2026-09). The
+/// reasoning slot used to keep it for its judgment calls, and those calls
+/// measured ~2k tokens of prompt answered after 3–15k tokens of billed
+/// chain-of-thought — 19% of the whole bill (2026-09-11..24) for a roster
+/// audit whose verdict is a few lines of JSON. The slot is still the bigger
+/// model; it just answers the question instead of narrating its way there.
 struct DeepSeekBackend: LLMBackend {
     let name: String
     let apiKey: String
     let model: String
     let baseURL: String
-    /// Nonzero only for the reasoning slot — see
-    /// `reasoningResponseHeadroomTokens`.
-    let responseHeadroomTokens: Int
-    /// Whether this slot's chain-of-thought is worth paying for — see
-    /// `Role.thinks`.
-    let thinks: Bool
     /// Where billed token counts land (`LLMUsage`). This is the only place in
     /// the codebase that ever sees a provider's `usage` object, so if it isn't
     /// written here the cost of a day's analysis is gone for good.
@@ -67,29 +60,12 @@ struct DeepSeekBackend: LLMBackend {
     /// pointing the base URL at.
     static let contextWindowTokenRange = 8_000...200_000
 
-    /// The `max_tokens` floor for a *thinking* call: observed reasoning runs
-    /// are 2-3k tokens, so this is generous while staying inside the output
-    /// limit of any OpenAI-compatible server. It still exists (rather than
-    /// sending the whole window remainder) to bound a runaway reasoning loop's
-    /// cost and latency. A run that thinks past it gets one retry at the whole
-    /// window remainder (see `complete`) — escalation is the exception path,
-    /// so the common case stays bounded. Non-thinking calls never take this
-    /// floor: they ask for what the stage asked for.
-    static let thinkingHeadroomTokens = 16_000
-
-    /// What reasoning-slot batchers must keep free in the window
-    /// (`responseHeadroomTokens`): the first-attempt cap plus an equal
-    /// escalation, so even a maximal batch leaves the retry real room. Fast
-    /// (non-thinking) instances report 0 and keep their batches full-width.
-    static let reasoningResponseHeadroomTokens = 2 * thinkingHeadroomTokens
-
     static let defaultBaseURL = "https://api.deepseek.com"
-    /// Two model slots, one backend. The fast slot (V4 Flash: an order of
-    /// magnitude cheaper, and run with thinking off — see `Role.thinks` — so
-    /// it answers in seconds) serves the high-volume labeling stages; the
-    /// reasoning slot (V4 Pro, run as the thinking model it is) serves the
-    /// judgment-heavy grouping stages that decide what a task *is*. Either can
-    /// be overridden independently in settings.
+    /// Two model slots, one backend. The fast slot (V4 Flash, an order of
+    /// magnitude cheaper) serves every hourly stage; the reasoning slot (V4
+    /// Pro) serves the two scheduled judgment calls — the daily roster audit
+    /// and the weekly radar. Neither thinks (see the type comment). Either
+    /// can be overridden independently in settings.
     static let defaultModel = "deepseek-v4-flash"
     static let defaultReasoningModel = "deepseek-v4-pro"
 
@@ -109,24 +85,6 @@ struct DeepSeekBackend: LLMBackend {
             switch self {
             case .fast: return DeepSeekBackend.defaultModel
             case .reasoning: return DeepSeekBackend.defaultReasoningModel
-            }
-        }
-
-        var responseHeadroomTokens: Int {
-            switch self {
-            case .fast: return 0
-            case .reasoning: return DeepSeekBackend.reasoningResponseHeadroomTokens
-            }
-        }
-
-        /// Whether chain-of-thought is what this slot is bought for. Stated
-        /// per slot rather than inferred from `responseHeadroomTokens == 0`
-        /// because it is a claim about the model, not about batch sizing, and
-        /// the two only happen to coincide.
-        var thinks: Bool {
-            switch self {
-            case .fast: return false
-            case .reasoning: return true
             }
         }
     }
@@ -161,18 +119,13 @@ struct DeepSeekBackend: LLMBackend {
         return DeepSeekBackend(
             name: model, apiKey: credential, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
-            responseHeadroomTokens: role.responseHeadroomTokens,
-            thinks: role.thinks, database: database)
+            database: database)
     }
 
     /// The local tier: one self-hosted model serves both slots — it is one
     /// server with one model loaded, so the roles differ only in which
-    /// stages call them. Thinking stays off on both: at a local-sized window
-    /// the stock 32k chain-of-thought headroom would turn every
-    /// reasoning-slot prompt budget negative — TaskReconciler sheds its
-    /// roster to 2 entries and the `max(512, …)` stages batch degenerately.
-    /// The window comes from `local.context_tokens` and resizes every
-    /// stage's batches through invariant 7.
+    /// stages call them. The window comes from `local.context_tokens` and
+    /// resizes every stage's batches through invariant 7.
     private static func localServer(role: Role, database: ShifuDatabase) -> DeepSeekBackend {
         let base = (try? Settings.get(Settings.localBaseURLKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? LocalLLMDefaults.baseURL
@@ -182,8 +135,7 @@ struct DeepSeekBackend: LLMBackend {
             // llama-server ignores auth; the placeholder only fills the header.
             name: model, apiKey: "local", model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
-            responseHeadroomTokens: 0,
-            thinks: false, database: database,
+            database: database,
             contextWindowTokens: localContextWindow(database: database))
     }
 
@@ -227,42 +179,16 @@ struct DeepSeekBackend: LLMBackend {
         return copy
     }
 
-    /// The `max_tokens` one call asks for, clamped so prompt + response still
-    /// fit the context window. Only a thinking slot takes the headroom floor;
-    /// a non-thinking one asks for exactly what the stage reserved, so a card
-    /// prompt written for ~400 tokens is capped near 400 and a model that
-    /// starts generating without stopping is cut off rather than indulged.
-    func responseCap(prompt: String, maxTokens: Int) -> Int {
-        let remainder = contextWindowTokens - LLMTokens.estimate(prompt)
-        let wanted = thinks ? max(maxTokens, Self.thinkingHeadroomTokens) : maxTokens
-        return min(wanted, max(maxTokens, remainder))
-    }
-
+    /// Asks for exactly what the stage reserved — a card prompt written for
+    /// ~400 tokens is capped at 400, so a model that starts generating without
+    /// stopping is cut off rather than indulged. There is no escalated retry:
+    /// with thinking off, a call that runs out of budget is a bug in the
+    /// prompt or the reserve, and re-asking at a bigger cap buys a second
+    /// full-price answer to hide it (the two escalations measured on
+    /// 2026-07-30 cost 50.6% of the day and produced nothing).
     func complete(prompt: String, maxTokens: Int) async throws -> String {
-        let remainder = contextWindowTokens - LLMTokens.estimate(prompt)
-        let cap = responseCap(prompt: prompt, maxTokens: maxTokens)
         do {
-            return try await send(prompt: prompt, maxTokens: cap)
-        } catch is ResponseTruncated where thinks && remainder > cap {
-            // A thinking model thought past the cap and returned no answer.
-            // One retry at the whole window remainder — batchers reserve
-            // `responseHeadroomTokens`, so a reasoning-slot retry always has
-            // at least another `thinkingHeadroomTokens` to grow into. Paying
-            // the prompt twice beats losing the pass, and the provider's
-            // context cache discounts the resent prompt.
-            //
-            // Deliberately not offered to the fast slot: with thinking off,
-            // a labeling call that runs out of budget without emitting content
-            // is a bug in the prompt or the reserve, and re-asking at a bigger
-            // cap buys a second full-price answer to hide it. The two
-            // escalations measured on 2026-07-30 cost 50.6% of the day and
-            // produced nothing.
-            do {
-                return try await send(prompt: prompt, maxTokens: remainder)
-            } catch let again as ResponseTruncated {
-                throw LLMError.truncated(
-                    partial: again.partial, detail: "after escalated retry: \(again.detail)")
-            }
+            return try await send(prompt: prompt, maxTokens: maxTokens)
         } catch let truncated as ResponseTruncated {
             throw LLMError.truncated(partial: truncated.partial, detail: truncated.detail)
         }
@@ -272,9 +198,9 @@ struct DeepSeekBackend: LLMBackend {
     /// ran out (finish_reason=length). Raised whether or not any `content`
     /// arrived — a truncated JSON answer is not a partial success, it is an
     /// answer no caller can parse. `complete` converts it to
-    /// `LLMError.truncated` once escalation is exhausted, so it never crosses
-    /// the backend boundary; whatever *was* written rides along for the prose
-    /// stages, which can use it (see `LLMText.salvage`).
+    /// `LLMError.truncated`, so it never crosses the backend boundary;
+    /// whatever *was* written rides along for the prose stages, which can use
+    /// it (see `LLMText.salvage`).
     private struct ResponseTruncated: Error {
         let partial: String
         let detail: String
@@ -290,7 +216,7 @@ struct DeepSeekBackend: LLMBackend {
             "max_tokens": maxTokens,
             "temperature": 0.2,
             // Never omitted: DeepSeek's default is `enabled` on both slots.
-            "thinking": ["type": thinks ? "enabled" : "disabled"],
+            "thinking": ["type": "disabled"],
             "messages": [["role": "user", "content": prompt]]
         ]
     }
@@ -354,8 +280,10 @@ struct DeepSeekBackend: LLMBackend {
         // burning each block's attempt. Returning the fragment merely because
         // it was non-empty cost 40 cards in a single batch and told nobody —
         // the stage's only log line fires on `built > 0`. Thrown typed so
-        // `complete` can escalate a thinking slot; a non-thinking one surfaces
-        // it, which at least leaves the blocks eligible to try again.
+        // `complete` can hand the partial to the prose stages; the JSON
+        // stages fail on it, which at least leaves their blocks eligible to
+        // try again. A nonzero `reasoning_content` here means a server ignored
+        // the thinking toggle, and the detail says so.
         if finish == "length" {
             throw ResponseTruncated(
                 partial: text ?? "",
