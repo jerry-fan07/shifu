@@ -261,8 +261,9 @@ extension SemanticTaskGrouper {
         """
 
     /// Unassigned, evidence-bearing candidates in the window, oldest first —
-    /// blocks over `minBlockMs` as themselves, sub-minute glances pooled
-    /// into runs (SemanticTaskSlivers.swift).
+    /// blocks over `minBlockMs` as themselves or, when consecutive cards
+    /// name one topic, as a topic run; sub-minute glances pooled into runs
+    /// (both in SemanticTaskSlivers.swift).
     ///
     /// The limit is a *quota*, not one ordered query: long blocks take slots
     /// first (newest first, as before), runs fill what's left by pooled
@@ -282,7 +283,7 @@ extension SemanticTaskGrouper {
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
                                  maxAttempts, minBlockMs, limit])
-            var samples = try rows.map { row -> BlockSample in
+            var samples = poolByTopic(try rows.map { row -> BlockSample in
                 let id: Int64 = row["id"]
                 let card: String? = row["card"]
                 // A card-bearing block skips the title/text sampling — the
@@ -295,7 +296,7 @@ extension SemanticTaskGrouper {
                     appBundle: row["app_bundle"], domain: row["domain"], topic: row["topic"],
                     card: card, titles: card == nil ? evidence.titles : [],
                     urls: evidence.urls, textSample: evidence.text)
-            }
+            })
             samples += try sliverRuns(db, from: from, to: to,
                                       limit: limit - samples.count)
             return samples.sorted { $0.startedAt < $1.startedAt }
