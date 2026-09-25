@@ -202,7 +202,13 @@ struct OnboardingView: View {
             }
         }
         onboarded = true
-        // Now — and only now — the daemon may start watching.
+        // Now — and only now — the daemon may start watching, and the deadline
+        // notifier may run. Both are gated on `shifu.onboarded` in
+        // `AppDelegate`, which has already returned by the time anyone gets
+        // here — without this second kick a first-run user who types a deadline
+        // hears nothing until the next launch, which is exactly the session
+        // where the feature has to work.
         DaemonService.syncRegistration()
+        AppDelegate.deadlineNotifier?.start()
     }
 }

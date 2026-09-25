@@ -25,6 +25,7 @@ public enum SettingsSection: String, CaseIterable, Sendable {
     case capture = "Capture"
     case rewind = "Rewind"
     case analysis = "Analysis"
+    case reminders = "Reminders"
     case privacy = "Privacy"
     case focusMode = "Focus Mode"
     case about = "About"
@@ -41,6 +42,9 @@ public enum SettingsSection: String, CaseIterable, Sendable {
         case .analysis:
             return "How raw captures become tasks, themes and cards — and what "
                 + "leaves this Mac to do it."
+        case .reminders:
+            return "The only thing Shifu will interrupt you about: a date you "
+                + "gave it, and how far into the work you are."
         case .privacy:
             return "What Shifu refuses to look at. Exclusions are enforced in the "
                 + "daemon before capture, so excluded content never reaches the "
@@ -70,6 +74,10 @@ public enum SettingsSection: String, CaseIterable, Sendable {
         case .analysis:
             return "Saved changes reach the running daemon on its next "
                 + "heartbeat. No restart."
+        case .reminders:
+            return "Shifu never invents a deadline. Nothing here is reminded "
+                + "unless you typed the date yourself, so an empty list is a "
+                + "silent Mac."
         case .privacy:
             return "Exclusions apply to capture, not just display — excluded text "
                 + "is never written."
@@ -105,6 +113,9 @@ public struct IntSetting: Identifiable, Sendable {
     /// minutes should hold.
     public enum Unit: Sendable {
         case seconds, minutes, rawMinutes, days, percent, pixels, megabytes, framesPerSecond
+        /// Stored as an hour 0–23; displayed as a clock time, because "9" and
+        /// "9 AM" are the same value and only one of them reads as a time of day.
+        case hourOfDay
     }
 
     public init(
@@ -139,6 +150,10 @@ public struct IntSetting: Identifiable, Sendable {
         case .pixels: return "\(value) px"
         case .megabytes: return value >= 1_024 ? "\(value / 1_024) GB" : "\(value) MB"
         case .framesPerSecond: return "\(value) fps"
+        case .hourOfDay:
+            let date = Calendar.current.date(
+                bySettingHour: value, minute: 0, second: 0, of: Date()) ?? Date()
+            return date.formatted(.dateTime.hour())
         }
     }
 }
@@ -597,10 +612,12 @@ public enum SettingsCatalog {
         heartbeatSeconds, analysisIntervalSeconds, textRetentionDays,
         rewindBufferMinutes, rewindFrameSeconds, rewindHotMinutes, rewindHotFPS, rewindWidth,
         rewindCeilingMB, rewindRetentionDays,
-        llmDutyActive, llmDutyIdle
+        llmDutyActive, llmDutyIdle, remindersHour
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
-    public static let choices: [ChoiceSetting] = [analysisBackend, rewindRecording]
+    public static let choices: [ChoiceSetting] = [
+        analysisBackend, rewindRecording, remindersEnabled, remindersProgress
+    ]
     public static let texts: [TextSetting] = [
         shifuCloudBaseURL,
         deepseekAPIKey, deepseekBaseURL, deepseekModel, deepseekReasoningModel,

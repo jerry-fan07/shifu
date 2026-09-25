@@ -16,6 +16,11 @@ usage: shifu <command>
   resume         resume capture
   focus on|off   toggle Focus Mode (focus contract with glow nudges)
   review         spaced-repetition session over due vault notes
+  due [--all]    deadlines you gave Shifu, soonest first
+  due add "<title>" <when> [--task <id|name>] [--target <hours>]
+                 record one: 2026-08-30, tomorrow, friday, +10d
+  due done|open|rm <id>
+                 mark one kept, reopen it, or forget it
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
   vault search <query> [--task <name>] [--kind <kind>] [--since <7d>] [--exact]
@@ -504,6 +509,7 @@ func run() throws {
         "pause": { try commandPause(args.dropFirst().first ?? "1h") },
         "resume": commandResume,
         "review": commandReview,
+        "due": { try commandDue(Array(args.dropFirst())) },
         "forget": { try commandForget(Array(args.dropFirst())) },
         "vault": { try commandVault(Array(args.dropFirst())) },
         "encrypt": commandEncrypt,

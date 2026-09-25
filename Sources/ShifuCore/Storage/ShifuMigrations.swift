@@ -678,6 +678,7 @@ extension ShifuDatabase {
         }
 
         registerRewindMigrations(into: &migrator)
+        registerDeadlineMigrations(into: &migrator)
 
         return migrator
     }

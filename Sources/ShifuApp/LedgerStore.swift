@@ -102,6 +102,10 @@ final class LedgerStore: ObservableObject {
     /// bm25-only, silently — vault-features.md §4).
     private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
+    /// Open deadlines, soonest first (design.md §4.5). Read through
+    /// `comingUp`/`pressingDeadlines` in LedgerStoreDeadlines.swift, which is
+    /// also what fills it — hence no `private(set)`, like `rewindBuffer`.
+    @Published var deadlines: [DeadlineHorizon.Standing] = []
     @Published private(set) var themes: [ThemeStore.Overview] = []
     /// Initiatives the clusterer wants to found, shown below the Themes grid.
     /// Nothing here is a theme until the user says so (design.md §5.3).
@@ -184,6 +188,7 @@ final class LedgerStore: ObservableObject {
         refreshFocusClock()
         refreshVaultNotes()
         refreshRewind()
+        refreshDeadlines()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
             let dayStart = Int64(

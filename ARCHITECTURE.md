@@ -15,7 +15,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 | `ShifuCore` | library | Models, storage, and every pure/testable rule. All 5 targets link it. | never |
 | `shifud` | executable | Capture daemon. LaunchAgent, headless, runs for weeks. | **forbidden** |
 | `shifu-analyzer` | executable | Batch analysis worker. Spawned hourly by `shifud`, or on demand. | only binary allowed |
-| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `forget`, `vault`, `encrypt`. | never |
+| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `due`, `forget`, `vault`, `encrypt`. | never |
 | `ShifuApp` | executable | SwiftUI desktop app + menu bar item. | never |
 
 **The one architectural fact to internalize: there is no IPC.** No sockets, no
@@ -47,6 +47,8 @@ Sources/ShifuCore/
   Rewind/      Rewind (frame + saved records), RewindStore (the only writer of
                pixels), RewindSettings, RewindRequest (+SnipRegion), RewindTimeline,
                RewindPlayback (the transport's arithmetic), SnipNote
+  Deadlines/   DeadlineHorizon (the announcement policy, pure), DeadlineStore,
+               DeadlineDate (the one date parser), DeadlineCopy, DeadlineReminders
   Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
                SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
                TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
@@ -292,6 +294,11 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The Rewind place — the player, the rail, the shelf | [`ShifuApp/RewindView.swift`](Sources/ShifuApp/RewindView.swift) (+`RewindViewport` / `RewindTransport` in [`ShifuApp/RewindPlayer.swift`](Sources/ShifuApp/RewindPlayer.swift), `RewindRail`, `RewindShelf`, `RewindDetailPage`); the rail's arithmetic is [`Rewind/RewindTimeline.swift`](Sources/ShifuCore/Rewind/RewindTimeline.swift) |
 | Fullscreen — the window, the key handling, and the chrome that hides itself off the footage | [`ShifuApp/RewindFullscreen.swift`](Sources/ShifuApp/RewindFullscreen.swift) (`FullscreenPlayerWindow`, `FullscreenChrome`, `RewindFullscreenPlayer`) |
 | Play/pause, ±10 s, playback speed — the transport both players wear | [`ShifuApp/RewindControlBar.swift`](Sources/ShifuApp/RewindControlBar.swift) draws it, [`ShifuApp/RewindClock.swift`](Sources/ShifuApp/RewindClock.swift) is the timer, and the arithmetic — **the playhead is a moment, not a frame index** — is [`Rewind/RewindPlayback.swift`](Sources/ShifuCore/Rewind/RewindPlayback.swift) |
+| When a deadline speaks and what it says — lead buckets, the hour gate, progress quarters | [`Deadlines/DeadlineHorizon.swift`](Sources/ShifuCore/Deadlines/DeadlineHorizon.swift) — `leads`, `bucket`, `fireMoment`, `announcements`; the wording is [`Deadlines/DeadlineCopy.swift`](Sources/ShifuCore/Deadlines/DeadlineCopy.swift) |
+| The `deadlines` table, and how progress is measured against a task | [`Deadlines/DeadlineStore.swift`](Sources/ShifuCore/Deadlines/DeadlineStore.swift) — `loggedMsSQL` is the clip at `created_at`; the row is [`Models/Deadline.swift`](Sources/ShifuCore/Models/Deadline.swift) |
+| What `2026-08-30` / `friday` / `+10d` mean — one parser for the CLI *and* the app | [`Deadlines/DeadlineDate.swift`](Sources/ShifuCore/Deadlines/DeadlineDate.swift) |
+| Whether a reminder is delivered at all, and the settings behind it | [`Deadlines/DeadlineReminders.swift`](Sources/ShifuCore/Deadlines/DeadlineReminders.swift) — poll-only through the DB, never a scheduled `UNNotificationRequest`; delivered by [`ShifuApp/DeadlineNotifier.swift`](Sources/ShifuApp/DeadlineNotifier.swift) because `shifud` has no bundle identity |
+| Deadlines on screen — the Coming-up band, a row, the sheet | [`ShifuApp/DeadlineViews.swift`](Sources/ShifuApp/DeadlineViews.swift); actions are [`ShifuApp/LedgerStoreDeadlines.swift`](Sources/ShifuApp/LedgerStoreDeadlines.swift), the terminal half is [`shifu-cli/DueCommand.swift`](Sources/shifu-cli/DueCommand.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
 | The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |
@@ -323,7 +330,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v28 in
+The schema is defined *only* as migrations v1–v29 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -442,6 +449,24 @@ retention schedule, and nothing puts an expiry back. Frame *files* are owned by
 `RewindStore`, which writes the file before the row and deletes the row before
 the file, so the two can only ever drift toward unreachable garbage and never
 toward a hole in the player.
+
+**`deadlines`** (v29, design.md §4.5) — the one table Shifu never derives.
+Every other row here comes from the screen; a deadline is typed, and §4.5
+records the measurement (a month of real screen text, ~0 actionable dated
+commitments, 14/15 date-shaped hits being Shifu's own UI) behind refusing to
+infer one. Deliberately **not** a `tasks.due_at` column: `TaskPrune.prune` and
+`TaskStore.merge` both `DELETE FROM tasks`, so the FK is nullable with
+`ON DELETE SET NULL` and the promise outlives the task, losing only what it
+measured. That nullability also lets a commitment predate any task and lets one
+task carry several dates — the difference between a due date and a timeline.
+`target_ms` is the intended effort and progress is `activities` time against
+`task_id` **clipped at `created_at`** (the promise is about the work left when it
+was made), computed on read so a ledger rebuild cannot disturb it.
+`announced_lead` (smallest lead-day bucket already said, only ever falls; `-1` is
+the overdue notice) and `progress_notch` (highest quarter already reported) are
+the reminder ledger — in the database rather than in the notification centre's
+delivered list, because clearing Notification Center must not re-arm every
+reminder the user already read.
 
 **`llm_usage`** (v19, one row per billed response, written by
 `DeepSeekBackend.send` through `LLMUsage.record`) — `prompt_tokens` /
@@ -572,8 +597,8 @@ orphan good data.
 
 ## 7. Extension recipes
 
-**Add a database migration.** Append `migrator.registerMigration("v29-…")` in
-`ShifuDatabase.migrator`. Never edit v1–v28 — they have run on real machines.
+**Add a database migration.** Append `migrator.registerMigration("v30-…")` in
+`ShifuDatabase.migrator`. Never edit v1–v29 — they have run on real machines.
 Pick the next number by checking what has actually *run* (`select identifier
 from grdb_migrations`), not just what is in this file: parallel branches pick
 "the next version" independently, and a duplicate identifier is not a
