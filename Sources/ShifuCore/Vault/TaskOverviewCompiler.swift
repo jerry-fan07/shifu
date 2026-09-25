@@ -12,8 +12,9 @@ import GRDB
 /// rather than an append: the answer changes as the task goes on.
 ///
 /// Only *completed* days feed the hash, so today's still-growing note can't
-/// trigger a regeneration on every hourly run — at most one per task per day
-/// (the discipline `ThemeClusterer.refreshNarratives` uses).
+/// trigger a regeneration on every hourly run; and a task already documented
+/// is revised at most once every `refreshIntervalMs`, from its last week of
+/// day notes plus the document itself.
 public enum TaskOverviewCompiler {
     /// An overview is prose over up to `maxDayNotes` days, not a JSON verdict,
     /// so it is the longest answer any stage asks for. 1,500 was never enough
@@ -22,10 +23,21 @@ public enum TaskOverviewCompiler {
     /// thinking headroom, and because a truncated reply was returned as if it
     /// had succeeded rather than raised.
     public static let responseTokens = 3_000
-    public static let maxDayNotes = 30
-    /// Tasks per run. The gate below means a steady state is a handful, but a
-    /// first run over a mature vault would otherwise generate for everything
-    /// at once.
+    /// The day notes a revision reads: the task's most recent week of
+    /// completed days. The previous overview rides along and is the running
+    /// record of everything before them, so re-sending thirty fully rendered
+    /// day notes on every revision (p90 16.6k tokens, 2026-09-11..24) bought
+    /// history the document already tells.
+    public static let maxDayNotes = 7
+    /// How often a documented task's overview may be revised. The hash moves
+    /// with every newly completed day, so an actively-worked task was
+    /// rewritten daily — ~8 calls a day on the dogfood ledger for documents
+    /// whose answer ("where the task stands") moves by the week. A task's
+    /// first overview is written as soon as it qualifies.
+    public static let refreshIntervalMs: Int64 = 7 * 86_400_000
+    /// Tasks per run, among those actually due. The gates mean a steady
+    /// state is a handful, but a first run over a mature vault would
+    /// otherwise generate for everything at once.
     public static let maxTasksPerRun = 6
     public static let minTotalMinutes = 30
 
@@ -91,6 +103,9 @@ public enum TaskOverviewCompiler {
         Documentation, not a diary: the day notes below are already the diary. Say what
         this task *is*, where it stands, and what someone would need to know to pick it
         up. No flashcards, no quiz questions.
+        The day notes are the task's most recent days. The current overview, when there
+        is one, is the record of everything before them: keep what it says about earlier
+        phases unless the new days overturn it.
         Use these sections, in this order, omitting any you have nothing real to say for:
         "## Status" — 2-4 sentences: where the task stands right now.
         "## Timeline" — bullets of the phases it went through, not a day-by-day replay.
@@ -110,10 +125,13 @@ public enum TaskOverviewCompiler {
 
     // MARK: - Selection
 
-    /// Tasks that have earned an overview and whose completed days changed
-    /// since the last one. Eligibility mirrors the day-note tier rule —
+    /// Tasks that have earned an overview and are due one: never documented,
+    /// or documented more than `refreshIntervalMs` ago with completed days
+    /// that changed since. Eligibility mirrors the day-note tier rule —
     /// dominant category work or learning — so the tasks with documentation
-    /// worth compiling are exactly the ones whose days are documented.
+    /// worth compiling are exactly the ones whose days are documented. At
+    /// most `maxTasksPerRun`, most recently active first — counted among the
+    /// due, so tasks waiting out their week can't starve one never written.
     static func candidates(
         database: ShifuDatabase, vault: VaultStore, now: Date = Date(),
         calendar: Calendar = .current
@@ -121,16 +139,21 @@ public enum TaskOverviewCompiler {
         let todayStart = Int64(calendar.startOfDay(for: now).timeIntervalSince1970 * 1_000)
         let eligible = try eligibleTasks(database: database, todayStart: todayStart)
 
-        return eligible.compactMap { task in
+        return Array(eligible.lazy.compactMap { task -> Candidate? in
+            let existing = vault.taskOverview(taskKey: task.key)
+            if let existing,
+               now.timeIntervalSince(existing.updated) * 1_000 < Double(refreshIntervalMs) {
+                return nil
+            }
             let days = dayNotes(for: task, vault: vault, calendar: calendar)
             guard !days.isEmpty else { return nil }
             let hash = VaultIndexer.contentHash(days.map(\.rendered).joined(separator: "\n"))
             // Unchanged completed days ⇒ the document would say the same
             // thing, so it isn't worth a call (ThemeClusterer discipline).
-            guard vault.taskOverview(taskKey: task.key)?.inputHash != hash else { return nil }
+            guard existing?.inputHash != hash else { return nil }
             return Candidate(taskKey: task.key, taskName: task.name, gist: task.gist,
                              days: days, inputHash: hash)
-        }
+        }.prefix(maxTasksPerRun))
     }
 
     struct EligibleTask {
@@ -177,7 +200,6 @@ public enum TaskOverviewCompiler {
             let ordered = byTask
                 .filter { $0.value.totalMs >= minMs && isFocusDominant($0.value.msByCategory) }
                 .sorted { $0.value.lastActive > $1.value.lastActive }
-                .prefix(maxTasksPerRun)
 
             return try ordered.map { key, agg in
                 let days = try String.fetchAll(db, sql: """
@@ -230,7 +252,17 @@ public enum TaskOverviewCompiler {
                 prompt: budgeted(candidate, previous: previous?.body, backend: backend),
                 maxTokens: responseTokens
             ).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { continue }
+            guard !body.isEmpty else {
+                // An empty answer is still this evidence answered: re-stamp
+                // the document the task already has, so it waits out its
+                // interval rather than re-sending the same prompt every pass.
+                if var restamped = previous {
+                    restamped.updated = now
+                    restamped.inputHash = candidate.inputHash
+                    try vault.saveOverview(restamped)
+                }
+                continue
+            }
             try vault.saveOverview(TaskOverview(
                 id: previous?.id ?? Note.ulid(),
                 taskKey: candidate.taskKey, taskName: candidate.taskName,

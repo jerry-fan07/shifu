@@ -287,9 +287,10 @@ do {
 // initiatives. Runs after TaskGrouper so task assignments exist — which is
 // also what makes most of it free: a task's dominant theme takes its
 // unthemed blocks in SQL first, and only blocks inheritance couldn't place
-// reach the model. Fast slot with card evidence; narratives are hash-gated
-// to ~one generation per theme per day and summarize compiled facts, not
-// intent, so they ride the fast slot too. Fail-soft like every LLM stage.
+// reach the model. Fast slot with card evidence; narratives summarize
+// compiled facts, not intent, so they ride the fast slot too — hash-gated,
+// and revised weekly, though a theme with no story yet gets its first at
+// once. Fail-soft like every LLM stage.
 do {
     let inherited = try ThemeClusterer.inheritFromTasks(
         database: database, from: from, to: nowMs)
@@ -305,8 +306,14 @@ if let backend {
             print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
+        let narrativesDue = LLMStageGate.due(
+            "themes.narratives", everyMs: 7 * 86_400_000, now: nowMs, database: database)
         let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend.labeled("theme-narratives"))
+            database: database, backend: backend.labeled("theme-narratives"),
+            onlyMissing: !narrativesDue)
+        if narrativesDue {
+            LLMStageGate.stamp("themes.narratives", now: nowMs, database: database)
+        }
         if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")

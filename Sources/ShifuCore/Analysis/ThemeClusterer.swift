@@ -331,7 +331,7 @@ extension ThemeClusterer {
     }
 }
 
-// MARK: - Running narrative (hash-gated, ~one generation per theme per day)
+// MARK: - Running narrative (hash-gated; weekly, but a new theme's first at once)
 
 extension ThemeClusterer {
     static let narrativeResponseTokens = 320
@@ -404,9 +404,15 @@ extension ThemeClusterer {
 
     /// Regenerates the running summary for active themes whose completed-day
     /// content changed. Returns how many narratives were (re)written.
+    ///
+    /// `onlyMissing` restricts the pass to themes that have no story yet.
+    /// The caller revises the rest weekly (main.swift, `LLMStageGate`): the
+    /// hash moves with every completed day, so the stories were rewritten
+    /// daily — ~7 calls a day on the dogfood ledger for 3–5 sentences about
+    /// initiatives that span weeks.
     @discardableResult
     public static func refreshNarratives(
-        database: ShifuDatabase, backend: any LLMBackend,
+        database: ShifuDatabase, backend: any LLMBackend, onlyMissing: Bool = false,
         now: Date = Date(), calendar: Calendar = .current
     ) async throws -> Int {
         let cutoff = Int64(now.timeIntervalSince1970 * 1_000)
@@ -423,8 +429,10 @@ extension ThemeClusterer {
         let pending: [PendingNarrative] = try await database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT id, key, name, gist, summary_hash FROM themes
-                WHERE last_active_at >= ? ORDER BY last_active_at DESC LIMIT ?
-                """, arguments: [cutoff, rosterLimit]
+                WHERE last_active_at >= ?
+                  AND (? = 0 OR summary IS NULL OR summary = '')
+                ORDER BY last_active_at DESC LIMIT ?
+                """, arguments: [cutoff, onlyMissing, rosterLimit]
             ).compactMap { row in
                 let lines = try completedDayLines(
                     db: db, themeKey: row["key"], todayStart: todayStart, calendar: calendar)
