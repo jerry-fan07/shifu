@@ -709,6 +709,28 @@ extension ShifuDatabase {
                 """)
         }
 
+        registerDeadlineMigrations(into: &migrator)
+
+        migrator.registerMigration("v29-deck-topics") { db in
+            // The deck form's topic checklist, and the "Add cards" request
+            // that grows a built deck chapter by chapter (design.md §5.2).
+            // `topics` is a JSON string array (the `sample_cards` precedent)
+            // narrowing which of the task's block topics a build may read;
+            // NULL is every topic, which keeps the pre-v29 rows and the
+            // untouched-form path meaning what they always did. `section` is
+            // the chapter label of the *current* build request, ridden by the
+            // claim into each card's `section:` frontmatter — NULL for the
+            // unlabelled first build. Both live on the row, not in flight,
+            // because the hourly drain retries builds long after the form is
+            // gone. Registered after Rewind's v28 so the numbers stay in order.
+            guard try !db.columns(in: "decks").contains(where: { $0.name == "topics" })
+            else { return }
+            try db.alter(table: "decks") { table in
+                table.add(column: "topics", .text)
+                table.add(column: "section", .text)
+            }
+        }
+
         return migrator
     }
 }

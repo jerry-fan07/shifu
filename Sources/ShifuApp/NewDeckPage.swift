@@ -40,6 +40,10 @@ struct NewDeckPage: View {
     /// change of task, an untouched one keeps following the picked task.
     @State private var autoTitle = ""
     @State private var instructions = ""
+    /// The picked task's block topics, and which of them the build may read.
+    /// Refilled on every task pick; all-on means no narrowing is stored.
+    @State private var topicOptions: [String] = []
+    @State private var pickedTopics: Set<String> = []
     @State private var cardRange: DeckStore.CardRange?
     @State private var newPerDay: Int? = DeckStore.defaultNewPerDay
     @State private var startPaused = false
@@ -115,6 +119,7 @@ struct NewDeckPage: View {
     private var formColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             titleSection
+            topicsSection
             instructionsSection
             cardCountSection
             reviewSection
@@ -172,6 +177,8 @@ struct NewDeckPage: View {
             title = overview.task.name
             autoTitle = overview.task.name
         }
+        topicOptions = store.deckTopicOptions(taskKey: overview.task.key)
+        pickedTopics = Set(topicOptions)
     }
 
     // MARK: Title
@@ -193,6 +200,32 @@ struct NewDeckPage: View {
                         .strokeBorder(Instrument.edge, lineWidth: 1)
                 }
         }
+    }
+
+    // MARK: Topics
+
+    /// Which of the task's topics the build may draw from — hidden when the
+    /// task's blocks carry one topic or none, where there is nothing to
+    /// narrow. All-on stores no narrowing at all.
+    @ViewBuilder private var topicsSection: some View {
+        if topicOptions.count > 1 {
+            section(
+                "Topics",
+                caption: "Which of the task's topics the cards may cover. "
+                    + "Narrow it to build one chapter now — more can be added "
+                    + "from the deck's page later."
+            ) {
+                TopicChecklist(options: topicOptions, selection: $pickedTopics)
+            }
+        }
+    }
+
+    /// Nil when the checklist wasn't narrowed (or wasn't shown): the deck
+    /// builds from every topic, exactly as before the checklist existed.
+    private var narrowedTopics: [String]? {
+        guard topicOptions.count > 1, pickedTopics.count < topicOptions.count
+        else { return nil }
+        return topicOptions.filter(pickedTopics.contains)
     }
 
     // MARK: Instructions
@@ -272,10 +305,13 @@ struct NewDeckPage: View {
     // MARK: Create
 
     /// The picked task must still be a candidate — a refresh can hand it a
-    /// deck from elsewhere while the form sits open.
+    /// deck from elsewhere while the form sits open. A shown checklist needs
+    /// at least one topic left on: unchecking everything asks for a deck
+    /// built from nothing, which is a mistake, not a request.
     private var canCreate: Bool {
         guard candidates.contains(where: { $0.task.key == selectedTaskKey })
         else { return false }
+        guard topicOptions.count <= 1 || !pickedTopics.isEmpty else { return false }
         return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -283,7 +319,8 @@ struct NewDeckPage: View {
         guard let taskKey = selectedTaskKey else { return }
         let deck = store.createDeck(
             taskKey: taskKey, title: title, instructions: instructions,
-            cardRange: cardRange, newPerDay: newPerDay, paused: startPaused)
+            cardRange: cardRange, topics: narrowedTopics,
+            newPerDay: newPerDay, paused: startPaused)
         if let deck {
             router.open(.deck(deck.id))
         } else {
@@ -308,5 +345,67 @@ struct NewDeckPage: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 16)
+    }
+}
+
+// MARK: - The topic checklist
+
+/// A pick-many list of the task's topics, shared by the New deck form and
+/// the deck page's Add cards sheet. Everything starts checked so narrowing
+/// is the act, not assembling; a long list scrolls rather than pushing the
+/// rest of the form below the fold.
+struct TopicChecklist: View {
+    let options: [String]
+    @Binding var selection: Set<String>
+
+    private static let visibleRows = 8
+
+    var body: some View {
+        if options.count > Self.visibleRows {
+            ScrollView {
+                rows
+            }
+            .frame(height: 26 * CGFloat(Self.visibleRows))
+        } else {
+            rows
+        }
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(options, id: \.self) { topic in
+                let isOn = selection.contains(topic)
+                Button {
+                    if isOn { selection.remove(topic) } else { selection.insert(topic) }
+                } label: {
+                    HStack(spacing: 8) {
+                        check(on: isOn)
+                        Text(topic)
+                            .font(Instrument.sans(12.5))
+                            .foregroundStyle(isOn ? Instrument.ink : Instrument.muted)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: 26)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// The pick-many mark: a square, so it never reads as the task list's
+    /// pick-one ring beside it.
+    private func check(on: Bool) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder(on ? Instrument.accent : Instrument.edge, lineWidth: 1)
+                .frame(width: 13, height: 13)
+            if on {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(Instrument.accent)
+            }
+        }
     }
 }

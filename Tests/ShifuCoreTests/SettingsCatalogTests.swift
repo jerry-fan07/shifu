@@ -98,14 +98,25 @@ import Testing
         #expect(Settings.value(key, database: db) == "sk-secret")
     }
 
-    /// Every gated text row must point at a real choice setting and one of
-    /// its options — a typo here would silently hide a field forever.
+    /// Every gated text row must point at a real choice setting and a value
+    /// some *edition* offers — a typo here would silently hide a field
+    /// forever. Not just the current edition's options: the whole catalog
+    /// rides every build and only `choices` is edition-filtered, so the
+    /// local-tier rows legitimately gate on a value the standard edition
+    /// never shows.
     @Test func visibilityGatesReferenceRealChoices() {
         for text in SettingsCatalog.texts {
             guard let gate = text.visibleWhen else { continue }
             let choice = SettingsCatalog.choices.first { $0.key == gate.key }
             #expect(choice != nil)
-            #expect(choice?.options.contains { $0.value == gate.value } == true)
+            var offered = Set(choice?.options.map(\.value) ?? [])
+            if gate.key == Settings.analysisBackendKey {
+                for edition in Edition.allCases {
+                    offered.formUnion(
+                        SettingsCatalog.analysisBackend(for: edition).options.map(\.value))
+                }
+            }
+            #expect(offered.contains(gate.value))
         }
     }
 

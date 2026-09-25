@@ -22,7 +22,7 @@ Shifu is a local-first, always-on observer that captures what is on your screen 
 2. **Minimalist.** In every dimension: a UI with the fewest possible surfaces (one menu bar item, one window, one review card), features that earn their place or don't ship, plain formats over clever ones (Markdown, SQLite), and a codebase small enough to audit. When in doubt, leave it out — every addition must justify itself against this principle.
 3. **Private by default.** All raw captures stay on-device. LLM analysis is cloud-based (DeepSeek — see §4.2), but nothing leaves the machine until the user opts in — choosing the hosted Shifu Cloud backend, or supplying their own API key — and even then only derived, redacted text samples are sent — never raw pixels or raw captures. *(Revised 2026-07: v1 aspired to on-device-only analysis; Apple Foundation Models' 4k window, weak labels, and macOS 26+ gate made that path useless in practice.)*
 4. **Trustworthy.** The user can inspect, export, and delete everything. Sensitive apps and sites are excluded by default. There is a single obvious kill switch.
-5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications.
+5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications. *(Qualified 2026-08-17 by §4.5: Shifu does interrupt for a **deadline the user typed themselves**, on a fixed five-notice schedule per promise. What this principle forbids is a feed — Shifu volunteering its own findings — and that stands: nothing infers a deadline, so with none recorded the Mac is silent.)*
 
 ### Non-goals (v1)
 
@@ -284,6 +284,108 @@ A user-invoked focus contract, toggled from the menu bar (and optionally auto-sc
 - Focus Mode sessions are themselves logged, so the dashboard can report "focus session adherence."
 - **The switch carries two clocks** (`FocusClock`), drawn wherever the switch is drawn — the rail's foot, the menu bar panel, the Focus page, and `shifu focus` in the terminal. The stopwatch alone goes one place further, to the **menu bar item itself** (§7), which is the only surface that is not a switch: it is also the only one visible without opening anything, and a session length you have to click to see is one you stop checking. The first is the running session's stopwatch (`12:04`, seconds and all, because a live reading should look live). The second is the gap: while a session runs it is the time that passed *before* it started, frozen — a gap that grew while you focused would read as punishment for focusing — and while Focus Mode is off it is the time since the last session ended, and it runs. Neither is a counter the app keeps: the stopwatch is measured from the **control file's birth time**, so it starts the instant the switch is flipped, survives a relaunch, and works with no daemon running; the gap is measured from the newest closed `focus_mode_sessions` row long enough to count as a session, with the app's own observation standing in for the moment between switching off and the daemon writing `ended_at`.
 
+### 4.5 Deadlines & progress reminders
+
+A **deadline** is a date the user gave Shifu, optionally with the effort they
+mean to put in before it. It is the only row in the database that is not derived
+from the screen, and the only thing Shifu will interrupt about.
+
+**Shifu does not infer deadlines, and this is a measurement rather than a
+taste.** The obvious design — have `CardBuilder` notice dated commitments while
+it reads OCR text, which it already does once per block for free — was tested
+against a month of the real dogfood database on 2026-08-17 and rejected:
+
+- 875 observations across 479 blocks (7% of all blocks with text) contain
+  "due" or "deadline" language.
+- Sampled across apps, **essentially all of it is noise**: a writing-tool
+  landing page, a college-board flyer about "deadlines in spring of junior
+  year", a newsletter subject line, a LinkedIn bio using the word as a
+  buzzword, and an AI chat transcript *discussing* deadlines in the abstract.
+- Narrowed to `due` followed by anything date-shaped, **14 of 15 hits are
+  Shifu's own window**, reading its SRS review queue back to itself ("due now
+  · median interval 1 day · 4 WEEKS overdue"). The fifteenth is "due to the
+  fact".
+
+So an extractor would produce the `KnowledgeExtractor` outcome (§5.1: 1,162
+proposals against 1 kept card) with two aggravations — the noise arrives as
+notifications rather than as an inbox, and Shifu's own UI is the single richest
+source of false positives, which is a feedback loop. Dates are typed; **progress
+is observed**. That split is the feature: nobody else can tell you that you are
+6 h into a 20 h promise, and Shifu should not pretend to know the promise.
+
+**Storage.** One `deadlines` table, deliberately not a `tasks.due_at` column.
+Tasks are derived: `TaskGrouper` mints them, `TaskPrune.prune` and
+`TaskStore.merge` `DELETE` them. A hand-typed date on a row a pipeline deletes
+is a broken promise, so the link is a nullable FK with `ON DELETE SET NULL` —
+the deadline survives and loses only the thing it was measuring. The same
+nullability buys two more shapes: a commitment before any task exists ("visa
+appointment"), and several dates on one task, which is what makes it a
+*timeline* rather than a due date. `target_ms` is the intended effort; progress
+is `activities` time against `task_id`, **clipped at `created_at`**, because the
+promise is about the work left when it was made.
+
+**What gets said, and when.** `DeadlineHorizon` is pure — clock, calendar and
+reminder hour all arrive as arguments — and answers one question: what should be
+said about this deadline right now, given what has already been said.
+
+- Lead buckets are `[7, 3, 1, 0]` days plus one overdue notice: **five
+  announcements over a deadline's whole life.** A deadline falls through the
+  buckets as its date nears and announces once per bucket, tracked by
+  `announced_lead`, which only ever falls (overdue is `-1`, below every lead,
+  so the same rule silences it too).
+- Distance is **calendar days**, not elapsed hours: at 22:00 a 09:00 deadline
+  the next morning is "tomorrow", and DST is the calendar's problem.
+- The bucket opening is not permission to speak. `reminders.hour` (default 9)
+  gates it, because `daysUntil` changes at local midnight and a reminder at
+  00:01 is worse than none. A bucket whose moment has already passed fires at
+  once, so a deadline entered *inside* its warning window says so immediately.
+- Progress is reported at each quarter of `target_ms` (`progress_notch`,
+  monotonic), and is **not** hour-gated: it is a reaction to work that just
+  happened, and holding it to the morning would report it after the session it
+  belongs to. Moving the target re-arms it to the highest quarter already
+  earned — so raising 20 h to 40 h makes 75% reachable again without
+  re-announcing 25% and 50%.
+
+This is bounded on purpose. §1's fifth principle is "not a stream of
+notifications", and the honest way to keep it is a small fixed schedule per
+promise the user personally made — with zero deadlines recorded, an untouched
+Shifu is exactly as silent as before.
+
+**Who delivers it.** `ShifuApp`, through `UserNotifications`, and **by polling
+the database** — never by handing a future moment to the system.
+`UNUserNotificationCenter` needs a bundle identity that `shifud` (a bare
+LaunchAgent binary) does not have, and the daemon must keep the property that
+makes invariant 1 auditable. Scheduling ahead was rejected for the same reason
+Shifu has no IPC: the pending-request queue would be a second state store
+`shifu due` cannot reach, so marking a deadline done in the terminal could not
+cancel a banner already scheduled, and a notice delivered while the app was
+closed could not stamp the row that stops it repeating. The cost is real and
+stated plainly: **nothing arrives while Shifu is not running**, and reminders
+resume in order, each still only once, on the next launch.
+
+**Surfaces.** `shifu due` (list / add / set / done / open / rm) in the terminal;
+a *Coming up* band above the Tasks list, which is where a deadline is authored
+in the app and always present even when empty; a row per date on the task page,
+with **Add a deadline** in its rail beside Rename; and one line in the menu bar
+panel naming the nearest pressing date, with the overdue hue when it has passed.
+`DeadlineDate` is the one date parser, shared by the CLI and the app, so the two
+cannot disagree about what "friday" means.
+
+**Verified end to end, 2026-08-17.** The last three inches — `requestAuthorization`,
+`center.add`, the delivered banner — cannot be reached from a test: UN needs a
+signed bundle and no test can decide whether the user pressed Allow. So
+`DeadlineNotifier` carries a `SHIFU_NOTIFY_TRACE` stderr trace, and the path was
+walked with a Developer-ID-signed bundle over a scratch `SHIFU_HOME` holding one
+deadline due today: launch tick → `1 due` (the catch-up path, the 09:00 moment
+having passed) → `granted true` → `posted shifu.deadline.1.lead.0`, and
+`announced_lead` moved to 0. Relaunching reported `nothing due` and left the row
+alone, so the said-once property holds against the real notification centre and
+not only in `DeadlineHorizonTests`. Two traps worth keeping: a bundle under
+`/tmp` is refused registration outright (`UNErrorDomain` 1, "Notifications are
+not allowed for this application") whatever it is signed with — it has to sit in
+a real app location — and the refusal correctly left the row *unstamped*, which
+is the stamp-after-post ordering doing its job.
+
 ---
 
 ## 5. Knowledge Vault & Spaced Repetition (§2 of instructions)
@@ -318,8 +420,10 @@ stays out of the review queue; deleting it would make it fall through to
 
 - Scheduler: **FSRS** (modern, better-calibrated than SM-2; a Swift implementation is small). SRS state lives in the note's frontmatter so the folder stays self-contained.
 - Review UI: a SwiftUI card session launched from the menu bar ("Review · 7 due") or the *Practice* page, plus a `shifu review` CLI for terminal users. Space reveals, 1–4 grades (with next-interval previews); cards can be edited (E), skipped (S), or deleted mid-session, and "Again" cards rotate to the back of the session queue. Card text renders inline/fenced code and $LaTeX$ natively via `CardMarkup` (no web views): symbols, `^`/`_` scripts, `\frac`, `\sqrt`, accents, the math alphabets (`\mathbb{R}` → ℝ, `\mathbf{1}` → 𝟏) and `\begin{pmatrix}` environments become styled runs, with variables italic and digits/operators/function names upright the way a typeset formula has them. Unknown commands degrade to their bare name, so nothing ever disappears from a card. **Spacing is computed, not inherited** (`CardMarkupSpacing.swift`): TeX sets a formula by what its symbols *are* — a relation gets a wider gap than a binary operator, a sign gets none, an italic glyph gets an italic correction before an upright one so `‖x‖` doesn't weld the bars onto the x — and the "author" here is a model that types math with wildly uneven spacing. Gaps are Unicode fixed spaces, scaled down inside scripts the way TeX's `mu` units are, so the runs stay plain text. Surfaces that can't style runs — the card-list snippet, the `shifu review` terminal — go through `CardMarkup.plainText`, which undoes that spacing and flattens the markup to Unicode super/subscripts rather than showing the reviewer raw LaTeX.
-- **The Practice band** (§7) is two places. *Due* is the queue: the due count, the deck picker (ready, unpaused decks; themes and tasks as filters), the review-activity calendar heatmap (from `srs_reviews`), the due cards with per-card urgency (overdue / due today / new / soon / scheduled), and the one button that starts a session. *Decks* is the shelf as a **list**: one row per deck — title over its source task and its never-started count, then card count, **behind**, due-now, and the **next 7 days** as a spark (`ForecastSpark`: the band's grammar at table scale, backlog mark then a mark a day, every row scaled to one shared ceiling so their heights can be compared down the column) — with **suggested decks** above it (title, source task, sample cards, Keep/Discard) and the loose cards (kept before decks existed, or whose deck's task was pruned) closing the list; over the list sits the **load-ahead band** (`ReviewForecastView`), a column per day for four weeks with everything already past its day gathered into one column behind a divider at the left — the Due tab's heatmap is the record of having shown up, this is the bill for it, and it belongs on the shelf because it is a fact about everything kept rather than about the next sitting. Never-reviewed cards are left out of the columns entirely, never counted as backlog: they are born due (below) but rationed by `ReviewGate`, so drawing them as debt would report a fresh hundred-card deck as a hundred reviews of neglect — the shelf row names them under the deck instead. Paused decks sit the band out the way they sit out every queue, and cards scheduled past the window are named in the eyebrow rather than drawn (one column holding a hundred days beside columns holding one has no honest height). The band carries no summary line: every figure it holds is also a shelf column below it, so spelling them out again under the chart was clutter. Urgency reads twice over, from a column's distance along the axis and from the same three status hues the card rows use. *Behind* and *due now* are deliberately both on a row and deliberately different: the first is the debt (reviews whose day has passed), the second is the session `ReviewGate` would actually hand you, new-card ration included. A deck no queue is drawing from — paused, or still building — shows a dash for both and no spark, since a zero there would read as "caught up" rather than "not playing"; a building deck's spinner rides beside its name, where the eye lands first. a **New deck** button opens the form a deck is made on (`NewDeckPage`, its own pushed page): pick the source task from the recent tasks without one, retitle the deck, give the builder optional free-text **instructions** (stored on the row, folded into every build prompt including drain retries), pick a **card count** (automatic — the builder judges, no hard limit — or a range whose top the build enforces in code, trimming overshoot and skipping leftover batches), and set the review settings before the deck exists — the same one-deck-per-task route as the task page's button. A deck row opens as its own page — cards are never inlined in the list, because a deck built for the long haul runs to hundreds of them — with rename and delete in the rail and the deck's **review settings** in the head. *Paused* takes the deck's cards out of every queue and count; *new cards per day* (default 20, liftable) caps how many never-reviewed cards the deck may introduce per local day — deck cards are born due-now, so an uncapped hundred-card deck would otherwise land in one sitting. Both act through **`ReviewGate`**, which every queue builder passes (the app's vault snapshot and `VaultStore.due()` behind `shifu review`), spending the daily allowance oldest-first and counting introductions as first-grades in `srs_reviews` — a due *review* is never gated, only introductions are rationed. **Deleting a deck deletes its cards** (they exist because the deck was asked for; the review log stays, being a record of what happened) and writes a dismissed `deck_suggestions` row so the suggester can't propose back what was just thrown away — the task page button and New deck remain the deliberate routes back. The review session is the one screen pushed from here — there is no card inbox.
-- **Decks are user-requested and persisted** (`decks`). A deck is one row per task — `key` (`deck:<slug>`), `task_key`, `title`, a one-way `pending → building → ready` status, the review settings `paused` and `new_per_day` (v19), the optional `instructions` brief the builder folds into its prompt (v20; NULL when none were given), and the optional `cards_min`/`cards_max` range (v21; both NULL is automatic, `cards_max` is code-enforced). There is no `card_count` column: the user prunes cards during review, so a stored count would start drifting the moment the feature is used as designed. The count is always derived from `vault_index.deck_key`.
+- **The Practice band** (§7) is two places. *Due* is the queue: the due count, the deck picker (ready, unpaused decks; themes and tasks as filters), the review-activity calendar heatmap (from `srs_reviews`), the due cards with per-card urgency (overdue / due today / new / soon / scheduled), and the one button that starts a session. *Decks* is the shelf as a **list**: one row per deck — title over its source task and its never-started count, then card count, **behind**, due-now, and the **next 7 days** as a spark (`ForecastSpark`: the band's grammar at table scale, backlog mark then a mark a day, every row scaled to one shared ceiling so their heights can be compared down the column) — with **suggested decks** above it (title, source task, sample cards, Keep/Discard) and the loose cards (kept before decks existed, or whose deck's task was pruned) closing the list; over the list sits the **load-ahead band** (`ReviewForecastView`), a column per day for four weeks with everything already past its day gathered into one column behind a divider at the left — the Due tab's heatmap is the record of having shown up, this is the bill for it, and it belongs on the shelf because it is a fact about everything kept rather than about the next sitting. Never-reviewed cards are left out of the columns entirely, never counted as backlog: they are born due (below) but rationed by `ReviewGate`, so drawing them as debt would report a fresh hundred-card deck as a hundred reviews of neglect — the shelf row names them under the deck instead. Paused decks sit the band out the way they sit out every queue, and cards scheduled past the window are named in the eyebrow rather than drawn (one column holding a hundred days beside columns holding one has no honest height). The band carries no summary line: every figure it holds is also a shelf column below it, so spelling them out again under the chart was clutter. Urgency reads twice over, from a column's distance along the axis and from the same three status hues the card rows use. *Behind* and *due now* are deliberately both on a row and deliberately different: the first is the debt (reviews whose day has passed), the second is the session `ReviewGate` would actually hand you, new-card ration included. A deck no queue is drawing from — paused, or still building — shows a dash for both and no spark, since a zero there would read as "caught up" rather than "not playing"; a building deck's spinner rides beside its name, where the eye lands first. a **New deck** button opens the form a deck is made on (`NewDeckPage`, its own pushed page): pick the source task from the recent tasks without one, retitle the deck, narrow the **topics** the build may read (a checklist of the task's block topics — `DeckBuilder.taskTopics`, the same `maxBlocks` window a build reads, so it offers only what a build can reach; all-on stores nothing, and the checklist hides entirely when the blocks carry one topic or none), give the builder optional free-text **instructions** (stored on the row, folded into every build prompt including drain retries), pick a **card count** (automatic — the builder judges, no hard limit — or a range whose top the build enforces in code, trimming overshoot and skipping leftover batches), and set the review settings before the deck exists — the same one-deck-per-task route as the task page's button. A deck row opens as its own page — cards are never inlined in the list, because a deck built for the long haul runs to hundreds of them — with rename and delete in the rail, the deck's **review settings** in the head, and an **Add cards** button (ready decks with a backend only) that opens the form a deck *grows* on (`AddCardsSheet`): the same topic checklist, a **chapter** name (auto-suggested from a narrowed topic pick), optional instructions, and a card count for the addition. That is how one deck becomes a big deck — "Biology" grows a Genetics chapter, then a Cell-structure chapter, each its own focused build pass over the same task — instead of a task ever getting a second deck. The page groups its card table by chapter (`section:` frontmatter; the unlabelled first build reads first, and a deck never grown stays one flat table). *Paused* takes the deck's cards out of every queue and count; *new cards per day* (default 20, liftable) caps how many never-reviewed cards the deck may introduce per local day — deck cards are born due-now, so an uncapped hundred-card deck would otherwise land in one sitting. Both act through **`ReviewGate`**, which every queue builder passes (the app's vault snapshot and `VaultStore.due()` behind `shifu review`), spending the daily allowance oldest-first and counting introductions as first-grades in `srs_reviews` — a due *review* is never gated, only introductions are rationed. **Deleting a deck deletes its cards** (they exist because the deck was asked for; the review log stays, being a record of what happened) and writes a dismissed `deck_suggestions` row so the suggester can't propose back what was just thrown away — the task page button and New deck remain the deliberate routes back. The review session is the one screen pushed from here — there is no card inbox.
+- **Decks are user-requested and persisted** (`decks`). A deck is one row per task — `key` (`deck:<slug>`), `task_key`, `title`, a `pending → building → ready` status, the review settings `paused` and `new_per_day` (v19), the optional `instructions` brief the builder folds into its prompt (v20; NULL when none were given), the optional `cards_min`/`cards_max` range (v21; both NULL is automatic, `cards_max` is code-enforced), and the v29 request columns: `topics` (JSON string array narrowing which of the task's block topics a build reads — filtered **before** the recency LIMIT, so a "Genetics" chapter gets forty genetics blocks of evidence rather than forty recents filtered down; NULL is all) and `section` (the chapter label of the current request). There is no `card_count` column: the user prunes cards during review, so a stored count would start drifting the moment the feature is used as designed. The count is always derived from `vault_index.deck_key`.
+
+  The status is no longer one-way: **Add cards** re-opens a `ready` deck by overwriting the request columns and re-entering `pending`, through a compare-and-set that fires only from `ready` (an in-flight build owns the columns; the button is disabled meanwhile). The row always holds the *latest* request, which is exactly what a drain retry in another process must honour. `built_at` survives the re-entry and is the reviewability discriminator everywhere (`Deck.everBuilt`): a deck mid-addition keeps reviewing, keeps its shelf spark and its picker slot — only a *first* build's half-empty deck reads as a bug — while the spinner and an "adding cards" subtitle say more are coming. An addition build tells the model what the deck already holds (count plus its distinct card topics, capped) and budgets *new* cards, because deck-scoped dedupe would only eat a regenerated duplicate after it was billed for; the cards it writes carry the request's `section:` in frontmatter, which is what the deck page's chapters are.
 
   There are two ways to get one. The analyzer's weekly **`DeckSuggester`** looks for a task substantial enough to deserve a deck — intent-named key, ≥45 min of learning/work in 14 days, and that time *dominant* rather than incidental — and asks the model whether it is worth it, with two or three real sample cards if so. Most tasks aren't, and the answer is stored either way: a `deck_suggestions` row keyed on `task_key` (not `task_id` — prune and merge delete task rows and SQLite reuses rowids, so an id-keyed permanent row could suppress an unrelated future task). That row is what stops a task being re-billed for the same verdict every week. Caps: ≤3 open proposals, ≤2 *model calls* per run. The second is the **Create flashcard deck** button on a task's page, which is also the escape hatch from a dismissed or declined proposal.
 
@@ -349,7 +453,7 @@ stays out of the review queue; deleting it would make it fall through to
   higher stability means a longer safe interval.
   ```
 
-- **Deck picker**: the session pulls from a selectable deck — all notes, one **deck**, one theme, or one task (§5.3), in that order. Only `ready` decks are offered; picking one mid-build would show a half-empty deck and read as a bug. Themes and tasks remain runtime filters over whatever cards exist, matched by grouping key (topic slug, with containment fallback for topic keys) — only decks are persisted. Cards kept from before decks existed carry no `deck:` and keep serving the All queue.
+- **Deck picker**: the session pulls from a selectable deck — all notes, one **deck**, one theme, or one task (§5.3), in that order. Only decks that have finished a first build are offered (`everBuilt`, not `status` — a deck mid-"Add cards" is `pending` again but its settled cards are real); a first build's half-empty deck would read as a bug. Themes and tasks remain runtime filters over whatever cards exist, matched by grouping key (topic slug, with containment fallback for topic keys) — only decks are persisted. Cards kept from before decks existed carry no `deck:` and keep serving the All queue.
 - Target session length: < 5 minutes/day. The digest nags gently if the due queue exceeds a threshold.
 
 ### 5.3 Tasks, themes & work logs (vault-features.md)
@@ -761,11 +865,18 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 - Calendar/task integration to label blocks with intended work ("was I doing what I planned?").
 - Audio-free meeting awareness (detect meeting apps, log attendance time, never record content).
 - Vault embeddings for semantic search ("what did I read about SQLite WAL?").
-- **Deck refresh / regeneration (§5.2)** — a deck is built once and reaches
-  `ready` for good. A task that keeps going accrues material the deck never
-  sees, and there is no "add to this deck" or "rebuild it". Wants a decision
-  about what happens to the cards already reviewed (keep their FSRS state,
-  obviously) and what stops a refresh from re-proposing what the user pruned.
+- **Deck regeneration (§5.2)** — "add to this deck" exists now (the Add cards
+  chapter flow), so a task that keeps going can feed its deck. What still
+  doesn't is *rebuilding* what's already there — re-running an existing
+  chapter over fresher material. Wants a decision about what happens to the
+  cards already reviewed (keep their FSRS state, obviously) and what stops a
+  refresh from re-proposing what the user pruned.
+- **Cross-task decks (§5.2)** — a deck's chapters all come from its one task;
+  a deck spanning tasks ("Biology" fed by three related reading tasks) would
+  break the key derivation, the `task_key` uniqueness, and the
+  suggester-dismissal semantics for a case task-merging mostly covers.
+  Revisit only with evidence that related work is landing as separate tasks
+  that merging doesn't fold.
 - **Re-suggesting declined or dismissed tasks (§5.2)** — both verdicts are
   permanent by design, which is what stops the weekly probe re-billing the
   same answer. The task page's Create button is the escape hatch, so this is
@@ -1007,6 +1118,38 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   - Do **not** "clean up" `shifu-cli/VaultBench.swift`: `scripts/perf-vault.sh`
     invokes `shifu vault bench` and parses its output, so deleting it breaks
     `make perf`.
+- **Deadlines, three follow-ups the shipped shape left open (§4.5).**
+  - **Inferring a deadline from the screen — measured against, not merely
+    deferred.** Do not build this without new evidence. On 2026-08-17 the real
+    dogfood DB carried 875 observations of "due"/"deadline" language across 479
+    blocks, and sampling found no actionable dated commitment in any of them:
+    marketing copy, a newsletter subject, a LinkedIn bio, an AI chat discussing
+    deadlines in the abstract, and — for `due` followed by anything
+    date-shaped — **14 of 15 hits were Shifu's own window reading its SRS queue
+    back to itself**. The cost of getting it wrong is worse than
+    `KnowledgeExtractor`'s was, because the noise arrives as notifications and
+    the loudest false-positive source is Shifu's own UI. If it is ever revisited,
+    the honest version is narrow: an explicit `due <date>` shape, inside a block
+    already filed to a task, in an app that is not Shifu, proposed into a queue
+    the user accepts from (`theme_proposals`' shape) — never notified on
+    directly. Note `activities.card` is still the only stage that reads OCR, so
+    the marginal token cost really would be zero; the token cost was never the
+    objection.
+  - **The digest as a notification.** §4.3 has always specified the daily digest
+    as "delivered as a local notification linking into the dashboard", and it
+    has never been one — `DigestGenerator` writes a Markdown file and nothing
+    announces it. §4.5's `DeadlineNotifier` is now the missing plumbing, so this
+    is a small follow-up rather than a project: it needs a fired-ledger (the
+    digest's date-stamped filename is already one) and a decision about whether
+    a digest may interrupt at all, which is the §1-principle question §4.5 only
+    answered for dates the user typed.
+  - **Shifu as a login item.** §4.5's poll-only delivery means reminders wait
+    while the app is closed. Registering `Shifu.app` with `SMAppService` the way
+    `DaemonService` registers `shifud` would close that gap, and is the one
+    change that would make the reminder schedule dependable. Deliberately not
+    bundled into the deadline work: a login item is a claim on the user's
+    machine that wants its own consent beat in onboarding, not a side effect of
+    typing a date.
 
 ---
 

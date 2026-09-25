@@ -69,12 +69,14 @@ struct DueView: View {
 
     /// Decks first, then themes, then tasks: a deck is a thing the user asked
     /// for, the other two are filters over whatever happens to be there. Only
-    /// `ready` decks appear — picking one mid-build would show a half-empty
-    /// deck and read as a bug — and paused ones sit out here the way their
-    /// cards sit out the queue.
+    /// decks that have finished a first build appear (`everBuilt`, not
+    /// `status` — a deck mid-"Add cards" is pending again but its settled
+    /// cards are real); a *first* build's half-empty deck would read as a
+    /// bug, and paused ones sit out here the way their cards sit out the
+    /// queue.
     private var deckOptions: [(label: String, value: ReviewDeck)] {
         var options: [(label: String, value: ReviewDeck)] = [("All notes", .all)]
-        options += store.decks.filter { $0.status == .ready && !$0.paused }.map {
+        options += store.decks.filter { $0.everBuilt && !$0.paused }.map {
             ("Deck · \($0.title)", ReviewDeck.deck(key: $0.key, name: $0.title))
         }
         options += store.themes.map {
@@ -278,9 +280,11 @@ struct DecksView: View {
         var id: String { deck.key }
 
         /// A paused deck's cards are out of every queue *and count* (§5.2), and
-        /// a deck still building has nothing settled to forecast — both would
-        /// otherwise draw a week of work that is not coming.
-        var drawsSpark: Bool { deck.status == .ready && !deck.paused }
+        /// a deck that has never finished a build has nothing settled to
+        /// forecast — both would otherwise draw a week of work that is not
+        /// coming. A deck mid-"Add cards" keeps its spark: its settled cards
+        /// review on, and only the spinner says more are coming.
+        var drawsSpark: Bool { deck.everBuilt && !deck.paused }
     }
 
     /// Cards under the deck that minted them, newest deck first — the order

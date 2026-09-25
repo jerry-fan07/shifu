@@ -78,6 +78,18 @@ public enum DeckStore {
         public var instructions: String?
         /// How many cards were asked for. Nil is automatic — no hard limit.
         public var cardRange: CardRange?
+        /// Which of the task's block topics the build may read. Nil is all of
+        /// them — the untouched checklist, and every pre-v29 deck.
+        public var topics: [String]?
+        /// The chapter label of the current build request ("Add cards", §5.2);
+        /// nil for the unlabelled first build.
+        public var section: String?
+
+        /// Whether the deck has ever finished a build. This, not `status`, is
+        /// what gates review surfaces: an addition re-enters `pending`, and a
+        /// deck mid-addition must keep reviewing — only a *first* build's
+        /// half-empty deck reads as a bug in a picker.
+        public var everBuilt: Bool { builtAt != nil }
     }
 
     /// The deck row the builder works from. No task name: a claim must not
@@ -94,6 +106,15 @@ public enum DeckStore {
         /// Rides for the same reason; the builder holds `upper` as a hard
         /// ceiling, not just a prompt line.
         public var cardRange: CardRange?
+        /// Narrows which blocks the build reads; nil is every topic.
+        public var topics: [String]?
+        /// Stamped into each card this build writes, so the deck page can
+        /// group its chapters. Nil for the unlabelled first build.
+        public var section: String?
+        /// Whether a build has finished before — set, this claim is an
+        /// addition, and the prompt tells the model what the deck already
+        /// holds instead of asking for a deck from scratch.
+        public var builtAt: Int64?
     }
 
     /// One proposed card, shown on the suggestion before the user commits and
@@ -128,7 +149,7 @@ public enum DeckStore {
             try Row.fetchAll(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
                        d.paused, d.new_per_day, d.instructions, d.cards_min, d.cards_max,
-                       t.name AS task_name,
+                       d.topics, d.section, t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -144,7 +165,7 @@ public enum DeckStore {
             try Row.fetchOne(db, sql: """
                 SELECT d.id, d.key, d.task_key, d.title, d.status, d.created_at, d.built_at,
                        d.paused, d.new_per_day, d.instructions, d.cards_min, d.cards_max,
-                       t.name AS task_name,
+                       d.topics, d.section, t.name AS task_name,
                        (SELECT COUNT(*) FROM vault_index vi WHERE vi.deck_key = d.key)
                            AS card_count
                 FROM decks d JOIN tasks t ON t.key = d.task_key
@@ -171,8 +192,9 @@ public enum DeckStore {
     @discardableResult
     public static func create(
         title: String, taskKey: String, instructions: String? = nil,
-        cardRange: CardRange? = nil, newPerDay: Int? = defaultNewPerDay,
-        paused: Bool = false, database: ShifuDatabase, now: Date = Date()
+        cardRange: CardRange? = nil, topics: [String]? = nil,
+        newPerDay: Int? = defaultNewPerDay, paused: Bool = false,
+        database: ShifuDatabase, now: Date = Date()
     ) throws -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -182,14 +204,45 @@ public enum DeckStore {
         try database.queue.write { db in
             try db.execute(sql: """
                 INSERT INTO decks (key, task_key, title, status, status_at, created_at,
-                                   new_per_day, paused, instructions, cards_min, cards_max)
-                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                                   new_per_day, paused, instructions, cards_min, cards_max,
+                                   topics)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO NOTHING
                 """, arguments: [deckKey, taskKey, trimmed, nowMs, nowMs, newPerDay,
                                  paused, brief?.isEmpty == false ? brief : nil,
-                                 cardRange?.lower, cardRange?.upper])
+                                 cardRange?.lower, cardRange?.upper,
+                                 encodeTopics(topics)])
         }
         return deckKey
+    }
+
+    /// Re-opens a built deck with a new build request — the "Add cards" form,
+    /// which is how one deck grows chapter by chapter instead of a task
+    /// getting a second deck. The overwrite is deliberate: the row's request
+    /// columns always describe the *latest* ask, which is exactly what a
+    /// drain retry in another process must honour. The compare half fires
+    /// only from `ready` — a deck still building keeps the request it is
+    /// building, and the caller's form is disabled meanwhile. Returns false
+    /// when the deck wasn't ready.
+    @discardableResult
+    public static func requestMoreCards(
+        key deckKey: String, instructions: String? = nil, topics: [String]? = nil,
+        cardRange: CardRange? = nil, section: String? = nil,
+        database: ShifuDatabase, now: Date = Date()
+    ) throws -> Bool {
+        let brief = instructions?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = section?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        return try database.queue.write { db in
+            try db.execute(sql: """
+                UPDATE decks SET status = 'pending', status_at = ?, instructions = ?,
+                                 topics = ?, cards_min = ?, cards_max = ?, section = ?
+                WHERE key = ? AND status = 'ready'
+                """, arguments: [nowMs, brief?.isEmpty == false ? brief : nil,
+                                 encodeTopics(topics), cardRange?.lower, cardRange?.upper,
+                                 label?.isEmpty == false ? label : nil, deckKey])
+            return db.changesCount == 1
+        }
     }
 
     // MARK: - Management (design.md §5.2)
@@ -254,11 +307,11 @@ public enum DeckStore {
     @discardableResult
     public static func write(
         _ card: SampleCard, deckKey: String, taskKey: String, vault: VaultStore,
-        confidence: Double? = nil, now: Date = Date()
+        section: String? = nil, confidence: Double? = nil, now: Date = Date()
     ) throws -> Bool {
         let note = Note(
             captured: now, topic: card.topic, taskKey: taskKey, deck: deckKey,
-            confidence: confidence, state: .kept,
+            section: section, confidence: confidence, state: .kept,
             srs: FSRS.State(due: now),
             body: Note.composeBody(reference: card.note, question: card.question,
                                    answer: card.answer))
@@ -287,14 +340,17 @@ public enum DeckStore {
             guard db.changesCount == 1 else { return nil }
             return try Row.fetchOne(
                 db, sql: """
-                    SELECT key, task_key, title, instructions, cards_min, cards_max
+                    SELECT key, task_key, title, instructions, cards_min, cards_max,
+                           topics, section, built_at
                     FROM decks WHERE key = ?
                     """,
                 arguments: [deckKey]
             ).map { Claim(key: $0["key"], taskKey: $0["task_key"], title: $0["title"],
                           instructions: $0["instructions"],
                           cardRange: CardRange(lower: $0["cards_min"],
-                                               upper: $0["cards_max"])) }
+                                               upper: $0["cards_max"]),
+                          topics: decodeTopics($0["topics"]),
+                          section: $0["section"], builtAt: $0["built_at"]) }
         }
     }
 
@@ -341,7 +397,25 @@ public enum DeckStore {
              createdAt: row["created_at"], builtAt: row["built_at"],
              cardCount: row["card_count"], paused: row["paused"],
              newPerDay: row["new_per_day"], instructions: row["instructions"],
-             cardRange: CardRange(lower: row["cards_min"], upper: row["cards_max"]))
+             cardRange: CardRange(lower: row["cards_min"], upper: row["cards_max"]),
+             topics: decodeTopics(row["topics"]), section: row["section"])
+    }
+
+    /// The `topics` column codec — a JSON string array, like `sample_cards`.
+    /// Empty and nil both store NULL: an empty narrowing would build a deck
+    /// from nothing, which no form allows, so it reads back as "all topics"
+    /// rather than as a dead deck.
+    static func encodeTopics(_ topics: [String]?) -> String? {
+        guard let topics, !topics.isEmpty,
+              let data = try? JSONEncoder().encode(topics) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func decodeTopics(_ raw: String?) -> [String]? {
+        guard let raw, let data = raw.data(using: .utf8),
+              let topics = try? JSONDecoder().decode([String].self, from: data),
+              !topics.isEmpty else { return nil }
+        return topics
     }
 
 }

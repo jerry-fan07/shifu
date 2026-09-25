@@ -15,6 +15,18 @@ struct TasksView: View {
             header
             PageBody {
                 if !store.mergeBannerClosed { mergeBanner }
+                // Coming up sits above the log, not inside it: the dates are
+                // about the tasks below and are read in one glance, while the
+                // list is scrolled. Always shown, even empty — it is the only
+                // route to recording a deadline in the app, and a control that
+                // appears once it has contents is one nobody finds.
+                // The merge banner above carries a top pad and no bottom one, so
+                // the clearance under it has to come from here.
+                ComingUpBand()
+                    .padding(.top, 16)
+                    .padding(.bottom, 14)
+                Rule(weight: .section)
+                    .padding(.bottom, 12)
                 if store.filteredTasks.isEmpty {
                     BlankSlate(
                         store.taskFilter.narrowsResults

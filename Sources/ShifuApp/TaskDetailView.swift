@@ -32,6 +32,7 @@ struct TaskContents: View {
     @State private var detail: TaskStore.Detail?
     @State private var renaming = false
     @State private var draftName = ""
+    @State private var addingDeadline = false
 
     var body: some View {
         RailColumn {
@@ -62,10 +63,20 @@ struct TaskContents: View {
             .buttonStyle(.plain)
             .font(Instrument.sans(11.5))
             .foregroundStyle(Instrument.railInk)
+            // Beside Rename, because both are things you do *to the task*, and
+            // this is the screen that knows which task a date belongs to.
+            Button("Add a deadline") { addingDeadline = true }
+                .buttonStyle(.plain)
+                .font(Instrument.sans(11.5))
+                .foregroundStyle(Instrument.railInk)
             deckControl
         }
         .onAppear(perform: reload)
         .onChange(of: taskID) { _, _ in reload() }
+        .sheet(isPresented: $addingDeadline) {
+            DeadlineSheet(taskID: taskID, taskName: detail?.task.name)
+                .environmentObject(store)
+        }
         .alert("Rename task", isPresented: $renaming) {
             TextField("Task name", text: $draftName)
             Button("Rename") {
@@ -127,7 +138,9 @@ struct TaskContents: View {
     @ViewBuilder private var deckControl: some View {
         if let detail {
             if let deck = store.deck(taskKey: detail.task.key) {
-                Text(deck.status == .ready
+                // `everBuilt`, not `status`: a deck mid-"Add cards" is
+                // pending again, but its settled cards are still a deck.
+                Text(deck.everBuilt
                     ? "Deck · \(deck.cardCount) cards"
                     : "Deck building…")
                     .font(Instrument.sans(11.5))
@@ -229,12 +242,31 @@ struct TaskPage: View {
                         size: 11.5, color: Instrument.muted)
                 }
                 .padding(.top, 10)
+                deadlines
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Instrument.gutter)
             .padding(.top, 18)
             .padding(.bottom, 14)
             Rule(weight: .section)
+        }
+    }
+
+    /// A task's own dates, under its figures (design.md §4.5). Several is
+    /// normal — that is the difference between a due date and a timeline — so
+    /// they are rows rather than one more chip in the line above.
+    @ViewBuilder private var deadlines: some View {
+        let dates = store.deadlines(forTask: taskID)
+        if !dates.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(dates, id: \.deadline.id) { standing in
+                    DeadlineRow(standing: standing, showsTask: false)
+                }
+            }
+            // Full width, not capped: the figures then right-align with every
+            // other column on the page. Capped at 560 they landed mid-page,
+            // level with nothing.
+            .padding(.top, 8)
         }
     }
 
