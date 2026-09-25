@@ -107,6 +107,14 @@ right of `observations` happens in `shifu-analyzer`.
 
         └─────────────────────────────────────────────────────────────────────┘
 
+        ┌────── shifu-analyzer --draft <id> (on request from the Voice desk) ─────┐
+
+  voice/samples/*.md ──▶ VoiceMetrics (no LLM) ─┐
+                         VoiceProfiler ──▶ LLM ─┴▶ voice/profile.md   (if stale)
+  [voice_drafts] claim (CAS) ──▶ VoiceDrafter ──▶ LLM ──▶ [voice_drafts] ready
+
+        └─────────────────────────────────────────────────────────────────────┘
+
   reads: shifu-cli · ShifuApp (LedgerStore) · VaultSearch
 ```
 
@@ -229,9 +237,13 @@ order, and some of that ordering is load-bearing:
    while the source window titles still exist (they die with the 14-day
    retention).
 8. **`DeckBuilder.drainPending`** (decks whose requested build never ran),
-   **`WorkNoteCompiler.run`** (day notes, detailed tier for work/learning-
-   dominant days) then **`TaskOverviewCompiler.run`** (per-task overview docs)
-   — write Markdown into `~/Shifu/vault/`.
+   **`VoiceProfiler.rebuildIfStale`** + **`VoiceDrafter.drainPending`**
+   (voice.md §3.3, §4.1 — the profile is gated on the corpus *fingerprint*
+   rather than a clock, so an untouched corpus costs one directory listing;
+   the drain is the safety net for a draft whose interactive launch never
+   happened), **`WorkNoteCompiler.run`** (day notes, detailed tier for
+   work/learning-dominant days) then **`TaskOverviewCompiler.run`** (per-task
+   overview docs) — write Markdown into `~/Shifu/vault/`.
 9. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
    this syncs the disposable index. Runs *after* task grouping so
    `task_key` → task/project resolution is current.
@@ -292,6 +304,13 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The Notes place and the note page | [`ShifuApp/NotesView.swift`](Sources/ShifuApp/NotesView.swift), [`ShifuApp/NotePage.swift`](Sources/ShifuApp/NotePage.swift) |
 | Which tasks become automation candidates, and the dossier each carries | [`Analysis/PatternMiner.swift`](Sources/ShifuCore/Analysis/PatternMiner.swift) (thresholds + pure stats), [`Analysis/PatternMinerEvidence.swift`](Sources/ShifuCore/Analysis/PatternMinerEvidence.swift) (the SQL) |
 | The automation tool catalog, the describer prompt and its honesty gates | [`Analysis/RadarDescriber.swift`](Sources/ShifuCore/Analysis/RadarDescriber.swift); the row/queue half is [`Analysis/Radar.swift`](Sources/ShifuCore/Analysis/Radar.swift) |
+| What is measured about how the user writes (voice.md §3.1) | [`Voice/VoiceMetrics.swift`](Sources/ShifuCore/Voice/VoiceMetrics.swift) — the statistics; [`Voice/VoiceMetricsRules.swift`](Sources/ShifuCore/Voice/VoiceMetricsRules.swift) — the page's readings and the prompt's imperative lines |
+| The writing corpus on disk, the ingest floor, the staleness fingerprint | [`Voice/VoiceStore.swift`](Sources/ShifuCore/Voice/VoiceStore.swift), [`Voice/VoiceSample.swift`](Sources/ShifuCore/Voice/VoiceSample.swift) — files under `~/Shifu/voice/`, never under the vault root |
+| Turning a PDF's text layer back into prose — hyphens, running heads, page numbers, wrapped lines, ligatures | [`Voice/VoiceImportText.swift`](Sources/ShifuCore/Voice/VoiceImportText.swift) (pure, the whole heuristic); extraction is [`ShifuApp/VoicePDF.swift`](Sources/ShifuApp/VoicePDF.swift) — **PDFKit stays out of ShifuCore on purpose**, because `shifud` links it and `check-no-network.sh` cannot catch a document renderer riding in |
+| The voice card's prompt, and when it is rebuilt | [`Voice/VoiceProfiler.swift`](Sources/ShifuCore/Voice/VoiceProfiler.swift); the document is [`Voice/VoiceProfile.swift`](Sources/ShifuCore/Voice/VoiceProfile.swift) |
+| The drafting prompt, its ordering and its budget | [`Voice/VoiceDrafter.swift`](Sources/ShifuCore/Voice/VoiceDrafter.swift); excerpt selection is [`Voice/VoiceExcerpts.swift`](Sources/ShifuCore/Voice/VoiceExcerpts.swift) |
+| Draft rows, statuses, draft claims | [`Voice/VoiceDrafts.swift`](Sources/ShifuCore/Voice/VoiceDrafts.swift) |
+| The Voice place | [`ShifuApp/VoiceView.swift`](Sources/ShifuApp/VoiceView.swift) (the desk), [`ShifuApp/VoiceCorpus.swift`](Sources/ShifuApp/VoiceCorpus.swift) (the corpus column and both ingest doors), actions [`ShifuApp/LedgerStoreVoice.swift`](Sources/ShifuApp/LedgerStoreVoice.swift) |
 | Focus Mode nudge behavior | [`shifud/FocusModeController.swift`](Sources/shifud/FocusModeController.swift), [`shifud/GlowOverlay.swift`](Sources/shifud/GlowOverlay.swift) |
 | The two Focus Mode clocks — this session's length, time since the last one | [`FocusClock.swift`](Sources/ShifuCore/FocusClock.swift) (the arithmetic and both formats), [`ShifuApp/FocusTimer.swift`](Sources/ShifuApp/FocusTimer.swift) (the ticking line under every switch). Read from `FocusModeFile.startedAt()` and `FocusModeSessions.previousEnd(before:)`, never from a counter the app keeps running |
 | A user-tunable setting (key, default, bounds, UI copy) | [`Storage/SettingsCatalog.swift`](Sources/ShifuCore/Storage/SettingsCatalog.swift) — see §7 |
@@ -417,6 +436,17 @@ make a stored count wrong within the session, so it is always derived from
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
 task).
+
+**`voice_drafts`** (v28, voice.md §4.1 — one row per request to the Voice desk;
+status `pending → drafting → ready | failed`, advanced through `VoiceDrafts`'s
+compare-and-set, the same guard `decks` uses against two analyzer processes.
+`failed` is the deliberate difference: a deck build retries silently because
+nobody is watching, where a draft has someone in front of it and a row that
+quietly returned to `pending` would spin "Drafting…" with no reason on screen.
+History is trimmed to `historyLimit` on insert. Only the *queue* is a table —
+the writing corpus it draws on is plain files under `~/Shifu/voice/`, because
+samples are the user's own writing and nothing about them needs a status or a
+join.)
 
 **`llm_usage`** (v19, one row per billed response, written by
 `DeepSeekBackend.send` through `LLMUsage.record`) — `prompt_tokens` /
@@ -682,6 +712,7 @@ To see a change in the real app, `swift build` is not enough — see
 | [implementation.md](implementation.md) | phase plan | Original Phase 0–6 sequencing and per-phase exit criteria. **Its checkboxes were never ticked** — read it as the plan, not as status. |
 | [vault-features.md](vault-features.md) | authoritative spec | The vault second-brain layer (V1–V4). Cited as `vault-features.md §N` in code. |
 | [vault-implementation.md](vault-implementation.md) | phase plan | Vault phase sequencing. |
+| [voice.md](voice.md) | authoritative spec | The writing corpus, the voice profile, and the drafting desk — the second *Signals* place. Cited as `voice.md §N` in code. |
 | [start.md](start.md) | practical | Rebuild/reinstall loop, and troubleshooting TCC permission breakage. |
 | [README.md](README.md) | practical | Install, CLI surface, privacy model. |
 | [instructions.md](instructions.md) | **historical** | The original one-page brief that design.md was written from. Superseded; kept for provenance. |

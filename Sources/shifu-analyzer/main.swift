@@ -78,6 +78,51 @@ if let flagIndex = args.firstIndex(of: "--build-deck"), flagIndex + 1 < args.cou
     exit(0)
 }
 
+// `--draft <id>`: the Voice desk asking for one draft (voice.md §4.1). Same
+// shape as `--build-deck` above and for the same reason — only this binary may
+// reach the network, so pressing Draft is a launch of it. Runs before the
+// ledger rebuild and exits: the request is interactive, someone is watching a
+// "Drafting…" button, and the hourly pass would both delay it and race it.
+if let flagIndex = args.firstIndex(of: "--draft"), flagIndex + 1 < args.count,
+   let draftID = Int64(args[flagIndex + 1]) {
+    let voice = VoiceStore()
+    guard let draftBackend = try DeepSeekBackend.ifConfigured(database: database) else {
+        // The desk gates its button on a configured backend, so reaching here
+        // means the opt-in was revoked mid-flight. The row stays `pending` and
+        // the hourly drain picks it up once a backend exists.
+        print("no LLM backend — draft \(draftID) stays pending")
+        exit(0)
+    }
+    let draftServer = await LlamaServer.startIfNeeded(database: database)
+    // Freshen the voice card first, so a user who adds a sample and asks for a
+    // draft in the same minute is drafted for from the corpus they just grew
+    // (voice.md §3.3). Free when the fingerprint hasn't moved; fail-soft,
+    // because the measured half alone still drafts.
+    do {
+        if try await VoiceProfiler.rebuildIfStale(
+            store: voice, backend: draftBackend.labeled("voice-profile")) != nil {
+            print("voice: profile rebuilt")
+        }
+    } catch {
+        print("voice profile failed (drafting from measurements alone): \(error)")
+    }
+    do {
+        if try await VoiceDrafter.draft(
+            id: draftID, database: database, store: voice,
+            backend: draftBackend.labeled("voice-draft")) != nil {
+            print("draft \(draftID): written")
+        } else {
+            print("draft \(draftID): already claimed elsewhere")
+        }
+    } catch {
+        // `VoiceDrafter.draft` has already stamped the row `failed` with this
+        // reason, which is what the desk shows — this line is for the log.
+        print("draft \(draftID) failed: \(error)")
+    }
+    draftServer?.stop()
+    exit(0)
+}
+
 let classifier = try RulesClassifier(database: database)
 
 let nowMs = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -326,6 +371,32 @@ if let backend {
         if built > 0 { print("decks: \(built) built") }
     } catch {
         print("deck build failed (retries next run): \(error)")
+    }
+}
+
+// Voice (voice.md §3.3, §4.1). Two jobs, both usually no-ops: describe the
+// writing corpus when the user has changed it — gated on the corpus
+// fingerprint rather than on a clock, so an untouched corpus costs one
+// directory listing — and draft any request whose interactive launch never
+// happened. Fail-soft like every LLM stage; nothing in the ledger depends on
+// either one.
+if let backend {
+    let voice = VoiceStore()
+    do {
+        if let profile = try await VoiceProfiler.rebuildIfStale(
+            store: voice, backend: backend.labeled("voice-profile")) {
+            print("voice: profile rebuilt from \(profile.sampleCount) samples "
+                + "(\(profile.wordCount) words)")
+        }
+    } catch {
+        print("voice profile failed (retries next run): \(error)")
+    }
+    do {
+        let drafted = try await VoiceDrafter.drainPending(
+            database: database, store: voice, backend: backend.labeled("voice-draft"))
+        if drafted > 0 { print("voice: \(drafted) drafts written") }
+    } catch {
+        print("voice draft failed: \(error)")
     }
 }
 

@@ -384,7 +384,7 @@ enum Place: String, CaseIterable, Identifiable {
     case breakdown, timeline
     case themes, tasks, notes
     case due, decks
-    case radar
+    case radar, voice
     case settings
 
     var id: String { rawValue }
@@ -399,6 +399,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .due: return "Due"
         case .decks: return "Decks"
         case .radar: return "Radar"
+        case .voice: return "Voice"
         case .settings: return "Settings"
         }
     }
@@ -410,7 +411,10 @@ enum Place: String, CaseIterable, Identifiable {
         case .breakdown, .timeline: return .ledger
         case .themes, .tasks, .notes: return .vault
         case .due, .decks: return .practice
-        case .radar: return .signals
+        // Voice sits beside the Radar deliberately (voice.md §1): the band is
+        // "what a machine could take over", and the two places answer that for
+        // chores and for prose.
+        case .radar, .voice: return .signals
         case .settings: return nil
         }
     }
@@ -432,6 +436,10 @@ enum Place: String, CaseIterable, Identifiable {
         // cards.
         case .decks: return count(store.decks.count + store.deckSuggestions.count)
         case .radar: return count(store.suggestions.count)
+        // How much writing it has to go on — the one number that decides
+        // whether going there is worth it. Counted from the directory, not
+        // from a corpus walk (`VoiceStore.sampleCount`).
+        case .voice: return count(store.voiceSampleCount)
         case .settings: return nil
         }
     }
@@ -448,6 +456,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .due: DueView()
         case .decks: DecksView()
         case .radar: RadarView()
+        case .voice: VoiceView()
         case .settings: SettingsView()
         }
     }

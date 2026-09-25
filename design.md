@@ -451,6 +451,16 @@ Prompts are batched by rendered-token size (invariant 7), never by item count.
   building. Direct handoff ("Open in Claude", a `shifu radar draft` CLI) stays
   deferred (§12).
 
+### 6.3 Voice — the same question about prose (voice.md)
+
+The Radar answers "what could a machine take over?" for chores. **Voice**
+(`voice.md`) answers it for the writing nobody automates because the output has
+to sound like a person: a corpus of the user's own prose, a profile half
+measured and half described, and a desk that drafts in that register. It is the
+second place in the *Signals* band for that reason. Same handoff as here —
+Copy, never send — and the same gate: only the analyzer may reach the network,
+so pressing Draft is a launch of it (`--draft <id>`, mirroring `--build-deck`).
+
 ---
 
 ## 7. User Interface
@@ -514,11 +524,14 @@ This section is load-bearing; a screen watcher lives or dies on trust.
     YYYY/MM/*.md      # knowledge notes: reference notes and deck cards
     work/YYYY/MM/*.md # per-(task, day) work notes
     tasks/*.md        # per-task living overview documents
+  voice/              # the user's own writing, handed over on purpose (voice.md §2.1)
+    samples/*.md      # one file per sample; a sibling of the vault, never inside it
+    profile.md        # derived: measured statistics + the LLM's voice card
   digests/            # daily digest archives (markdown)
   logs/               # daemon logs, size-capped
 ```
 
-Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `themes` / `task_logs` (§5.3), `decks` / `deck_suggestions` (§5.2), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences), plus the disposable `vault_index` / `vault_fts` / `vault_vectors` search index — rebuildable from the Markdown, which is the source of truth.
+Key tables: `observations` (§3.5), `activities` (block, category, topic, confidence, task), `tasks` / `themes` / `task_logs` (§5.3), `decks` / `deck_suggestions` (§5.2), `voice_drafts` (voice.md §4.1 — the drafting queue only; the corpus itself is files), `rules` (user classification overrides), `suggestions`, `srs_reviews` (review log for FSRS optimization), `settings` (key/value user preferences), plus the disposable `vault_index` / `vault_fts` / `vault_vectors` search index — rebuildable from the Markdown, which is the source of truth.
 
 User-tunable settings are declared once in `SettingsCatalog` (key, default, bounds, copy) and read through typed accessors that clamp on both read and write, so the daemon and the Settings UI cannot disagree about a bound. `shifud` applies interval changes live via `Daemon.reloadIntervals()` — a new daemon-consumed setting must add its own changed-guard there, or it will persist and render correctly but be ignored until restart. Focus Mode's distracting-site list is deliberately *not* in `rules`: it drives the glow only, leaving ledger categories untouched. Raw-text retention is a catalog setting too (`privacy.text_retention_days`, 1–90, default 14) and the analyzer reads it on every run, so shortening it takes effect at the next scrub rather than at the next release.
 

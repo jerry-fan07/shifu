@@ -134,6 +134,26 @@ final class LedgerStore: ObservableObject {
     /// and a deck requested without one would sit "Building…" forever — so the
     /// actions that mint decks are gated on this rather than failing later.
     @Published private(set) var hasLLMBackend = false
+
+    // MARK: Voice (voice.md §5)
+
+    /// The writing corpus, loaded only by the Voice page — reading and
+    /// measuring every sample is the one walk that must not ride on every
+    /// dashboard refresh. `voiceSampleCount` is the cheap stand-in the rail's
+    /// badge uses (a directory listing, no parsing), and `refreshVoice` keeps
+    /// the two agreeing.
+    @Published private(set) var voiceSamples: [VoiceSample] = []
+    @Published private(set) var voiceSampleCount = 0
+    @Published private(set) var voiceMetrics = VoiceMetrics()
+    @Published private(set) var voiceProfile: VoiceProfile?
+    /// The drafting desk's history, newest first. Refreshed with everything
+    /// else, because that is how a finished draft reaches the page: the
+    /// analyzer's exit triggers a plain `refresh()`.
+    @Published private(set) var voiceDrafts: [VoiceDrafts.Draft] = []
+    /// The one line the Voice page says back — a refused sample, mostly.
+    /// Published rather than thrown so the page can show it where the button
+    /// was pressed instead of on the window's error line.
+    @Published var voiceNotice: String?
     @Published var reviewDeck: ReviewDeck = .all
     @Published var vaultQuery = ""
     @Published private(set) var vaultHits: [VaultSearch.Hit] = []
@@ -171,6 +191,11 @@ final class LedgerStore: ObservableObject {
     /// on-demand full analysis never cancel each other out of the "already
     /// running" check. Stored here because extensions can't hold state.
     var deckBuildProcess: Process?
+    /// The newest draft launch, held only so the `Process` lives to its exit
+    /// and its termination handler can refresh the desk. Deliberately not an
+    /// "already running" gate the way `deckBuildProcess` is — see
+    /// `requestDraft`. Stored here because extensions can't hold state.
+    var voiceDraftProcess: Process?
     private var lastAnalyzerRun = Date.distantPast
 
     /// Internal, not private: the store's actions are split across files
@@ -203,6 +228,8 @@ final class LedgerStore: ObservableObject {
             decks = (try? DeckStore.decks(database: database)) ?? []
             deckSuggestions = (try? DeckStore.pendingSuggestions(database: database)) ?? []
             hasLLMBackend = ((try? Settings.llmCredential(database: database)) ?? nil) != nil
+            voiceSampleCount = voice.sampleCount()
+            voiceDrafts = (try? VoiceDrafts.recent(database: database)) ?? []
         }
         do {
             let now = Date()
@@ -465,6 +492,23 @@ final class LedgerStore: ObservableObject {
     static func hours(_ ms: Int64) -> String {
         let hrs = Double(ms) / 3_600_000
         return hrs >= 1 ? String(format: "%.1f h", hrs) : "\(ms / 60_000) min"
+    }
+
+    /// Republishes the writing corpus and everything measured from it. Called
+    /// by the Voice page and after every voice action — not from `refresh()`,
+    /// which every other page triggers (voice.md §5). The assignment is here
+    /// rather than in LedgerStoreVoice.swift for the reason the vault's is:
+    /// these are `private(set)`, and an extension in another file can't write
+    /// them.
+    func refreshVoice() {
+        let snapshot = voiceSnapshot()
+        voiceSamples = snapshot.samples
+        voiceSampleCount = snapshot.samples.count
+        voiceMetrics = snapshot.metrics
+        voiceProfile = snapshot.profile
+        if let database = try? db() {
+            voiceDrafts = (try? VoiceDrafts.recent(database: database)) ?? []
+        }
     }
 
     /// Republishes every vault-derived queue. The walk itself lives in the
