@@ -323,7 +323,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v28 in
+The schema is defined *only* as migrations v1–v29 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -423,7 +423,14 @@ same deck. v20 adds the optional `instructions` brief from the New deck page,
 stored on the row so drain retries in other processes still build what the
 user described; v21 adds its `cards_min`/`cards_max` range — both NULL is
 automatic, and `cards_max` is enforced by `DeckBuilder`, not just prompted
-for. No `card_count` column on purpose: review-time pruning would
+for; v29 adds `topics` (JSON array narrowing which block topics a build
+reads; NULL is all) and `section` (the chapter label of the current request,
+stamped into each card's `section:` frontmatter). "Add cards" re-opens a
+`ready` deck by overwriting the request columns and re-entering `pending`
+(`DeckStore.requestMoreCards`, a CAS that fires only from `ready`); `built_at`
+survives and is the reviewability gate everywhere (`Deck.everBuilt`), so a
+deck mid-addition keeps reviewing. No `card_count` column on purpose:
+review-time pruning would
 make a stored count wrong within the session, so it is always derived from
 `vault_index.deck_key`) and **`deck_suggestions`** (v18, unique **`task_key`**
 — not `task_id`: the row is permanent, and prune/merge delete task rows while
@@ -572,8 +579,8 @@ orphan good data.
 
 ## 7. Extension recipes
 
-**Add a database migration.** Append `migrator.registerMigration("v29-…")` in
-`ShifuDatabase.migrator`. Never edit v1–v28 — they have run on real machines.
+**Add a database migration.** Append `migrator.registerMigration("v30-…")` in
+`ShifuDatabase.migrator`. Never edit v1–v29 — they have run on real machines.
 Pick the next number by checking what has actually *run* (`select identifier
 from grdb_migrations`), not just what is in this file: parallel branches pick
 "the next version" independently, and a duplicate identifier is not a

@@ -37,6 +37,20 @@ public enum DeckBuilder {
         var text: String
     }
 
+    /// What an addition build is adding *to*: the deck's current size and
+    /// topics. Folded into the prompt so the budget goes to new cards —
+    /// deck-scoped dedupe would only eat a repeated card *after* the model
+    /// billed for writing it.
+    struct ExistingCards {
+        var count: Int
+        var topics: [String]
+    }
+
+    /// How many of the deck's distinct topics an addition prompt names —
+    /// enough to steer the model away from what's there without letting a
+    /// three-hundred-card deck flood the prompt.
+    static let existingTopicsCap = 40
+
     // MARK: - Prompt (pure, testable)
 
     /// One deck build issues several batches over one unchanging preamble, so
@@ -46,9 +60,11 @@ public enum DeckBuilder {
     /// on every batch, which is what used to end the shared prefix on line 3.
     static func prompt(
         title: String, taskName: String, instructions: String?,
-        range: DeckStore.CardRange? = nil, written: Int = 0, blocks: [BlockText]
+        topics: [String]? = nil, range: DeckStore.CardRange? = nil,
+        existing: ExistingCards? = nil, written: Int = 0, blocks: [BlockText]
     ) -> String {
         let brief = instructionLines(instructions, written: written)
+            + topicsLine(topics) + existingLines(existing)
         return """
         Create spaced-repetition flashcards from the screen text below, for one deck
         built from one task. The deck and the card budget come after the excerpts.
@@ -73,8 +89,34 @@ public enum DeckBuilder {
         \(blocks.map(\.text).joined(separator: "\n---\n"))
 
         The deck: "\(title)", from the user's work on the task "\(taskName)".
-        \(brief)\(budgetLine(instructions, range: range, written: written))
+        \(brief)\(budgetLine(instructions, range: range, written: written,
+                             adding: existing != nil))
         """
+    }
+
+    /// The user's topic narrowing, when one was picked. The blocks are
+    /// already filtered to these topics before the prompt is built; the line
+    /// is so the model also *aims* at them rather than chasing whatever else
+    /// leaked into a mixed block.
+    private static func topicsLine(_ topics: [String]?) -> String {
+        guard let topics, !topics.isEmpty else { return "" }
+        return "Only cover these topics — skip material outside them: "
+            + topics.joined(separator: "; ") + ".\n\n"
+    }
+
+    /// What the deck already holds, on an addition. Without this the model
+    /// re-derives the same obvious cards from the same task, and the dedupe
+    /// throws them away after they were billed for.
+    private static func existingLines(_ existing: ExistingCards?) -> String {
+        guard let existing else { return "" }
+        var lines = "This deck already holds \(existing.count) "
+            + "card\(existing.count == 1 ? "" : "s")"
+        if !existing.topics.isEmpty {
+            lines += ", on: " + existing.topics.joined(separator: "; ")
+        }
+        lines += ". You are adding to it: write only cards that cover something "
+            + "those don't — never repeat or rephrase them."
+        return lines + "\n\n"
     }
 
     /// The user's own brief for the deck, when one was given. One operative
@@ -106,11 +148,18 @@ public enum DeckBuilder {
     /// hope), the per-response ceiling otherwise, yielding to the brief
     /// either way since the brief outranks the budget by name.
     private static func budgetLine(
-        _ instructions: String?, range: DeckStore.CardRange?, written: Int
+        _ instructions: String?, range: DeckStore.CardRange?, written: Int,
+        adding: Bool = false
     ) -> String {
         if let range {
-            var line = "Write between \(range.lower) and \(range.upper) cards in "
-                + "total for this deck, across every response"
+            // An addition's range budgets the addition, not the whole deck —
+            // the enforcement in `build` counts this build's writes, so the
+            // words and the code have to agree on what is being counted.
+            var line = adding
+                ? "Write between \(range.lower) and \(range.upper) new cards in "
+                    + "this addition, across every response"
+                : "Write between \(range.lower) and \(range.upper) cards in "
+                    + "total for this deck, across every response"
             if written > 0 {
                 line += " — \(written) already written in earlier responses; "
                     + "respond with an empty array once the total is met"
@@ -142,18 +191,22 @@ public enum DeckBuilder {
         guard let claim = try DeckStore.claimForBuild(
             key: deckKey, database: database, now: now) else { return nil }
         do {
-            let blocks = try blocks(taskKey: claim.taskKey, database: database)
+            let blocks = try blocks(taskKey: claim.taskKey, database: database,
+                                    topics: claim.topics)
             let taskName = try taskName(taskKey: claim.taskKey, database: database)
                 ?? claim.title
+            let existing = try existingCards(claim: claim, vault: vault)
             var written = 0
-            for batch in batches(blocks, claim: claim, taskName: taskName, backend: backend) {
+            for batch in batches(blocks, claim: claim, taskName: taskName,
+                                 existing: existing, backend: backend) {
                 // The range's top is enforced, not just asked for: a full
                 // deck skips its remaining batches without another call.
                 if let ceiling = claim.cardRange?.upper, written >= ceiling { break }
                 let response = try await backend.complete(
                     prompt: prompt(title: claim.title, taskName: taskName,
                                    instructions: claim.instructions,
-                                   range: claim.cardRange, written: written,
+                                   topics: claim.topics, range: claim.cardRange,
+                                   existing: existing, written: written,
                                    blocks: batch),
                     maxTokens: responseTokens)
                 written += try save(CardCandidates.parse(response), claim: claim,
@@ -188,14 +241,27 @@ public enum DeckBuilder {
     }
 
     /// The task's most recent learning/work blocks, each text capped at the
-    /// source (invariant 7) so no single block can dominate a batch.
-    static func blocks(taskKey: String, database: ShifuDatabase) throws -> [BlockText] {
+    /// source (invariant 7) so no single block can dominate a batch. The
+    /// topic narrowing sits *before* the LIMIT: a "Genetics" chapter gets its
+    /// forty genetics blocks of evidence, not forty recent blocks filtered
+    /// down to whatever genetics survived the cut.
+    static func blocks(
+        taskKey: String, database: ShifuDatabase, topics: [String]? = nil
+    ) throws -> [BlockText] {
         try database.queue.read { db in
-            let ids = try Int64.fetchAll(db, sql: """
+            var sql = """
                 SELECT a.id FROM activities a JOIN tasks t ON t.id = a.task_id
                 WHERE t.key = ? AND a.category IN ('learning', 'work')
-                ORDER BY a.started_at DESC LIMIT ?
-                """, arguments: [taskKey, maxBlocks])
+                """
+            var arguments: [(any DatabaseValueConvertible)?] = [taskKey]
+            if let topics, !topics.isEmpty {
+                sql += " AND a.topic IN (\(databaseQuestionMarks(count: topics.count)))"
+                arguments += topics
+            }
+            sql += " ORDER BY a.started_at DESC LIMIT ?"
+            arguments.append(maxBlocks)
+            let ids = try Int64.fetchAll(db, sql: sql,
+                                         arguments: StatementArguments(arguments))
             return try ids.compactMap { id in
                 let texts = try String.fetchAll(db, sql: """
                     SELECT text FROM observations
@@ -206,6 +272,48 @@ public enum DeckBuilder {
                     id: id, text: String(texts.joined(separator: "\n").prefix(blockCharCap)))
             }
         }
+    }
+
+    /// The distinct topics of *exactly the blocks an unnarrowed build would
+    /// read* — the deck forms' checklist. The LIMIT goes over all blocks,
+    /// topicless (rules-classified) ones included, and the topic filter over
+    /// the survivors: a private window would offer topics whose blocks the
+    /// all-on default build never touches. A narrowed build then only ever
+    /// reaches *more* than the checklist showed (its own `maxBlocks` of the
+    /// picked topics — the filter-before-LIMIT in `blocks`). Empty when the
+    /// window carries no topics, in which case the forms hide the checklist.
+    public static func taskTopics(
+        taskKey: String, database: ShifuDatabase
+    ) throws -> [String] {
+        let raw = try database.queue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT topic FROM (
+                    SELECT a.topic AS topic, a.started_at AS started_at
+                    FROM activities a JOIN tasks t ON t.id = a.task_id
+                    WHERE t.key = ? AND a.category IN ('learning', 'work')
+                    ORDER BY a.started_at DESC LIMIT ?
+                ) WHERE topic IS NOT NULL AND topic <> ''
+                ORDER BY started_at DESC
+                """, arguments: [taskKey, maxBlocks])
+        }
+        var seen = Set<String>()
+        return raw.filter { seen.insert($0).inserted }
+    }
+
+    /// Nil on a first build. On an addition — the claim of a deck that has
+    /// finished a build before — the deck's card count and its distinct
+    /// topics, capped at `existingTopicsCap`, read back from the vault so a
+    /// drain retry in a fresh process still knows what it is adding to.
+    static func existingCards(
+        claim: DeckStore.Claim, vault: VaultStore
+    ) throws -> ExistingCards? {
+        guard claim.builtAt != nil else { return nil }
+        let cards = try vault.deckNotes(deckKey: claim.key)
+        guard !cards.isEmpty else { return nil }
+        var seen = Set<String>()
+        let topics = cards.map(\.topic).filter { seen.insert($0.lowercased()).inserted }
+        return ExistingCards(count: cards.count,
+                             topics: Array(topics.prefix(existingTopicsCap)))
     }
 
     /// The task's display name, or nil once the task is gone — a deck outlives
@@ -223,16 +331,20 @@ public enum DeckBuilder {
     /// against DeepSeek's 60k window and many more against a smaller one.
     static func batches(
         _ blocks: [BlockText], claim: DeckStore.Claim, taskName: String,
-        backend: any LLMBackend
+        existing: ExistingCards? = nil, backend: any LLMBackend
     ) -> [[BlockText]] {
         LLMTokens.batches(
             blocks,
             budget: backend.contextWindowTokens - backend.responseReserve(responseTokens)
         ) {
             // Sized with a nonzero `written` so the bookkeeping line a later
-            // batch carries is already inside the budget its batch was cut to.
+            // batch carries is already inside the budget its batch was cut
+            // to — and with the real topics and existing-cards lines, which
+            // ride every batch of the build (invariant 7: a long-lived
+            // deck's addition preamble must not outgrow the window).
             prompt(title: claim.title, taskName: taskName,
-                   instructions: claim.instructions, range: claim.cardRange,
+                   instructions: claim.instructions, topics: claim.topics,
+                   range: claim.cardRange, existing: existing,
                    written: maxCardsPerBatch, blocks: $0)
         }
     }
@@ -255,7 +367,8 @@ public enum DeckBuilder {
                 topic: candidate.topic, note: candidate.note,
                 question: question, answer: answer)
             if try DeckStore.write(card, deckKey: claim.key, taskKey: claim.taskKey,
-                                   vault: vault, confidence: candidate.confidence, now: now) {
+                                   vault: vault, section: claim.section,
+                                   confidence: candidate.confidence, now: now) {
                 written += 1
             }
         }

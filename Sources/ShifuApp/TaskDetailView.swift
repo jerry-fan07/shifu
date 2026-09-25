@@ -127,7 +127,9 @@ struct TaskContents: View {
     @ViewBuilder private var deckControl: some View {
         if let detail {
             if let deck = store.deck(taskKey: detail.task.key) {
-                Text(deck.status == .ready
+                // `everBuilt`, not `status`: a deck mid-"Add cards" is
+                // pending again, but its settled cards are still a deck.
+                Text(deck.everBuilt
                     ? "Deck · \(deck.cardCount) cards"
                     : "Deck building…")
                     .font(Instrument.sans(11.5))

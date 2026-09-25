@@ -19,14 +19,20 @@ import Testing
     /// "v<n>" or "v<n>-<name>". The optional name is what keeps two branches
     /// that both pick the next number from silently skipping each other's
     /// migration — GRDB keys `grdb_migrations` on the whole string, so "v19"
-    /// and "v19-llm-usage" coexist while two bare "v19"s do not. The number
-    /// still has to be the next one, so the sequence stays readable.
-    @Test func migrationsAreNamedInVersionOrderWithNoGapsOrRepeats() throws {
+    /// and "v19-llm-usage" coexist while two bare "v19"s do not (GRDB traps
+    /// the identical pair at registration). A repeated *number* is therefore
+    /// legal, and real: the v27 pair is two workspaces landing concurrently,
+    /// and renaming either after it has run on real databases is the exact
+    /// footgun the names exist to avoid. What must still hold is order and
+    /// coverage — numbers never go backwards, and none is skipped, so "pick
+    /// the next number from what has actually run" stays readable.
+    @Test func migrationsAreNamedInVersionOrderWithNoGaps() throws {
         let versions = Self.migrationNames.map { name -> Int in
             Int(name.dropFirst().prefix { $0.isNumber }) ?? -1
         }
         #expect(Self.migrationNames.allSatisfy { $0.hasPrefix("v") })
-        #expect(versions == Array(1...versions.count))
+        #expect(versions == versions.sorted())
+        #expect(Set(versions) == Set(1...versions.max()!))
     }
 
     /// Migrating one version at a time has to reach the same schema as

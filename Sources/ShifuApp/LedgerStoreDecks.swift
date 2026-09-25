@@ -29,18 +29,42 @@ extension LedgerStore {
     @discardableResult
     func createDeck(
         taskKey: String, title: String, instructions: String? = nil,
-        cardRange: DeckStore.CardRange? = nil,
+        cardRange: DeckStore.CardRange? = nil, topics: [String]? = nil,
         newPerDay: Int? = DeckStore.defaultNewPerDay, paused: Bool = false
     ) -> DeckStore.Deck? {
         guard let database = try? db(),
               let key = try? DeckStore.create(
                   title: title, taskKey: taskKey, instructions: instructions,
-                  cardRange: cardRange, newPerDay: newPerDay, paused: paused,
-                  database: database)
+                  cardRange: cardRange, topics: topics, newPerDay: newPerDay,
+                  paused: paused, database: database)
         else { return nil }
         buildDeck(key: key)
         refreshSoon()
         return (try? DeckStore.deck(taskKey: taskKey, database: database)) ?? nil
+    }
+
+    /// The "Add cards" form on a deck's page: re-opens a built deck with a
+    /// new request — its own topics, brief, range, and chapter label — and
+    /// launches the analyzer. Still one deck per task; this is how that one
+    /// deck grows chapters instead of the task getting a second.
+    func addCards(
+        to deck: DeckStore.Deck, instructions: String?, topics: [String]?,
+        cardRange: DeckStore.CardRange?, section: String?
+    ) {
+        guard let database = try? db(),
+              (try? DeckStore.requestMoreCards(
+                  key: deck.key, instructions: instructions, topics: topics,
+                  cardRange: cardRange, section: section, database: database)) == true
+        else { return }
+        buildDeck(key: deck.key)
+        refreshSoon()
+    }
+
+    /// The deck forms' topic checklist — the distinct topics of the blocks a
+    /// build would actually read. Empty hides the checklist.
+    func deckTopicOptions(taskKey: String) -> [String] {
+        guard let database = try? db() else { return [] }
+        return (try? DeckBuilder.taskTopics(taskKey: taskKey, database: database)) ?? []
     }
 
     /// Asks the analyzer to fill a deck in. Only that binary may reach the
