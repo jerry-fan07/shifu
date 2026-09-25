@@ -276,14 +276,6 @@ struct CardTextView: View {
         return attributed
     }
 
-    /// The width a session's span column takes at `baseSize` — the figure and
-    /// the space before the rail. Exposed because a caller that stacks its own
-    /// blocks under a timeline (the task page's day) has to hang them off the
-    /// same column, or the day reads as two documents.
-    static func sessionGutter(baseSize: CGFloat) -> CGFloat {
-        SessionRail.contentInset(gutter: spanWidth(baseSize))
-    }
-
     /// Wide enough for one "00:00–00:00" — measured, because the figure face is
     /// whichever of Plex Mono and SF Mono is installed. A model that merged two
     /// stretches into one lead writes a longer label; that one wraps inside the

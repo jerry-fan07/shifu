@@ -3,6 +3,7 @@
 *.xcodeproj
 xcuserdata/
 DerivedData/
+.vscode/
 .DS_Store
 dist/
 .wrangler/

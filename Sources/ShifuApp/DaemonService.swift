@@ -34,12 +34,6 @@ enum DaemonService {
         SMAppService.agent(plistName: agentPlistName).status
     }
 
-    /// True once the agent needs the user's nod in System Settings → General
-    /// → Login Items — the one state registration can't get itself out of.
-    static var requiresApproval: Bool {
-        isBundled && status == .requiresApproval
-    }
-
     /// Registers the bundled daemon, migrating a legacy dev install out of
     /// the way first — both registrations share the com.shifu.shifud label,
     /// so the old one must be gone before the new one can exist. Safe to call

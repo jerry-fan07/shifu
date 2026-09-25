@@ -736,6 +736,18 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   Deliberately not wired to a button yet: irreversible bulk deletion wants a
   confirmation design (what exactly goes, what survives, how it is undone) that
   is more work than the button.
+- **A `shifu forget --rewind` verb, and a Login Items nudge (§3.6, §7)** — two
+  affordances that until 2026-08-20 existed only as helpers nothing called:
+  `RewindStore.purgeEverything` (drop every frame and folder Rewind ever wrote,
+  saved rewinds included) and `DaemonService.requiresApproval` (true while the
+  bundled agent waits on System Settings → General → Login Items). Both were
+  deleted rather than left standing, because an uncalled helper reads as a
+  wired feature — each had drifted into claiming callers that never existed.
+  Either is a few lines to write back the day its surface is designed. The
+  forget verb wants the same confirmation question as the row above; the
+  approval nudge wants somewhere in Onboarding to say it, since an agent parked
+  in `.requiresApproval` captures nothing and today tells the user that
+  nowhere. `purgeBuffer` is unaffected and still runs when recording goes off.
 - **One "Models" row instead of two (§9)** — the design pairs the fast and
   reasoning model fields under a single label with sub-captions. Better
   reading, but it means the Settings page stops being a pure render of

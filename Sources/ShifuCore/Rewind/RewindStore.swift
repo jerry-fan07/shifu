@@ -33,7 +33,6 @@ public struct RewindStore: Sendable {
     }
 
     public var bufferDirectory: URL { root.appendingPathComponent("buffer", isDirectory: true) }
-    public var savedDirectory: URL { root.appendingPathComponent("saved", isDirectory: true) }
 
     /// An encoded frame and the size it came out at — one value because the
     /// bytes and their dimensions are never separately true.
@@ -392,17 +391,6 @@ public struct RewindStore: Sendable {
             try delete(id: id)
         }
         return due.count
-    }
-
-    /// Removes every frame and folder Rewind has ever written, and the rows
-    /// with them — what switching recording off, and `shifu forget --rewind`,
-    /// both mean. Idempotent.
-    public func purgeEverything() throws {
-        _ = try database.queue.write { db in
-            try db.execute(sql: "DELETE FROM rewind_frames")
-            try db.execute(sql: "DELETE FROM rewinds")
-        }
-        try? FileManager.default.removeItem(at: root)
     }
 
     /// Drops the rolling buffer alone, keeping everything saved. This is what

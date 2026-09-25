@@ -275,10 +275,10 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), the page's scroll-driven campaign [`ShifuApp/ThemeCampaign.swift`](Sources/ShifuApp/ThemeCampaign.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
 | Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
-| The Time page's modes, span and lens | [`ShifuApp/TimeView.swift`](Sources/ShifuApp/TimeView.swift) — `TimeView` |
-| How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
-| What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`; system shells are charted nowhere because `rebuild` never writes them a block (`TaskGrouper.isSystemBundle`, design.md §7) |
-| The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
+| The Ledger's modes, span and lens | [`ShifuApp/LedgerViews.swift`](Sources/ShifuApp/LedgerViews.swift) — `LedgerView`; `Mode` picks Breakdown vs Timeline, and the Day/Week window and the lens are both `@AppStorage`, so they survive leaving the page |
+| How time is grouped, ranked and colored for the Ledger | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
+| What the Ledger counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`; system shells are charted nowhere because `rebuild` never writes them a block (`TaskGrouper.isSystemBundle`, design.md §7) |
+| The Breakdown's table, the day ribbon, the timeline | [`ShifuApp/BreakdownTable.swift`](Sources/ShifuApp/BreakdownTable.swift), [`ShifuApp/DayRibbon.swift`](Sources/ShifuApp/DayRibbon.swift), and `TimelineChart` / `SummaryLine` in [`ShifuApp/LedgerViews.swift`](Sources/ShifuApp/LedgerViews.swift) |
 | Focus sessions read back + the focus score | [`Storage/FocusModeSessions.swift`](Sources/ShifuCore/Storage/FocusModeSessions.swift) — `overlapping`; scored by [`Analysis/FocusReport.swift`](Sources/ShifuCore/Analysis/FocusReport.swift) (mirrors `FocusModeController`'s on/off-task split); drawn by [`ShifuApp/FocusViews.swift`](Sources/ShifuApp/FocusViews.swift) behind the Breakdown picker's Focus position |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What the LLM calls cost — token accounting and its rollups | [`Storage/LLMUsage.swift`](Sources/ShifuCore/Storage/LLMUsage.swift); recorded in `DeepSeekBackend.send`, read by `shifu status` |
@@ -291,7 +291,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | What a frame or a saved rewind costs, and everything that deletes one | [`Rewind/RewindStore.swift`](Sources/ShifuCore/Rewind/RewindStore.swift) — the single writer of pixels |
 | "Save a rewind" / "Snip" — the app→daemon channel and what a snip files | [`Rewind/RewindRequest.swift`](Sources/ShifuCore/Rewind/RewindRequest.swift), [`shifud/RewindRequests.swift`](Sources/shifud/RewindRequests.swift), [`Rewind/SnipNote.swift`](Sources/ShifuCore/Rewind/SnipNote.swift) |
 | Dragging a box to snip — the overlay, and the AppKit→ScreenCaptureKit coordinate flip | [`ShifuApp/SnipOverlay.swift`](Sources/ShifuApp/SnipOverlay.swift) draws it (and captures nothing); `SnipRegion` in [`Rewind/RewindRequest.swift`](Sources/ShifuCore/Rewind/RewindRequest.swift) is the maths and the wire format; `RewindShot.capture(region:)` hands it to `sourceRect` |
-| The Rewind place — the player, the rail, the shelf | [`ShifuApp/RewindView.swift`](Sources/ShifuApp/RewindView.swift) (+`RewindPlayer`, `RewindRail`, `RewindShelf`, `RewindDetailPage`); the rail's arithmetic is [`Rewind/RewindTimeline.swift`](Sources/ShifuCore/Rewind/RewindTimeline.swift) |
+| The Rewind place — the player, the rail, the shelf | [`ShifuApp/RewindView.swift`](Sources/ShifuApp/RewindView.swift) (+`RewindViewport` / `RewindTransport` in [`ShifuApp/RewindPlayer.swift`](Sources/ShifuApp/RewindPlayer.swift), `RewindRail`, `RewindShelf`, `RewindDetailPage`); the rail's arithmetic is [`Rewind/RewindTimeline.swift`](Sources/ShifuCore/Rewind/RewindTimeline.swift) |
 | Fullscreen — the window, the key handling, and the chrome that hides itself off the footage | [`ShifuApp/RewindFullscreen.swift`](Sources/ShifuApp/RewindFullscreen.swift) (`FullscreenPlayerWindow`, `FullscreenChrome`, `RewindFullscreenPlayer`) |
 | Play/pause, ±10 s, playback speed — the transport both players wear | [`ShifuApp/RewindControlBar.swift`](Sources/ShifuApp/RewindControlBar.swift) draws it, [`ShifuApp/RewindClock.swift`](Sources/ShifuApp/RewindClock.swift) is the timer, and the arithmetic — **the playhead is a moment, not a frame index** — is [`Rewind/RewindPlayback.swift`](Sources/ShifuCore/Rewind/RewindPlayback.swift) |
 | When a deadline speaks and what it says — lead buckets, the hour gate, progress quarters | [`Deadlines/DeadlineHorizon.swift`](Sources/ShifuCore/Deadlines/DeadlineHorizon.swift) — `leads`, `bucket`, `fireMoment`, `announcements`; the wording is [`Deadlines/DeadlineCopy.swift`](Sources/ShifuCore/Deadlines/DeadlineCopy.swift) |
@@ -321,10 +321,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
 | The main window's layout, camera flights, pages and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
-| The trail — where places live and how you pick one | [`ShifuApp/TrailRail.swift`](Sources/ShifuApp/TrailRail.swift); a place's spot on the mountain is `Destination.stationIndex` / `.landmark` in [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) |
-| The mountain: terrain, camera math, ridgelines | [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) — `WorldMap.runs` is the one source of truth for the stair |
-| Painting the mountain, and the temples on it | [`ShifuApp/WorldStage.swift`](Sources/ShifuApp/WorldStage.swift), [`ShifuApp/WorldLandmarks.swift`](Sources/ShifuApp/WorldLandmarks.swift) |
-| The app's look — colors, cards, wisdom, the sensei | [`ShifuApp/Dojo.swift`](Sources/ShifuApp/Dojo.swift), [`ShifuApp/SenseiView.swift`](Sources/ShifuApp/SenseiView.swift) |
+| The source list — where places live and how you pick one | [`ShifuApp/SourceList.swift`](Sources/ShifuApp/SourceList.swift); `Place` (the places) and `Route` / `Router` (what is open inside one) are in [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) |
+| The app's look — surfaces, the one accent, the chart scale | [`ShifuApp/Instrument.swift`](Sources/ShifuApp/Instrument.swift) — see §7; chrome that wraps it is [`ShifuApp/InstrumentChrome.swift`](Sources/ShifuApp/InstrumentChrome.swift), [`ShifuApp/InstrumentControls.swift`](Sources/ShifuApp/InstrumentControls.swift), [`ShifuApp/InstrumentMarks.swift`](Sources/ShifuApp/InstrumentMarks.swift) |
 | CLI commands | [`shifu-cli/main.swift`](Sources/shifu-cli/main.swift) |
 | The analyzer's stage order | [`shifu-analyzer/main.swift`](Sources/shifu-analyzer/main.swift) |
 
@@ -611,7 +609,7 @@ valid.
 
 **Add a category.** Add the case to `Category` in `Models/Activity.swift`
 (raw value = the string stored in SQLite), add seeds to `RulesClassifier`, and
-add a color in `TimePalette.categoryColors` (pick a `Dojo.chartSlots` hue).
+add a color in `TimePalette.categoryColors` (pick an `Instrument.slots` hue).
 `CardBuilder.prompt`
 derives its category list from `Category.allCases`, so the LLM tier updates
 itself — except `privateTime` and `unclassified`, which it filters out.
@@ -659,6 +657,22 @@ dictionary in `run()`, plus a line in `usage`.
 `VaultSearch` filter on it. Knowledge-note queries must keep excluding other
 kinds — `Note.parse` returns nil for non-`.knowledge` files precisely so work
 and project notes can never enter the review queue.
+
+**Walk a span one calendar unit at a time** (hour columns, day buckets) — the
+obvious implementation hangs. `date(bySettingHour:minute:second:of:)`
+force-unwraps an optional that is genuinely nil on the hour a spring-forward
+skips, and on a fall-back's *repeated* hour it resolves to the first
+occurrence, which is behind the cursor — so the cursor moves backwards and the
+loop never ends. Two shipped callers were written that way and both hung.
+Advance with `calendar.dateInterval(of: unit, for: cursor)?.end` instead: the
+interval it returns contains the cursor, so the walk always moves forward, and
+add an explicit `boundary > cursor` guard as a second belt. Nothing in the app
+walks a span this way today — the Ledger buckets per block with
+`component(.hour, from:)` and steps off midnight with `date(byAdding:)`,
+neither of which is the trap. A worked implementation, `CalendarSlices.walk`,
+existed until its last caller went and was deleted with it — its DST tests
+covered both transitions, so lift it back out of the history of
+`Sources/ShifuCore/Analysis/CalendarSlices.swift` rather than writing it again.
 
 ---
 
@@ -747,19 +761,7 @@ To see a change in the real app, `swift build` is not enough — see
 ## 11. Known deviations from spec
 
 Live discrepancies between the code and design.md. Keep this section short and
-current — an entry here is a debt, not a decision.
+current — an entry here is a debt, not a decision, and one left standing after
+it is paid sends the next reader hunting a bug that no longer exists.
 
-### `Tests/ShifuCoreTests/ShifuCoreTests.swift` is a placeholder
-
-Six lines asserting `Shifu.version` is non-empty — the `swift package init`
-stub. Harmless, but it is not a real test.
-
-### The Time page's hour bucketing is DST-correct only through `CalendarSlices`
-
-`DayTrail.stones` and `TimeBuckets.buckets` both walk a span one calendar unit
-at a time. The obvious implementation — `date(bySettingHour:minute:second:of:)`
-— force-unwraps an optional that is nil on a spring-forward, and on a fall-back
-resolves the repeated hour to the occurrence *behind* the cursor, so the loop
-never terminates. Both were written that way and both hung. Any new
-span-walking code must go through
-[`Analysis/CalendarSlices.swift`](Sources/ShifuCore/Analysis/CalendarSlices.swift).
+*(Nothing open.)*

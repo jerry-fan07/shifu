@@ -77,8 +77,9 @@ public enum DeadlineHorizon {
     /// and the user means the first. Both ends collapse to their local
     /// midnight first, so a deadline set for 09:00 tomorrow reads as 1 day away
     /// at 22:00 tonight — not 0 — and DST is the calendar's problem, not ours.
-    /// Nothing here walks a span, so `CalendarSlices` is not needed
-    /// (ARCHITECTURE.md §11).
+    /// Nothing here walks a span, so the spring-forward/fall-back trap in
+    /// ARCHITECTURE.md's "Walk a span one calendar unit at a time" recipe
+    /// does not apply.
     public static func daysUntil(
         dueAt: Int64, now: Int64, calendar: Calendar = .current
     ) -> Int {
