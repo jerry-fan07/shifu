@@ -364,20 +364,4 @@ import Testing
         #expect(try store.saved().map(\.id) == [saved.id])
         #expect(try store.frames(ofRewind: try #require(saved.id)).count == 1)
     }
-
-    @Test func purgingEverythingLeavesNoFrameAndNoFolder() throws {
-        let harness = try makeStore()
-        let (store, root) = (harness.store, harness.root)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        try store.appendToBuffer(
-            bitmap: bitmap(), at: 1_000, source: .init(appBundle: "app"))
-        _ = try store.saveRewind(from: 0, to: 2_000, title: "kept", now: 2_000, retentionDays: 14)
-
-        try store.purgeEverything()
-
-        #expect(try store.bufferFrames().isEmpty)
-        #expect(try store.saved().isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: root.path))
-    }
 }

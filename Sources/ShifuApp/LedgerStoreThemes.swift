@@ -23,10 +23,6 @@ extension LedgerStore {
         refreshSoon()
     }
 
-    func renameTheme(_ themeID: Int64, to name: String) {
-        updateTheme(themeID, name: name, gist: nil)
-    }
-
     /// nil leaves a field alone, so the inline rename on the theme page can't
     /// blank the gist the edit sheet sets.
     func updateTheme(_ themeID: Int64, name: String?, gist: String?) {
@@ -42,16 +38,6 @@ extension LedgerStore {
         if let database = try? db() {
             try? ThemeStore.delete(themeID: themeID, database: database)
         }
-        refreshSoon()
-    }
-
-    /// "New theme…" from a task row: mint it and file the task there in one
-    /// step, so the theme never exists empty.
-    func createThemeAndAssign(_ taskID: Int64, themeName: String) {
-        guard let database = try? db(),
-              let key = try? ThemeStore.create(named: themeName, database: database) ?? nil
-        else { return }
-        try? TaskStore.assignTheme(taskID: taskID, themeKey: key, database: database)
         refreshSoon()
     }
 
