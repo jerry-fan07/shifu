@@ -1,7 +1,6 @@
 import AppKit
 import ShifuCore
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The two sections that carry no stored settings of their own: Privacy, whose
 /// exclusions live in their own table, and About, whose facts live on disk.
@@ -49,14 +48,9 @@ private struct ExcludedAppsRow: View {
         }
     }
 
-    /// The app's own name when macOS can still find it, falling back to the
-    /// identifier — which is also what an app that has since been deleted
-    /// shows, so a stale row is visibly stale rather than silently wrong.
-    private static func appName(_ bundleID: String) -> String {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
-        else { return bundleID }
-        return FileManager.default.displayName(atPath: url.path)
-    }
+    /// Shared with the Rewind legend, so an app is never called two things in
+    /// one app (`AppNames`).
+    private static func appName(_ bundleID: String) -> String { AppNames.display(bundleID) }
 
     private func choose() {
         let panel = NSOpenPanel()

@@ -40,7 +40,8 @@ private final class FakeSession: @unchecked Sendable {
 @MainActor
 private func makeDaemon(
     pausedUntil: Date? = nil, home: URL? = nil, session: FakeSession? = nil,
-    recheckInterval: TimeInterval = Daemon.recheckInterval
+    recheckInterval: TimeInterval = Daemon.recheckInterval,
+    recordingRewind: Bool = false
 ) throws -> Daemon {
     let database = try ShifuDatabase.inMemory()
     let engine = CaptureEngine(
@@ -56,10 +57,29 @@ private func makeDaemon(
         try PauseFile.pause(until: pausedUntil, home: target)
         pauseHome = target
     }
+
+    // Rewind is wired in only when a test asks for it, and never reaches a
+    // screen: the probe answers with a frontmost app and no pixels at all.
+    var rewind: RewindRecorder?
+    if recordingRewind {
+        try Settings.set(SettingsCatalog.rewindRecording, to: "on", database: database)
+        let rewindHome = try scratchHome()
+        rewind = RewindRecorder(
+            store: RewindStore(
+                database: database,
+                root: rewindHome.appendingPathComponent("rewind", isDirectory: true)),
+            database: database, exclusions: try Exclusions(database: database),
+            probe: RewindRecorder.Probe(
+                frontmost: { ("com.example.app", 1) }, focusedWindow: { _ in nil },
+                title: { _ in nil }, webAreaURL: { _ in nil }, grab: { _, _ in nil }),
+            home: rewindHome)
+    }
+
     return Daemon(engine: engine, database: database,
                   pauseController: PauseController(home: pauseHome),
                   session: session?.probe ?? FakeSession().probe,
-                  recheckInterval: recheckInterval)
+                  recheckInterval: recheckInterval,
+                  rewind: rewind)
 }
 
 @MainActor
@@ -123,6 +143,33 @@ private func makeDaemon(
     @Test func aDaemonThatNeverStartedHasNothingAttached() throws {
         let state = try daemon().observerState
         #expect(state == Daemon.ObserverState())
+    }
+
+    /// Rewind is the one observer that writes *pixels* (design.md §3.6), so
+    /// "pause tears down observers" has to reach it — and reach it through the
+    /// same `startCapture`/`stopCapture` pair as everything else, so a locked
+    /// screen and another user on the console tear it down for free too.
+    @Test func pauseTearsDownTheRewindRecorderLikeEveryOtherObserver() throws {
+        let daemon = try makeDaemon(recordingRewind: true)
+        daemon.startCapture()
+        #expect(daemon.observerState.rewindRecorder)
+
+        daemon.stopCapture()
+        #expect(!daemon.observerState.rewindRecorder)
+
+        daemon.startCapture()
+        #expect(daemon.observerState.rewindRecorder)
+        daemon.stopCapture()
+    }
+
+    /// And with the switch off it is never attached at all — capture running is
+    /// not on its own a reason for Shifu to hold pixels.
+    @Test func rewindStaysDetachedWhileTheSwitchIsOff() throws {
+        let daemon = try makeDaemon()
+        daemon.startCapture()
+
+        #expect(!daemon.observerState.rewindRecorder)
+        daemon.stopCapture()
     }
 }
 

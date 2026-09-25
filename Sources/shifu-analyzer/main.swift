@@ -139,6 +139,20 @@ let scrubbed = try Retention.scrubExpiredText(
     database: database,
     olderThanDays: Settings.value(SettingsCatalog.textRetentionDays, database: database))
 
+// Saved rewinds are the other half of retention (design.md §3.6). The daemon
+// owns the *rolling* buffer — it deletes a frame the moment it ages out of the
+// window — but a rewind the user kept outlives that, so its expiry is reaped
+// here, beside the text scrub, on the same "every run, read the setting fresh"
+// terms. Fail-soft like every other stage after the ledger: pixels left one run
+// too long are a smaller failure than an analyzer that stops.
+do {
+    let reaped = try RewindStore(database: database).expireSaved(
+        now: nowMs)
+    if reaped > 0 { print("deleted \(reaped) expired rewind(s) and their frames") }
+} catch {
+    print("rewind retention failed: \(error)")
+}
+
 print("analyzed \(summary.observationsProcessed) observations → "
     + "\(summary.blocksWritten) activities"
     + (rebuildAll ? " (full rebuild)" : "")

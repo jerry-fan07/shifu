@@ -11,6 +11,10 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
 
 - `make check` — build all targets + unit tests + SwiftLint + privacy invariants
   (no network symbols in shifud). Must be green before every commit.
+- **Never trust a bare `swift test`** — one suite pumps the main run loop and kills the
+  test process mid-run with status 0, so it reports green over a red suite. Go through
+  `make test` (`scripts/run-tests.sh`), which splits that suite out and fails a run that
+  never printed its closing summary.
 - `make perf` — perf harness: shifud against a synthetic feed, asserts design.md §3.4 budgets.
   **A perf budget regression blocks like a test failure.**
 - Swift Package workspace; macOS 14+ deployment target, Apple Silicon primary.
@@ -36,9 +40,23 @@ Local-first macOS screen observer → productivity ledger, knowledge vault, auto
    code in the app, ever.
 2. **Redaction is a single choke point** before every DB write — cards, SSNs, key/JWT shapes (§8).
 3. **Exclusions are enforced before capture**, not filtered after (§8).
-4. **Pixels are never persisted** — screenshots live in memory only for the OCR call (§3.2).
+4. **Pixels are never persisted by the capture path** — a rung-3 screenshot lives in memory for
+   the OCR call and is discarded (§3.2). **Rewind is the one exception, and it is bounded**
+   (§3.6): only `RewindShot` may encode a frame and only `RewindStore` may write one, only to
+   `~/Shifu/rewind/`, only while the user has switched `rewind.recording` on (it defaults to
+   **off**), and only through the same exclusion predicate and the same pause/lock teardown as
+   every other observer. Nothing else in any target may write an image, and no frame may ever
+   reach the `observations` table, the vault, or the network.
 5. **Pause tears down observers**, it doesn't just gate writes (§8).
 6. Perf budgets (§3.4) are CI: <0.5% avg CPU, <80 MB RSS for the daemon.
+   **One knowing exception, added 2026-08-07 by request:** Rewind's default
+   high-fidelity head (`rewind.hot_minutes` 5, `rewind.hot_fps` 8) costs
+   **~13% of a core, measured 2026-08-08** on the current one-shot capture path
+   — ~27× the budget, and 3× the 4.5% that extrapolating one warm grab
+   predicted. It is
+   deliberate and reversible (`rewind.hot_minutes = 0`), documented in §3.6, and
+   the fix is the streaming path in §12. **Do not "correct" it as drift**, and
+   do not treat it as licence for a second overrun anywhere else.
 7. **LLM prompts are token-budgeted.** Every prompt sent through `LLMBackend.complete` must fit
    the backend's `contextWindowTokens` (DeepSeek is deliberately capped at 60k, prompt + response
    combined). Size batches with `LLMTokens.estimate`, never by item count alone.

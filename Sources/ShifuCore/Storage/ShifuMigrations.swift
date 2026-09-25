@@ -677,6 +677,8 @@ extension ShifuDatabase {
             }
         }
 
+        registerRewindMigrations(into: &migrator)
+
         migrator.registerMigration("v28-voice-drafts") { db in
             // The drafting desk's queue (voice.md §4.1). One row per request:
             // what was asked for, what came back, and where it is in between.

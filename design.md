@@ -217,6 +217,41 @@ CREATE TABLE observations (
 
 Raw text is retained for a configurable window (default **14 days**), after which only derived artifacts (ledger entries, notes, suggestions) survive. This bounds disk use and privacy exposure simultaneously.
 
+### 3.6 Rewind — the rolling frame buffer
+
+Everything above answers "what did I spend my time on". Rewind answers a different question — **"what was actually on the screen"** — and it is the one part of Shifu that has to keep pixels to do it. It therefore gets its own rules, and they are stricter than everything else's.
+
+**The buffer.** While Rewind is on, `shifud` writes low-resolution JPEGs of the display at `rewind.frame_width` (default **960 px**) at **two rates**. The most recent `rewind.hot_minutes` (default **5**) are kept at `rewind.hot_fps` (default **8**) so the part you are most likely to scrub is frame-accurate; behind that boundary the tail is thinned to one frame per `rewind.frame_seconds` (default **5 s**) as it ages past it, which is what lets half an hour fit on disk. Everything is captured at the head's rate and decimated afterwards (`RewindStore.decimateBuffer`) rather than captured at two rates — one clock, one capture path. A bucket keeps its first *trigger* frame if it has one and its earliest frame otherwise, so thinning the tail never costs an app switch. Setting `rewind.hot_minutes` to 0 disables the head and restores the flat 5 s buffer. The recorder also takes a frame *immediately* on any capture-ladder trigger — an app activation or a debounced window/title change. That second path is what makes the buffer useful: the moment you move between things is the moment worth having a frame of, and waiting out the tick would put the switch itself in the gap between two frames of what you left. Frames older than `rewind.buffer_minutes` (default **30**) are deleted as new ones arrive, and a second bound, `rewind.ceiling_mb` (default **512 MB**), drops the oldest early when a run of busy screens fills the window sooner than the clock does. The rolling buffer is not idle-gated the way the heartbeat is: someone who walks away and comes back expects the last half hour to exist, and an idle screen's frames are near-identical and JPEG-tiny.
+
+**Off by default.** `rewind.recording` starts at `off` and nothing under it does anything until the user switches it on — in the Rewind page's own banner, or in Settings → Rewind. Every other promise this app makes is "Shifu did not keep that"; a rolling screen recording is the one thing a user must have said yes to. Switching it back off drops the rolling buffer on the spot rather than letting it age out, and keeps whatever the user deliberately saved.
+
+**How it inherits the invariants.** Rewind reuses the existing machinery rather than restating it:
+
+- *Exclusions before capture* (§8). The recorder asks the capture ladder's own predicate (`CaptureEngine.isExcluded` — bundle, private browser window, excluded domain) **before** the screenshot, and the display grab also filters every excluded application out at the `SCContentFilter`, so an excluded app sitting behind the frontmost one is not in the bitmap either. An excluded moment still writes a row with no file: time passed, nothing was taken, and the rail draws that gap honestly rather than showing an unbroken stretch of something never watched.
+- *Pause tears down observers* (§8). The recorder starts and stops only through `Daemon.startCapture`/`stopCapture`, so a user pause, a locked screen and another user on the console all tear it down for free. It is reported in `Daemon.ObserverState`, so this is asserted rather than reviewed.
+- *No network in `shifud`* (§8). Unchanged — nothing here can leave the Mac, and there is no code path that could.
+
+**Where it lives.** `~/Shifu/rewind/` and nowhere else — deliberately outside `vault/`, which is the Markdown the user syncs. `buffer/` is the rolling window; `saved/<id>/` is one folder per kept rewind.
+
+**The player.** Footage is watched, not only scrubbed, so the page wears a real transport (`RewindControlBar`, under the viewport where a player's controls belong): play/pause, ±1 frame, ±10 s, position over length, a speed that cycles 0.5×–16×, the live chip, and the door in and out of fullscreen. The same bar is the fullscreen bar, and out there space plays, the arrows step and escape leaves. **The fullscreen chrome hides itself** (`FullscreenChrome`): controls that sit over the footage are also covering the bottom of it, so the bar, the exit chip, the caption and the pointer all go after 2.5 s of stillness and come back on the first mouse move — a click on the frame is the deliberate way to dismiss or recall them, and the bar never vanishes while the pointer is on it. Motion is read from a mouse-moved **event monitor**, not from `onContinuousHover`: hover is a tracking area that re-reports itself whenever the view rebuilds, and this view rebuilds thirty times a second while playing, so the chrome would be told the pointer had moved forever and never hide. **The playhead is a moment, not a frame index** (`RewindPlayback`, `RewindClock`): the buffer is deliberately mixed-cadence, so stepping N frames per tick would run the tail at forty times the head's speed and call it 1× — a clock walking *footage time* and asking `RewindTimeline.nearestFrame` what to draw makes 1× mean one second of screen per second of wall clock anywhere on the rail. It also survives the buffer moving underneath the page: the recorder appends and the trimmer drops every few seconds, and an index-shaped playhead would jump on each refresh while a moment simply re-resolves. Playing into the live end stops and parks there; pressing play from there starts the footage over. The speed control cycles rather than dropping a menu down, because the same bar has to work inside the borderless fullscreen window.
+
+**Saving.** Two acts, both reachable from the menu bar without opening the window:
+
+- **Save a rewind** copies the whole buffer into `saved/<id>/` as a clip of its own. It *copies* rather than moves, because the buffer keeps rolling underneath and a rewind that pointed at buffer files would lose its oldest frames minutes after it was made.
+- **Snip** takes one fresh full-quality frame now, and files it: the image under `saved/<id>/`, and a `kind: snip` note in `vault/snips/YYYY/MM/` carrying the task and theme that were running. Its own note kind, so it never enters the review queue, and its own file, because the compiled work notes and task overviews are rewritten wholesale every analyzer run — anything appended there is gone within the hour.
+
+**Snipping a box.** "Snip a region…" puts a dimmed canvas over every screen and the user drags the part they actually want; ⏎ takes the whole screen, escape takes nothing. The overlay is the app's, and it is a **non-activating panel** — the daemon names the source from `NSWorkspace.frontmostApplication`, and an overlay that activated Shifu would file every snip under Shifu. The app still captures nothing: the box travels in the request line as `<seconds> <displayID> <x> <y> <w> <h>` (display-relative points, top-left origin — ScreenCaptureKit's `sourceRect`, not AppKit's), and the daemon passes it straight to the grab, so the pixels outside the box are never composited rather than cropped away afterwards. A region grab gets 2× density, capped at `OCRCapture.maxCaptureWidth`: a snipped box is meant to be *read*. Two refusals hold the promise the box makes — a request whose region doesn't parse is dropped rather than widened to the whole screen, and one smaller than 8 pt a side is a click that slipped, not a selection.
+
+Both go through control files (`~/Shifu/rewind_request`, `~/Shifu/snip_request`), because Shifu has no IPC and the app has no business holding a Screen Recording grant. Unlike `pause_until`, a request is an **event**: it carries a timestamp and is ignored (and deleted) once older than 10 s, so one written while the daemon was down cannot fire hours later against whatever happens to be on screen.
+
+**Cost.** Measured on an M4 at the defaults (2026-08-07): 5.6 ms of daemon CPU per frame for the grab and encode, 0.30 ms for the write and trim — **0.12% of one core** at one frame per 5 s, against §3.4's 0.5% budget. Depth is free in CPU terms — the window is a retention bound, so the six-fold widening from 5 minutes to 30 multiplies only the footprint (~361 frames, ~35 MB), and the duty is set by the cadence alone.
+
+**The defaults knowingly exceed the §3.4 CPU budget** (added 2026-08-07, at the user's explicit request, to try the two-rate shape on real use rather than in the abstract). **Measured on the installed daemon, 2026-08-08**: two 60-second samples gave **13.6% and 12.3% of one core — ~15–17 ms per frame, roughly 27× the 0.5% target.** RSS stayed at 50 MB (in budget) and disk reached 117 MB five minutes in, tracking the ~211 MB a five-minute head predicts.
+
+That measurement matters more than the projection it replaced, which was **4.5%** — 5.9 ms of isolated grab-and-encode × 8. **The per-frame cost at 8 fps is about three times the per-frame cost at 0.2 fps**, so extrapolating a duty cycle from a single warm grab understates it badly; the lesson generalises past Rewind. The leading suspect is `trimBuffer` running on every frame — it sums the whole table's bytes to check the ceiling, which at 8 fps over ~1 700 rows is eight full scans a second — but that is untested, and the honest state is that the overrun is larger than predicted and not yet attributed. This is a deliberate, reversible overrun and not drift — `rewind.hot_minutes = 0` returns to 0.12% at any time, and the perf harness does not currently exercise Rewind, so nothing in CI is being silenced. The cost is the *cadence*, and it is a property of the capture path rather than of the dial: each frame is a one-shot `SCScreenshotManager.captureImage` that pays full filter-and-composite setup. Making 8 fps cheap means a persistent `SCStream` into a VideoToolbox hardware encoder writing short HEVC segments, which changes the storage model from frames-as-files to segments (§12). Until that lands, the honest summary is that Rewind's defaults buy frame-accurate scrubbing with roughly forty times the daemon CPU the flat buffer used. The wall time of a grab is ~66 ms, but almost all of that is the window server's work in another process, so it does not count against the daemon.
+
+**Retention.** A saved rewind expires after `rewind.retention_days` (default **14**) and is deleted with its frames by the analyzer, beside the text scrub. "Keep forever" nulls the expiry, which takes it out of the schedule permanently; nothing puts one back.
+
 ---
 
 ## 4. Analysis Pipeline (§2 of instructions)
@@ -571,6 +606,28 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
 
 ## 12. Future Directions (explicitly out of v1)
 
+- **A streaming capture path for Rewind's hot window (§3.6)** — the two-rate
+  buffer *shipped* on 2026-08-07 (30-minute depth, a 5-minute head at 8 fps,
+  tail decimation behind it). What did not ship is a capture path that can
+  afford it. Each frame is still a one-shot `SCScreenshotManager.captureImage`
+  paying full filter-and-composite setup, so the head costs a **measured ~13% of
+  one core against §3.4's 0.5%** (2026-08-08) — a ~27-fold overrun accepted
+  deliberately and reversibly (`rewind.hot_minutes = 0`) so the shape could be
+  tried on real use. Two cheaper leads should be tried before the full rewrite,
+  since neither needs a new storage model: throttle `trimBuffer`'s ceiling scan
+  off the per-frame path, and confirm whether the remaining cost really is the
+  grab. **Also unresolved: the buffer directory leaks orphaned files** — 13 with
+  no `rewind_frames` row, oldest 32 h, from `delete(frames:)` swallowing
+  `removeItem` failures with `try?`. Harmless at 0.2 fps; worth re-checking at 8. The cost is structural, not a tuning problem: 8 fps wants a
+  persistent `SCStream` feeding a **VideoToolbox hardware encoder** into short
+  HEVC segments, which would fix the footprint (~211 MB of JPEGs per five-minute
+  head) in the same stroke. The reason that is a project rather than a patch is
+  the storage model: frames-as-files → segments reaches `RewindStore`,
+  `RewindTimeline`, the player, `saveRewind`, snips, and the wording of
+  invariant 4. Until it lands, the honest state is that Rewind's defaults are
+  outside the daemon's CPU budget by design, `make perf` does not yet exercise
+  Rewind so nothing in CI is being silenced by that, and **the first thing this
+  work should add is a perf case that would have caught it.**
 - **The rest of the Settings readings column (§9)** — the design it was built
   from also shows daemon uptime, CPU and RSS, the last analysis time, the
   daemon's own Accessibility/Screen Recording grants, and a preview of the last
@@ -590,6 +647,18 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
   Deliberately not wired to a button yet: irreversible bulk deletion wants a
   confirmation design (what exactly goes, what survives, how it is undone) that
   is more work than the button.
+- **A `shifu forget --rewind` verb, and a Login Items nudge (§3.6, §7)** — two
+  affordances that until 2026-08-20 existed only as helpers nothing called:
+  `RewindStore.purgeEverything` (drop every frame and folder Rewind ever wrote,
+  saved rewinds included) and `DaemonService.requiresApproval` (true while the
+  bundled agent waits on System Settings → General → Login Items). Both were
+  deleted rather than left standing, because an uncalled helper reads as a
+  wired feature — each had drifted into claiming callers that never existed.
+  Either is a few lines to write back the day its surface is designed. The
+  forget verb wants the same confirmation question as the row above; the
+  approval nudge wants somewhere in Onboarding to say it, since an agent parked
+  in `.requiresApproval` captures nothing and today tells the user that
+  nowhere. `purgeBuffer` is unaffected and still runs when recording goes off.
 - **One "Models" row instead of two (§9)** — the design pairs the fast and
   reasoning model fields under a single label with sub-captions. Better
   reading, but it means the Settings page stops being a pure render of

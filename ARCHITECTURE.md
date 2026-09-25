@@ -44,6 +44,9 @@ Sources/ShifuCore/
   Storage/     ShifuDatabase (+ migrations), DatabaseKey, EncryptionMigrator, DeletionTools
   Capture/     ObservationRecorder (the write path), SimHash, DHash, BoundedLRUCache
   Privacy/     Redactor, Exclusions
+  Rewind/      Rewind (frame + saved records), RewindStore (the only writer of
+               pixels), RewindSettings, RewindRequest (+SnipRegion), RewindTimeline,
+               RewindPlayback (the transport's arithmetic), SnipNote
   Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
                SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
                TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
@@ -68,8 +71,12 @@ right of `observations` happens in `shifu-analyzer`.
         ┌──────────────────────── shifud (continuous) ────────────────────────┐
 
   screen ──▶ Daemon ──▶ CaptureEngine ──▶ ObservationRecorder ──▶ [observations]
-             events      capture ladder    redact · cap · dedupe
-                         + exclusions
+             events    │ capture ladder    redact · cap · dedupe
+                       │ + exclusions
+                       └▶ RewindRecorder ──▶ RewindStore ──▶ ~/Shifu/rewind/
+                          8 fps + on         decimate tail    [rewind_frames]
+                          trigger, if on     to 5s, trim to   [rewinds]
+                                             window + ceiling
 
         └─────────────────────────────────────────────────────────────────────┘
 
@@ -278,10 +285,10 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The task detail page's data | [`Vault/TaskStore.swift`](Sources/ShifuCore/Vault/TaskStore.swift) — `detail(taskID:)`; view is [`ShifuApp/TaskDetailView.swift`](Sources/ShifuApp/TaskDetailView.swift) |
 | The theme list/detail data, and create / edit / delete | [`Vault/ThemeStore.swift`](Sources/ShifuCore/Vault/ThemeStore.swift); views are [`ShifuApp/ThemeViews.swift`](Sources/ShifuApp/ThemeViews.swift), the page's scroll-driven campaign [`ShifuApp/ThemeCampaign.swift`](Sources/ShifuApp/ThemeCampaign.swift), actions [`ShifuApp/LedgerStoreThemes.swift`](Sources/ShifuApp/LedgerStoreThemes.swift) |
 | Suggested themes — the queue, and what accepting one does | [`Vault/ThemeProposals.swift`](Sources/ShifuCore/Vault/ThemeProposals.swift) |
-| The Time page's modes, span and lens | [`ShifuApp/TimeView.swift`](Sources/ShifuApp/TimeView.swift) — `TimeView` |
-| How time is grouped, ranked and colored for the Time tab | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
-| What the Time page counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`; system shells are charted nowhere because `rebuild` never writes them a block (`TaskGrouper.isSystemBundle`, design.md §7) |
-| The Summary breakdown and the timeline's legend | [`ShifuApp/TimeBreakdownView.swift`](Sources/ShifuApp/TimeBreakdownView.swift) |
+| The Ledger's modes, span and lens | [`ShifuApp/LedgerViews.swift`](Sources/ShifuApp/LedgerViews.swift) — `LedgerView`; `Mode` picks Breakdown vs Timeline, and the Day/Week window and the lens are both `@AppStorage`, so they survive leaving the page |
+| How time is grouped, ranked and colored for the Ledger | [`ShifuApp/TimeSlices.swift`](Sources/ShifuApp/TimeSlices.swift) — `TimeBreakdown.slices`, `TimePalette` |
+| What the Ledger counts at all | [`Analysis/LedgerBuilder.swift`](Sources/ShifuCore/Analysis/LedgerBuilder.swift) — `labeledActivities` and `totals`; system shells are charted nowhere because `rebuild` never writes them a block (`TaskGrouper.isSystemBundle`, design.md §7) |
+| The Breakdown's table, the day ribbon, the timeline | [`ShifuApp/BreakdownTable.swift`](Sources/ShifuApp/BreakdownTable.swift), [`ShifuApp/DayRibbon.swift`](Sources/ShifuApp/DayRibbon.swift), and `TimelineChart` / `SummaryLine` in [`ShifuApp/LedgerViews.swift`](Sources/ShifuApp/LedgerViews.swift) |
 | Focus sessions read back + the focus score | [`Storage/FocusModeSessions.swift`](Sources/ShifuCore/Storage/FocusModeSessions.swift) — `overlapping`; scored by [`Analysis/FocusReport.swift`](Sources/ShifuCore/Analysis/FocusReport.swift) (mirrors `FocusModeController`'s on/off-task split); drawn by [`ShifuApp/FocusViews.swift`](Sources/ShifuApp/FocusViews.swift) behind the Breakdown picker's Focus position |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What the LLM calls cost — token accounting and its rollups | [`Storage/LLMUsage.swift`](Sources/ShifuCore/Storage/LLMUsage.swift); recorded in `DeepSeekBackend.send`, read by `shifu status` |
@@ -290,6 +297,13 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | The capture ladder / rung thresholds | [`shifud/CaptureEngine.swift`](Sources/shifud/CaptureEngine.swift) |
 | Capture triggers, idle, debounce | [`shifud/Daemon.swift`](Sources/shifud/Daemon.swift) |
 | Screenshot + OCR mechanics | [`shifud/OCRCapture.swift`](Sources/shifud/OCRCapture.swift) |
+| The Rewind buffer's cadence, its exclusion check, and what starts and stops it | [`shifud/RewindRecorder.swift`](Sources/shifud/RewindRecorder.swift); the display grab and JPEG encode are [`shifud/RewindShot.swift`](Sources/shifud/RewindShot.swift) |
+| What a frame or a saved rewind costs, and everything that deletes one | [`Rewind/RewindStore.swift`](Sources/ShifuCore/Rewind/RewindStore.swift) — the single writer of pixels |
+| "Save a rewind" / "Snip" — the app→daemon channel and what a snip files | [`Rewind/RewindRequest.swift`](Sources/ShifuCore/Rewind/RewindRequest.swift), [`shifud/RewindRequests.swift`](Sources/shifud/RewindRequests.swift), [`Rewind/SnipNote.swift`](Sources/ShifuCore/Rewind/SnipNote.swift) |
+| Dragging a box to snip — the overlay, and the AppKit→ScreenCaptureKit coordinate flip | [`ShifuApp/SnipOverlay.swift`](Sources/ShifuApp/SnipOverlay.swift) draws it (and captures nothing); `SnipRegion` in [`Rewind/RewindRequest.swift`](Sources/ShifuCore/Rewind/RewindRequest.swift) is the maths and the wire format; `RewindShot.capture(region:)` hands it to `sourceRect` |
+| The Rewind place — the player, the rail, the shelf | [`ShifuApp/RewindView.swift`](Sources/ShifuApp/RewindView.swift) (+`RewindViewport` / `RewindTransport` in [`ShifuApp/RewindPlayer.swift`](Sources/ShifuApp/RewindPlayer.swift), `RewindRail`, `RewindShelf`, `RewindDetailPage`); the rail's arithmetic is [`Rewind/RewindTimeline.swift`](Sources/ShifuCore/Rewind/RewindTimeline.swift) |
+| Fullscreen — the window, the key handling, and the chrome that hides itself off the footage | [`ShifuApp/RewindFullscreen.swift`](Sources/ShifuApp/RewindFullscreen.swift) (`FullscreenPlayerWindow`, `FullscreenChrome`, `RewindFullscreenPlayer`) |
+| Play/pause, ±10 s, playback speed — the transport both players wear | [`ShifuApp/RewindControlBar.swift`](Sources/ShifuApp/RewindControlBar.swift) draws it, [`ShifuApp/RewindClock.swift`](Sources/ShifuApp/RewindClock.swift) is the timer, and the arithmetic — **the playhead is a moment, not a frame index** — is [`Rewind/RewindPlayback.swift`](Sources/ShifuCore/Rewind/RewindPlayback.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
 | The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |
@@ -319,10 +333,8 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Encryption at rest | [`Storage/DatabaseKey.swift`](Sources/ShifuCore/Storage/DatabaseKey.swift), [`Storage/EncryptionMigrator.swift`](Sources/ShifuCore/Storage/EncryptionMigrator.swift) |
 | Deletion / "forget" semantics | [`Storage/DeletionTools.swift`](Sources/ShifuCore/Storage/DeletionTools.swift) |
 | The main window's layout, camera flights, pages and routes | [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) — read model is `LedgerStore.swift` |
-| The trail — where places live and how you pick one | [`ShifuApp/TrailRail.swift`](Sources/ShifuApp/TrailRail.swift); a place's spot on the mountain is `Destination.stationIndex` / `.landmark` in [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) |
-| The mountain: terrain, camera math, ridgelines | [`ShifuApp/World.swift`](Sources/ShifuApp/World.swift) — `WorldMap.runs` is the one source of truth for the stair |
-| Painting the mountain, and the temples on it | [`ShifuApp/WorldStage.swift`](Sources/ShifuApp/WorldStage.swift), [`ShifuApp/WorldLandmarks.swift`](Sources/ShifuApp/WorldLandmarks.swift) |
-| The app's look — colors, cards, wisdom, the sensei | [`ShifuApp/Dojo.swift`](Sources/ShifuApp/Dojo.swift), [`ShifuApp/SenseiView.swift`](Sources/ShifuApp/SenseiView.swift) |
+| The source list — where places live and how you pick one | [`ShifuApp/SourceList.swift`](Sources/ShifuApp/SourceList.swift); `Place` (the places) and `Route` / `Router` (what is open inside one) are in [`ShifuApp/MainWindow.swift`](Sources/ShifuApp/MainWindow.swift) |
+| The app's look — surfaces, the one accent, the chart scale | [`ShifuApp/Instrument.swift`](Sources/ShifuApp/Instrument.swift) — see §7; chrome that wraps it is [`ShifuApp/InstrumentChrome.swift`](Sources/ShifuApp/InstrumentChrome.swift), [`ShifuApp/InstrumentControls.swift`](Sources/ShifuApp/InstrumentControls.swift), [`ShifuApp/InstrumentMarks.swift`](Sources/ShifuApp/InstrumentMarks.swift) |
 | CLI commands | [`shifu-cli/main.swift`](Sources/shifu-cli/main.swift) |
 | The analyzer's stage order | [`shifu-analyzer/main.swift`](Sources/shifu-analyzer/main.swift) |
 
@@ -330,7 +342,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v18 in
+The schema is defined *only* as migrations v1–v28 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -437,6 +449,19 @@ make a stored count wrong within the session, so it is always derived from
 SQLite reuses rowids, so an id-keyed row could one day suppress an unrelated
 task).
 
+**`rewind_frames`** + **`rewinds`** (v28, design.md §3.6) — the only pixels
+Shifu keeps. A `rewind_frames` row with `rewind_id` NULL is in the *rolling
+buffer* and will be deleted within `rewind.buffer_minutes`; one with an id
+belongs to a rewind the user kept. Same table because they are the same thing at
+two ages, and because the player draws from one query either way. `path` is
+relative to `ShifuPaths.rewind` and is **NULL for an excluded moment** — the row
+records that time passed and nothing was taken, which is what draws the hatched
+gap on the rail. `rewinds.expires_at` NULL is "keep forever": out of the
+retention schedule, and nothing puts an expiry back. Frame *files* are owned by
+`RewindStore`, which writes the file before the row and deletes the row before
+the file, so the two can only ever drift toward unreachable garbage and never
+toward a hole in the player.
+
 **`voice_drafts`** (v28, voice.md §4.1 — one row per request to the Voice desk;
 status `pending → drafting → ready | failed`, advanced through `VoiceDrafts`'s
 compare-and-set, the same guard `decks` uses against two analyzer processes.
@@ -484,6 +509,10 @@ screen is blank.
     YYYY/MM/    knowledge notes: deck cards (nothing else writes here)
     work/       per-(task, day) work notes
     tasks/      per-task living overview documents
+    snips/      the note filed beside a kept frame — words only, never the image
+  rewind/       the one folder that holds pixels (design.md §3.6), and only
+    buffer/     while `rewind.recording` is on. Rolling window; nothing here
+    saved/<id>/ outlives `rewind.buffer_minutes`. One folder per kept rewind
   digests/      daily digest markdown
   logs/         daemon logs
   bin/          installed binaries (shifud, shifu-analyzer, shifu)
@@ -506,9 +535,9 @@ This is where each is actually enforced, and what would catch a regression.
 |---|---|---|---|
 | 1 | No network code in `shifud` | `DeepSeekBackend` lives in the `shifu-analyzer` target — the SwiftPM target graph makes it unlinkable from `shifud` | ✅ `scripts/check-no-network.sh` — `nm -u` symbol scan, run by `make check` |
 | 2 | Redaction is a single choke point before every DB write | `ObservationRecorder.record` calls `Redactor.redact` before insert; nothing else writes `observations` | ✅ `ObservationRecorderTests.textIsRedactedBeforeDisk`, `RedactorTests` |
-| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded` | ✅ `CaptureLadderTests` drives the ladder over a fake `CaptureEngine.Probe` that records every read, so "an excluded window reaches no reader" is asserted, not reviewed. Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText` |
-| 4 | Pixels are never persisted | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function | ✅ `PixelsNeverPersistedTests` — reflects over `OCRCapture.Result` and the recorder's `Candidate` for image-shaped fields, and asserts `observations` has no BLOB column |
-| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer. `Daemon.syncCapture` is the only caller of the start/stop pair and every reason capture is down is *queried* there — pause, a locked screen, another session on the console (§3.1) — so no reason can clear another's teardown. A suspension must also be able to *end*: while the window server holds capture down, `syncRecheckTimer` re-asks every 5 s rather than trusting an unlock notification that a real machine never delivered | ✅ `DaemonTeardownTests` over `Daemon.observerState` — including that the analyzer timer *survives* pause; `DaemonSuspensionTests` over an injected `Daemon.SessionProbe`: a wake before the unlock stays down, and `theRecheckTimerFiresOnItsOwn` services a real run loop, so an unscheduled timer fails it (the direct-call test does not) |
+| 3 | Exclusions enforced *before* capture | `CaptureEngine.capture` rung 0 returns before any content read; `ObservationRecorder` also drops text for `.excluded`. **One predicate, two callers**: `CaptureEngine.isExcluded` is rung 0 as a function, and `RewindRecorder` asks it before every screenshot — a second implementation is the exact shape of bug this invariant exists to prevent. Rewind also filters excluded apps out at the `SCContentFilter`, so an excluded window behind the frontmost one is not in the bitmap either | ✅ `CaptureLadderTests` drives the ladder over a fake `CaptureEngine.Probe` that records every read, so "an excluded window reaches no reader" is asserted, not reviewed. Predicate: `ExclusionsTests`. Recorder backstop: `ObservationRecorderTests.excludedNeverStoresText`. Rewind: `RewindRecorderTests.anExcludedBundleIsNeverScreenshotted` / `aPrivateBrowserWindowIsNeverScreenshotted` / `anExcludedDomainIsNeverScreenshotted` assert the grab is never *called* |
+| 4 | Pixels are never persisted by the capture path; Rewind is the one bounded exception | `OCRCapture` returns `(text, dhash)`; the `CGImage` never escapes the function. Rewind's frames go through exactly two types — `RewindShot` (encode) and `RewindStore` (write), only under `~/Shifu/rewind/`, only while `rewind.recording` is on, which defaults to off | ✅ `PixelsNeverPersistedTests` — reflects over `OCRCapture.Result` and the recorder's `Candidate` for image-shaped fields, and asserts `observations` has no BLOB column (all still true: no frame ever reaches that table). Rewind's own bounds: `RewindRecorderTests.recordingOffNeverReachesTheScreen`, `switchingOffDropsTheBufferImmediately`; `RewindStoreTests` pins the rolling window, the disk ceiling, the retention reap and both purges |
+| 5 | Pause tears down observers | `Daemon.stopCapture` removes the workspace observer, invalidates the heartbeat, cancels debounce, detaches the AX observer, and stops `RewindRecorder` — whatever else pause means, it means Shifu stops writing pixels. `Daemon.syncCapture` is the only caller of the start/stop pair and every reason capture is down is *queried* there — pause, a locked screen, another session on the console (§3.1) — so no reason can clear another's teardown. A suspension must also be able to *end*: while the window server holds capture down, `syncRecheckTimer` re-asks every 5 s rather than trusting an unlock notification that a real machine never delivered | ✅ `DaemonTeardownTests` over `Daemon.observerState` — including that the analyzer timer *survives* pause, and `pauseTearsDownTheRewindRecorderLikeEveryOtherObserver`, and `RewindRequestWatcherTests.aRequestArrivingDuringAPauseIsRefusedAndDropped` for the request path — the watcher deliberately *outlives* teardown (it has to hear the request that ends a pause), so it gates on `RewindRecorder.isRunning`, the timer, rather than on the recording setting; `DaemonSuspensionTests` over an injected `Daemon.SessionProbe`: a wake before the unlock stays down, and `theRecheckTimerFiresOnItsOwn` services a real run loop, so an unscheduled timer fails it (the direct-call test does not) |
 | 6 | Perf budgets (<0.5% avg CPU, <80 MB RSS) | — | ✅ `make perf` → `scripts/perf-harness.sh`, `scripts/perf-vault.sh` |
 | 7 | LLM prompts are token-budgeted | `LLMTokens.batches` (used by `CardBuilder.batches`, `Radar.batches` and `DeckBuilder.batches`) and `SemanticTaskGrouper.run`'s batch loop size by rendered-prompt tokens, never item count; the single-prompt stages (`WorkNoteCompiler.narrative`, `TaskOverviewCompiler.budgeted`, `DeckSuggester.budgeted`) shed evidence in a loop until the render fits; under `fullRosterMinContextTokens` the roster drops to the compact tier so a 4k window still gets a useful prior; and every one of those computations reserves `LLMBackend.responseReserve` so a thinking backend's chain-of-thought headroom is never squeezed out by a dense batch | ✅ `CardBuilderTests.runSplitsAcrossSmallContextWindowAndAnchorsCoinedTopics`, `SemanticTaskGrouperTests.runSplitsBatchesAndGrowsRosterAcrossThem`, `SemanticTaskGrouperTests.runReservesThinkingHeadroomWhenSizingBatches`, `SemanticTaskEvidenceTests.compactRosterKeepsSmallContextBackendsInBudget`, `RadarTests.describeSplitsBatchesUnderSmallContextWindow`, `DeckBuilderTests.batchesSplitUnderATinyWindow`, `TaskOverviewCompilerTests.budgetDropsOldestDaysRatherThanFailing` |
 | 8 | Variable names > 1 character | — | ✅ `.swiftlint.yml` → `identifier_name.min_length: 2` |
@@ -573,8 +602,8 @@ orphan good data.
 
 ## 7. Extension recipes
 
-**Add a database migration.** Append `migrator.registerMigration("v17")` in
-`ShifuDatabase.migrator`. Never edit v1–v18 — they have run on real machines.
+**Add a database migration.** Append `migrator.registerMigration("v29-…")` in
+`ShifuDatabase.migrator`. Never edit v1–v28 — they have run on real machines.
 Pick the next number by checking what has actually *run* (`select identifier
 from grdb_migrations`), not just what is in this file: parallel branches pick
 "the next version" independently, and a duplicate identifier is not a
@@ -585,7 +614,7 @@ valid.
 
 **Add a category.** Add the case to `Category` in `Models/Activity.swift`
 (raw value = the string stored in SQLite), add seeds to `RulesClassifier`, and
-add a color in `TimePalette.categoryColors` (pick a `Dojo.chartSlots` hue).
+add a color in `TimePalette.categoryColors` (pick an `Instrument.slots` hue).
 `CardBuilder.prompt`
 derives its category list from `Category.allCases`, so the LLM tier updates
 itself — except `privateTime` and `unclassified`, which it filters out.
@@ -633,6 +662,22 @@ dictionary in `run()`, plus a line in `usage`.
 `VaultSearch` filter on it. Knowledge-note queries must keep excluding other
 kinds — `Note.parse` returns nil for non-`.knowledge` files precisely so work
 and project notes can never enter the review queue.
+
+**Walk a span one calendar unit at a time** (hour columns, day buckets) — the
+obvious implementation hangs. `date(bySettingHour:minute:second:of:)`
+force-unwraps an optional that is genuinely nil on the hour a spring-forward
+skips, and on a fall-back's *repeated* hour it resolves to the first
+occurrence, which is behind the cursor — so the cursor moves backwards and the
+loop never ends. Two shipped callers were written that way and both hung.
+Advance with `calendar.dateInterval(of: unit, for: cursor)?.end` instead: the
+interval it returns contains the cursor, so the walk always moves forward, and
+add an explicit `boundary > cursor` guard as a second belt. Nothing in the app
+walks a span this way today — the Ledger buckets per block with
+`component(.hour, from:)` and steps off midnight with `date(byAdding:)`,
+neither of which is the trap. A worked implementation, `CalendarSlices.walk`,
+existed until its last caller went and was deleted with it — its DST tests
+covered both transitions, so lift it back out of the history of
+`Sources/ShifuCore/Analysis/CalendarSlices.swift` rather than writing it again.
 
 ---
 
@@ -722,19 +767,7 @@ To see a change in the real app, `swift build` is not enough — see
 ## 11. Known deviations from spec
 
 Live discrepancies between the code and design.md. Keep this section short and
-current — an entry here is a debt, not a decision.
+current — an entry here is a debt, not a decision, and one left standing after
+it is paid sends the next reader hunting a bug that no longer exists.
 
-### `Tests/ShifuCoreTests/ShifuCoreTests.swift` is a placeholder
-
-Six lines asserting `Shifu.version` is non-empty — the `swift package init`
-stub. Harmless, but it is not a real test.
-
-### The Time page's hour bucketing is DST-correct only through `CalendarSlices`
-
-`DayTrail.stones` and `TimeBuckets.buckets` both walk a span one calendar unit
-at a time. The obvious implementation — `date(bySettingHour:minute:second:of:)`
-— force-unwraps an optional that is nil on a spring-forward, and on a fall-back
-resolves the repeated hour to the occurrence *behind* the cursor, so the loop
-never terminates. Both were written that way and both hung. Any new
-span-walking code must go through
-[`Analysis/CalendarSlices.swift`](Sources/ShifuCore/Analysis/CalendarSlices.swift).
+*(Nothing open.)*

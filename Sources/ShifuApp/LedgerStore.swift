@@ -102,25 +102,6 @@ final class LedgerStore: ObservableObject {
     /// bm25-only, silently — vault-features.md §4).
     private let embedder = SentenceEmbedder()
     @Published private(set) var todayLogs: [TaskStore.DayLogEntry] = []
-
-    /// The Today day log, scoped by the two filter dimensions that mean
-    /// something for a single day's log: the minimum-time floor and the
-    /// theme. Range and sort deliberately don't apply — the log is already
-    /// one day, and its most-recent-first order is part of what makes it read
-    /// as a log rather than a task list. Derived, not @Published: it reads
-    /// `todayLogs` and `taskFilter`, both @Published, so SwiftUI recomputes it
-    /// whenever either changes — no `loadTasks()` round trip needed.
-    var filteredTodayLogs: [TaskStore.DayLogEntry] {
-        let floor = taskFilter.minimum.ms
-        return todayLogs.filter { entry in
-            guard entry.durationMs >= floor else { return false }
-            switch taskFilter.theme {
-            case .any: return true
-            case .theme(let key): return entry.themeKey == key
-            case .unassigned: return entry.themeKey == nil
-            }
-        }
-    }
     @Published private(set) var themes: [ThemeStore.Overview] = []
     /// Initiatives the clusterer wants to found, shown below the Themes grid.
     /// Nothing here is a theme until the user says so (design.md §5.3).
@@ -161,6 +142,19 @@ final class LedgerStore: ObservableObject {
     /// first and a search box second, which is the half it used to be missing.
     @Published private(set) var vaultShelf: [VaultLibrary.Entry] = []
     @Published var noteFilter = NoteLibraryFilter()
+
+    // Rewind (design.md §3.6). Four published values, because the page draws
+    // four separate things: what the dials say, what the buffer holds right
+    // now, the frames themselves (the scrubber), and the shelf of kept ones.
+    // Not `private(set)`, for the reason `focusEndedHere` isn't: everything
+    // that writes these lives in LedgerStoreRewind.swift, and `private` is a
+    // *file* boundary in Swift, not a type one.
+    @Published var rewindSettings = RewindSettings()
+    @Published var rewindBuffer = RewindStore.BufferState()
+    /// The rolling buffer, oldest first. Rows only — reading a frame's pixels
+    /// is the player's job, one image at a time.
+    @Published var rewindFrames: [RewindFrame] = []
+    @Published var savedRewinds: [SavedRewind] = []
     /// One reconcile per launch, and whether it has happened — see
     /// `syncLibrary()`.
     var librarySynced = false
@@ -214,6 +208,7 @@ final class LedgerStore: ObservableObject {
         focusModeOn = FocusModeFile.isOn()
         refreshFocusClock()
         refreshVaultNotes()
+        refreshRewind()
         suggestions = (try? db()).flatMap { try? Radar.active(database: $0) } ?? []
         if let database = try? db() {
             let dayStart = Int64(
@@ -476,17 +471,6 @@ final class LedgerStore: ObservableObject {
     func snooze(_ suggestion: Suggestion) {
         if let database = try? db() { try? Radar.snooze(suggestion, database: database) }
         refreshSoon()
-    }
-
-    /// "4.2 h work · 1.1 h learning" — top categories, menu bar line (§7).
-    var todaySummaryLine: String {
-        let top = todayTotals
-            .filter { $0.key != .unclassified && $0.value >= 60_000 }
-            .sorted { $0.value > $1.value }
-            .prefix(3)
-        guard !top.isEmpty else { return "Today: nothing yet" }
-        let parts = top.map { "\(Self.hours($0.value)) \($0.key.rawValue)" }
-        return "Today: " + parts.joined(separator: " · ")
     }
 
     static func hours(_ ms: Int64) -> String {

@@ -44,7 +44,24 @@ if let rotated {
 let recorder = ObservationRecorder(database: database)
 let exclusions = try Exclusions(database: database)
 let engine = CaptureEngine(recorder: recorder, exclusions: exclusions)
-let daemon = Daemon(engine: engine, database: database)
+
+// Rewind (design.md §3.6) — the one part of Shifu that writes pixels, and off
+// until the user switches it on. Constructed unconditionally because the
+// recorder is what *reads* the switch; nothing happens until it says "on".
+let rewindStore = RewindStore(database: database)
+let rewindRecorder = RewindRecorder(
+    store: rewindStore, database: database, exclusions: exclusions)
+let daemon = Daemon(engine: engine, database: database, rewind: rewindRecorder)
+let rewindShot = RewindShot()
+let rewindRequests = RewindRequestWatcher(
+    store: rewindStore, database: database, recorder: rewindRecorder,
+    shot: { region in
+        // A snip is worth full quality — the user asked for this frame, not a
+        // scrubbable one. Capped where the OCR rung caps, for the same reason.
+        try await rewindShot.capture(
+            width: OCRCapture.maxCaptureWidth, excludedBundles: exclusions.bundleIDs,
+            region: region)
+    })
 
 // Accessory app: no dock icon, but the glow overlay can create windows.
 NSApplication.shared.setActivationPolicy(.accessory)
@@ -59,8 +76,12 @@ engine.onCapture = { bundle, url, excluded in
 log("shifud \(Shifu.version) starting — home: \(ShifuPaths.home.path)")
 daemon.start()
 focusMode.startWatching()
+rewindRequests.startWatching()
+log(rewindRecorder.isRecording
+    ? "rewind recording is on — frames in \(ShifuPaths.rewind.path)"
+    : "rewind recording is off — no pixels are written")
 
 // Keep references alive for the process lifetime and run forever.
-withExtendedLifetime((daemon, focusMode)) {
+withExtendedLifetime((daemon, focusMode, rewindRequests)) {
     RunLoop.main.run()
 }

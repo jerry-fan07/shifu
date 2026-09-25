@@ -15,6 +15,10 @@ final class Daemon: NSObject {
     private let engine: CaptureEngine
     private let database: ShifuDatabase
     private let pauseController: PauseController
+    /// The Rewind buffer, when this build has one wired up. Optional so the
+    /// perf harness and the ladder tests can run a daemon without it — and so
+    /// that a daemon with Rewind switched off pays nothing at all for it.
+    private let rewind: RewindRecorder?
 
     private var workspaceObserverInstalled = false
     private var heartbeat: Timer?
@@ -41,13 +45,15 @@ final class Daemon: NSObject {
         engine: CaptureEngine, database: ShifuDatabase,
         pauseController: PauseController = PauseController(),
         session: SessionProbe = .live,
-        recheckInterval: TimeInterval = Daemon.recheckInterval
+        recheckInterval: TimeInterval = Daemon.recheckInterval,
+        rewind: RewindRecorder? = nil
     ) {
         self.engine = engine
         self.database = database
         self.pauseController = pauseController
         self.session = session
         self.recheckInterval = recheckInterval
+        self.rewind = rewind
     }
 
     func start() {
@@ -175,6 +181,11 @@ final class Daemon: NSObject {
         /// what ends that state — so "capture can always come back" is an
         /// assertion here rather than a hope about notification delivery.
         var recheckTimer = false
+        /// The Rewind buffer's clock. Torn down by pause like every other
+        /// capture observer, and for a stronger reason than the rest: it is
+        /// the one that writes pixels (design.md §3.6). False both when Rewind
+        /// is switched off and when capture is down.
+        var rewindRecorder = false
     }
 
     var observerState: ObserverState {
@@ -186,7 +197,8 @@ final class Daemon: NSObject {
             debounce: debounceWork != nil,
             analyzerTimer: analyzerTimer != nil,
             systemStateObservers: systemStateObserversInstalled,
-            recheckTimer: recheckTimer != nil)
+            recheckTimer: recheckTimer != nil,
+            rewindRecorder: rewind?.isRunning ?? false)
     }
 
     func startCapture() {
@@ -200,6 +212,7 @@ final class Daemon: NSObject {
         workspaceObserverInstalled = true
 
         reloadIntervals()   // rebuilds the heartbeat stopCapture() tore down
+        rewind?.start()
 
         if let app = NSWorkspace.shared.frontmostApplication {
             attachAXObserver(to: app)
@@ -221,6 +234,9 @@ final class Daemon: NSObject {
         debounceWork?.cancel()
         debounceWork = nil
         detachAXObserver()
+        // Last, and never conditionally: whatever else pause means, it means
+        // Shifu stops writing pixels (design.md §3.6, invariant 5).
+        rewind?.stop()
     }
 
     /// NSWorkspace posts this on the main thread; the class is @MainActor.
@@ -229,6 +245,7 @@ final class Daemon: NSObject {
         else { return }
         attachAXObserver(to: app)
         engine.capture(app: app, trigger: "activate")
+        rewind?.noteTrigger()
     }
 
     // MARK: - Screen lock (§3.1)
@@ -382,6 +399,11 @@ final class Daemon: NSObject {
         let work = DispatchWorkItem {
             MainActor.assumeIsolated { [weak self] in
                 self?.engine.captureFrontmost(trigger: "window")
+                // "…or sooner if a window trigger occurs": the moment you move
+                // between things is the moment a rewind most needs a frame, and
+                // waiting out the tick would put the switch itself between two
+                // frames of the thing you left (design.md §3.6).
+                self?.rewind?.noteTrigger()
             }
         }
         debounceWork = work
@@ -402,6 +424,12 @@ final class Daemon: NSObject {
     /// `heartbeatFired()`, the pause edge, and `runAnalyzer()` (the only one
     /// that still runs while paused).
     private func reloadIntervals() {
+        // Rewind's dials — including its master switch — are read here so a
+        // flip in Settings takes effect within one heartbeat rather than at the
+        // next daemon restart (ARCHITECTURE §7's live-reload caveat). The
+        // recorder owns the changed-guard; this only has to ask.
+        if capturing { rewind?.reloadSettings() }
+
         let beat = TimeInterval(Settings.value(SettingsCatalog.heartbeatSeconds, database: database))
         // `capturing` guard: pause is a real teardown (design.md §8) — never
         // resurrect the heartbeat here while capture is meant to be stopped.

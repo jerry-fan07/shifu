@@ -19,6 +19,15 @@ public enum ShifuPaths {
     public static var voice: URL { home.appendingPathComponent("voice", isDirectory: true) }
     public static var digests: URL { home.appendingPathComponent("digests", isDirectory: true) }
     public static var logs: URL { home.appendingPathComponent("logs", isDirectory: true) }
+
+    /// **The one folder in Shifu that holds pixels** (design.md §3.6, CLAUDE.md
+    /// invariant 4). Everything under it is written only while Rewind recording
+    /// is switched on, and is deleted on the retention schedule in Settings.
+    /// Kept out of `vault/` deliberately: the vault is the user's Markdown, and
+    /// nothing that syncs it should carry frames.
+    /// Its layout — the rolling `buffer/`, and one `saved/<id>/` folder per kept
+    /// rewind — belongs to `RewindStore`, the only writer.
+    public static var rewind: URL { home.appendingPathComponent("rewind", isDirectory: true) }
     /// Control file: presence with a future unix-seconds expiry means capture is paused (§8).
     public static var pauseFile: URL { home.appendingPathComponent("pause_until") }
     /// Control file: presence means Focus Mode is on (§4.4).

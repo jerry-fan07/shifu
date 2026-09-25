@@ -98,6 +98,18 @@ import Testing
                 .tasks, route: .task(task), as: "task-page-light", dark: false,
                 store: store, into: directory)
         }
+        // The rewind player twice: the banner's beacon line and the player's
+        // hatched ground are worth seeing against both grounds — and the saved
+        // rewind only exists behind a shelf row. The fullscreen player is a
+        // separate window, so no composite here can catch it; its composition
+        // is filmed by `RewindFullscreenTests`.
+        store.refreshRewind()
+        shoot(.rewind, as: "rewind-dark", dark: true, store: store, into: directory)
+        if let savedID = store.savedRewinds.first?.id {
+            shoot(
+                .rewind, route: .rewind(savedID), as: "rewind-page", dark: false,
+                store: store, into: directory)
+        }
         shootDecks(store: store, into: directory)
         shootNotes(store: store, into: directory)
         shootOnboarding(into: directory)

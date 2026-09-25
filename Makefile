@@ -5,8 +5,11 @@
 build:
 	swift build
 
+# Not a bare `swift test`: one suite pumps the main run loop and kills the test
+# process mid-run with status 0, so a plain run reports green over a red suite.
+# The script splits that suite out and fails on a run that never finished.
 test:
-	swift test
+	./scripts/run-tests.sh
 
 lint:
 	@if command -v swiftlint >/dev/null 2>&1; then \
