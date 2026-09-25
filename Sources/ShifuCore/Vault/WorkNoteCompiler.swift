@@ -4,12 +4,14 @@ import GRDB
 /// Compiles work notes (vault-features.md §2.1): one Markdown note per
 /// (task, local day), rebuilt idempotently like `TaskGrouper.rebuildLogs`.
 /// Deterministic parts are always rewritten; the LLM `## Sessions` prose is
-/// regenerated only when the day's underlying activities changed
-/// (content-hash gate), so re-analysis never burns tokens on unchanged days.
+/// written once a day is over, and rewritten only when the day's underlying
+/// activities changed (content-hash gate), so re-analysis never burns tokens
+/// on unchanged days.
 ///
-/// Inputs are non-private `activities` rows and their activities' redacted
-/// text samples — the same rows KnowledgeExtractor reads; never anything
-/// upstream of the redaction choke point.
+/// Inputs are non-private `activities` rows and the evidence their blocks
+/// already carry — block cards, window titles, and only failing both a
+/// little redacted text (`WorkNoteEvidence.swift`); never anything upstream
+/// of the redaction choke point.
 public enum WorkNoteCompiler {
     /// What one `run` did. `narrativesGenerated` is the count that cost tokens;
     /// `notesWritten` includes notes whose deterministic parts were rewritten
@@ -32,17 +34,26 @@ public enum WorkNoteCompiler {
     }
 
     /// Substance threshold (vault-features.md §2.1): task-days shorter than
-    /// this (or with no text samples) get no narrative — a 45-second glance
-    /// at a dashboard does not earn a paragraph.
+    /// this (or with no evidence at all) get no narrative. Twenty minutes,
+    /// raised from ten in the 2026-09 cost pass: on the dogfood ledger that
+    /// keeps 3.6 narrated task-days a day of the 5.6 that cleared ten, and a
+    /// quarter hour on a task reads fine as its session times and sources.
     public static let minMinutesKey = "worknotes.min_minutes"
-    static let defaultMinMinutes = 10
+    static let defaultMinMinutes = 20
+
+    /// How long a finished day stays eligible for prose. A day is written up
+    /// once it is over and re-written while late grouping, merges and cards
+    /// are still settling it; after this it is history, and its prose is
+    /// carried whatever its hash says. That is what keeps `--rebuild` (and
+    /// any recompile of old days) from re-billing a vault's worth of notes,
+    /// and from blanking the ones whose raw text retention has since scrubbed.
+    static let narrationHorizonMs: Int64 = 3 * 86_400_000
 
     /// Gap that splits a task's day into separate sessions. Wider than the
     /// sessionizer's 2-minute block gap on purpose: switching apps shouldn't
     /// fragment the story, a lunch break should.
     static let sessionGapMs: Int64 = 15 * 60_000
     static let narrativeResponseTokens = 400
-    static let sampleCharsPerActivity = 800
 
     /// How much of a day-note the day earned (vault-features.md §2.1). The
     /// rule is the day's *dominant* category, not the presence of any work:
@@ -58,16 +69,6 @@ public enum WorkNoteCompiler {
             switch self {
             case .light: return WorkNoteCompiler.narrativeResponseTokens
             case .detailed: return WorkNoteCompiler.detailedResponseTokens
-            }
-        }
-
-        /// Evidence per activity. A document has to say what actually
-        /// happened, which the light tier's 800 chars can't support; a light
-        /// day's handful of bullets doesn't need more.
-        var sampleChars: Int {
-            switch self {
-            case .light: return WorkNoteCompiler.sampleCharsPerActivity
-            case .detailed: return WorkNoteCompiler.detailedSampleChars
             }
         }
     }
@@ -91,7 +92,6 @@ public enum WorkNoteCompiler {
     /// A day that still overflows this is salvaged rather than discarded
     /// (`narrative`), so the ceiling stops being a cliff either way.
     static let detailedResponseTokens = 2_500
-    static let detailedSampleChars = 2_000
     /// The categories that earn the detailed tier.
     static let detailCategories: Set<Category> = [.work, .learning]
 
@@ -105,28 +105,27 @@ public enum WorkNoteCompiler {
         var freshHash: Int64
         var needsNarrative: Bool
         var tier: Tier
-        var samples: String
+        /// The rendered activity log the prompt carries (`renderEvidence`).
+        var evidence: String
     }
 
     // MARK: - Entry points
 
     /// Full analyzer pass: compile every (task, day) the window touches.
-    /// Runs after TaskGrouper (so `activities.task_id` is assigned) and after
-    /// KnowledgeExtractor (so the day's knowledge notes are indexed for
-    /// `## Captured`). Works without a backend — notes ship deterministic-only.
+    /// Runs after TaskGrouper (so `activities.task_id` is assigned). Works
+    /// without a backend — notes ship deterministic-only.
     ///
-    /// `regenerateOpenDay: false` throttles the one day still in progress
-    /// (the day containing `to`): an actively-worked task's hash changes on
-    /// every hourly pass, so without the throttle its narrative re-bills up
-    /// to ~14×/day to describe an afternoon that isn't over. Completed days
-    /// keep the pure hash gate either way, so end-of-day prose is never
-    /// skipped — the throttled day just reads a few hours stale until the
-    /// caller's gate (main.swift, `LLMStageGate`) opens or the day completes.
+    /// Prose is written for **finished** days only (the day containing `to`
+    /// compiles its deterministic parts and waits for midnight), and only
+    /// while a day is inside `narrationHorizonMs`. An actively-worked task's
+    /// hash moves on every pass, so describing the day in progress used to
+    /// re-bill it every few hours — about 2.8 narrations per task-day on the
+    /// dogfood ledger for prose the next one replaced. Today's note reads as
+    /// session times and sources until tomorrow's first pass writes it up.
     @discardableResult
     public static func run(
         database: ShifuDatabase, vault: VaultStore, backend: (any LLMBackend)?,
-        from: Int64, to: Int64, regenerateOpenDay: Bool = true,
-        calendar: Calendar = .current
+        from: Int64, to: Int64, calendar: Calendar = .current
     ) async throws -> Summary {
         let spans: [(start: Int64, end: Int64)] = try await database.queue.read { db in
             try Row.fetchAll(db, sql: """
@@ -141,9 +140,10 @@ public enum WorkNoteCompiler {
 
         var summary = Summary()
         for day in days {
+            let narrate = day.end <= to && to - day.end < narrationHorizonMs
             let pendings = try gather(
                 day: day, database: database, vault: vault, calendar: calendar,
-                minMs: minMs, throttleNarratives: !regenerateOpenDay && day.end > to)
+                minMs: minMs, throttleNarratives: !narrate)
             for var pending in pendings {
                 if pending.needsNarrative, let backend {
                     // The hash moves with the prose, never ahead of it: a day
@@ -204,16 +204,18 @@ public enum WorkNoteCompiler {
         var category: Category
         var taskKey: String
         var taskName: String
+        var card: String?
     }
 
     /// Stable identity of one activity for the regeneration gate. Never row
     /// ids: LedgerBuilder's idempotent rebuild recreates the window's rows
-    /// with fresh ids every run, but the spans and text are reproduced
-    /// byte-identically — so span + sample hash is what "unchanged" means.
+    /// with fresh ids every run, but the spans and the evidence (cards carry
+    /// across the rebuild by span identity) are reproduced byte-identically —
+    /// so span + evidence hash is what "unchanged" means.
     struct HashEntry {
         var startedAt: Int64
         var endedAt: Int64
-        var sampleHash: Int64
+        var evidenceHash: Int64
     }
 
     private struct TaskAgg {
@@ -225,7 +227,7 @@ public enum WorkNoteCompiler {
         var topics: [String] = []
         var spans: [(start: Int64, end: Int64)] = []
         var entries: [HashEntry] = []
-        var samples: [String] = []
+        var evidence: [EvidenceItem] = []
         var msByCategory: [Category: Int64] = [:]
 
         /// The tier this task-day earned: detailed when the biggest share of
@@ -239,19 +241,20 @@ public enum WorkNoteCompiler {
 
     private struct Fetched {
         var rows: [ActivityRow]
-        var samplesByID: [Int64: String]
+        var evidenceByID: [Int64: ActivityEvidence]
         var linksByTask: [Int64: [String]]
     }
 
-    /// One read: the day's task activities, their redacted text samples, and
-    /// the day's indexed knowledge notes per task (for `## Captured`).
+    /// One read: the day's task activities, their evidence
+    /// (`WorkNoteEvidence.swift`), and the day's indexed knowledge notes per
+    /// task (for `## Captured`).
     private static func fetchDay(
         day: (start: Int64, end: Int64), database: ShifuDatabase
     ) throws -> Fetched {
         try database.queue.read { db in
             let rows = try Row.fetchAll(db, sql: """
-                SELECT a.id, a.task_id, a.started_at, a.ended_at, a.app_bundle,
-                       a.domain, a.topic, a.category, t.key AS task_key, t.name AS task_name
+                SELECT a.id, a.task_id, a.started_at, a.ended_at, a.app_bundle, a.domain,
+                       a.topic, a.category, a.card, t.key AS task_key, t.name AS task_name
                 FROM activities a
                 JOIN tasks t ON t.id = a.task_id
                 WHERE a.ended_at > ? AND a.started_at < ? AND a.category != 'private'
@@ -264,32 +267,11 @@ public enum WorkNoteCompiler {
                     appBundle: row["app_bundle"], domain: row["domain"],
                     topic: row["topic"],
                     category: Category(rawValue: row["category"]) ?? .unclassified,
-                    taskKey: row["task_key"], taskName: row["task_name"])
+                    taskKey: row["task_key"], taskName: row["task_name"], card: row["card"])
             }
-            // Fetched at the detailed tier's size regardless of what the day
-            // turns out to be: the tier isn't known until the rows are folded,
-            // and a light day's prompt just truncates what it takes. Hashing
-            // the *full* sample is the better gate anyway — it notices changes
-            // in text a light prompt never sees.
-            var samples: [Int64: String] = [:]
+            var evidence: [Int64: ActivityEvidence] = [:]
             for row in rows {
-                // Ordered by id, not `started_at`: id order is what the
-                // `idx_observations_session` walk already returns, so this
-                // states today's bytes rather than changing them — every
-                // work note's `contentHash` is a hash of these samples, and
-                // a different order would re-hash all 400-odd of them and
-                // re-bill their prose. It has to be *stated*, though: the
-                // prompt's cacheable prefix is now these bytes (see
-                // `WorkNoteCompiler.rules`), and an unordered query is a
-                // silent licence for SQLite to break it later.
-                let texts = try String.fetchAll(db, sql: """
-                    SELECT text FROM observations
-                    WHERE session_id = ? AND text IS NOT NULL ORDER BY id LIMIT 8
-                    """, arguments: [row.id])
-                if !texts.isEmpty {
-                    samples[row.id] = String(
-                        texts.joined(separator: "\n").prefix(detailedSampleChars))
-                }
+                evidence[row.id] = try activityEvidence(db, activityID: row.id, card: row.card)
             }
             var links: [Int64: [String]] = [:]
             for taskID in Set(rows.map(\.taskID)) {
@@ -304,7 +286,7 @@ public enum WorkNoteCompiler {
                     ORDER BY captured
                     """, arguments: [taskID, day.start, day.end])
             }
-            return Fetched(rows: rows, samplesByID: samples, linksByTask: links)
+            return Fetched(rows: rows, evidenceByID: evidence, linksByTask: links)
         }
     }
 
@@ -329,11 +311,14 @@ public enum WorkNoteCompiler {
             if !agg.sources.contains(source) { agg.sources.append(source) }
             if let topic = row.topic, !agg.topics.contains(topic) { agg.topics.append(topic) }
             agg.spans.append((max(row.startedAt, day.start), min(row.endedAt, day.end)))
-            let sample = fetched.samplesByID[row.id]
+            let evidence = fetched.evidenceByID[row.id] ?? ActivityEvidence()
             agg.entries.append(HashEntry(
-                startedAt: row.startedAt, endedAt: row.endedAt,
-                sampleHash: sample.map(VaultIndexer.contentHash) ?? 0))
-            if let sample { agg.samples.append(sample) }
+                startedAt: row.startedAt, endedAt: row.endedAt, evidenceHash: evidence.hash))
+            if !evidence.isEmpty {
+                agg.evidence.append(EvidenceItem(
+                    startedAt: max(row.startedAt, day.start), durationMs: clipped,
+                    appBundle: row.appBundle, evidence: evidence))
+            }
             perTask[row.taskID] = agg
         }
         return (perTask, order)
@@ -343,9 +328,10 @@ public enum WorkNoteCompiler {
     /// content hash, and decides prose carry-over vs regeneration.
     ///
     /// `throttleNarratives` defers a changed day's prose instead of queueing
-    /// it: the old prose *and the old hash* carry over, so the note still
-    /// reads "changed" to whichever later pass is allowed to regenerate.
-    /// Writing the new hash here would be the silent failure — the throttled
+    /// it — the day still in progress, and days past the narration horizon:
+    /// the old prose *and the old hash* carry over, so an unfinished day
+    /// still reads "changed" once it is finished and allowed to regenerate.
+    /// Writing the new hash here would be the silent failure — the deferred
     /// regeneration would look already-done and never happen.
     static func gather(
         day: (start: Int64, end: Int64), database: ShifuDatabase, vault: VaultStore,
@@ -362,10 +348,8 @@ public enum WorkNoteCompiler {
             let hash = contentHash(entries: agg.entries)
             let old = vault.workNote(day: dayStr, taskKey: agg.taskKey)
             let tier = agg.tier
-            let samples = agg.samples
-                .map { String($0.prefix(tier.sampleChars)) }
-                .joined(separator: "\n---\n")
-            let substantial = agg.durationMs >= minMs && !samples.isEmpty
+            let evidence = renderEvidence(agg.evidence, times: times)
+            let substantial = agg.durationMs >= minMs && !evidence.isEmpty
             // Both prose sections carry on a hash match, not just the first.
             // Carrying only `sessionsProse` would silently delete `## Notes`
             // on every unchanged-day rebuild — and the hash gate would then
@@ -405,7 +389,7 @@ public enum WorkNoteCompiler {
                 detailProse: carry ? old?.detailProse : nil,
                 capturedLinks: wikiLinks(fetched.linksByTask[taskID] ?? []))
             return Pending(note: note, freshHash: hash, needsNarrative: owed,
-                           tier: tier, samples: samples)
+                           tier: tier, evidence: evidence)
         }
     }
 
@@ -430,13 +414,13 @@ public enum WorkNoteCompiler {
 // MARK: - Helpers
 
 extension WorkNoteCompiler {
-    /// Hash of the sorted (span + text-sample hash) entries: the regeneration
+    /// Hash of the sorted (span + evidence hash) entries: the regeneration
     /// gate. Order-independent, and stable across LedgerBuilder's
     /// delete-and-reinsert rebuilds — see HashEntry.
     static func contentHash(entries: [HashEntry]) -> Int64 {
         let joined = entries
             .sorted { ($0.startedAt, $0.endedAt) < ($1.startedAt, $1.endedAt) }
-            .map { "\($0.startedAt)-\($0.endedAt):\($0.sampleHash)" }
+            .map { "\($0.startedAt)-\($0.endedAt):\($0.evidenceHash)" }
             .joined(separator: ";")
         return VaultIndexer.contentHash(joined)
     }

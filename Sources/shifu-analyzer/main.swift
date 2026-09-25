@@ -201,10 +201,9 @@ let minting: TaskGrouper.MechanicalMinting = backend == nil ? .always : .lastRes
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
 // the same card relabels blocks the rules tier marked ambiguous. Every later
-// *grouping* stage renders cards instead of re-sampling raw text, so this is
-// where OCR text meets a prompt on the hourly path — with one exception the
-// ledger stages don't own: WorkNoteCompiler still samples `observations.text`
-// directly for its day narratives (design.md §12).
+// stage — grouping, themes, the day notes — renders cards instead of
+// re-sampling raw text, so this is the one place OCR text meets a prompt on
+// the hourly path.
 if let backend {
     do {
         let cardSummary = try await CardBuilder.run(
@@ -414,22 +413,13 @@ if let backend {
 }
 
 // Work notes (vault-features.md §2.1): deterministic parts always compile;
-// narratives need a backend and regenerate only when a day's activities
-// changed (content-hash gate). The hash gate alone can't protect the day in
-// progress — active work changes it every pass — so the open day's narrative
-// additionally waits out an interval gate, while completed days regenerate
-// the moment they change. Stamped only on success, like the radar watermark.
-let openDayNarrativeIntervalMs: Int64 = 4 * 3_600_000
-let openDayDue = LLMStageGate.due(
-    "worknotes.open_day", everyMs: openDayNarrativeIntervalMs,
-    now: nowMs, database: database)
+// narratives need a backend, are written once a day is over, from the day's
+// block cards rather than its raw screen text, and are rewritten only when
+// the day's activities changed (content-hash gate).
 do {
     let workSummary = try await WorkNoteCompiler.run(
         database: database, vault: vault, backend: backend?.labeled("worknotes"),
-        from: from, to: nowMs, regenerateOpenDay: openDayDue)
-    if openDayDue, backend != nil {
-        LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
-    }
+        from: from, to: nowMs)
     if workSummary.notesWritten > 0 {
         // Failures are printed, not just counted: this stage swallows them
         // with `try?` so one bad day can't take the rest of the vault down,

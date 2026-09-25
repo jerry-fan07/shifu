@@ -192,7 +192,7 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         let vault = try makeVault(database)
         let backend = CountingBackend()
         // 6 minutes clears the task substance gate (5 min) but sits under
-        // the 10-minute narrative default; text present, too little time.
+        // the 20-minute narrative default; text present, too little time.
         try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 6,
                            sampleText: "dashboard glance")
         // 45 minutes but zero text samples.
@@ -449,11 +449,12 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
 
 // Extension keeps the suite's type body inside the lint budget.
 extension WorkNoteCompilerTests {
-    /// The open day's narrative waits out the caller's interval gate
-    /// (`regenerateOpenDay: false`): deterministic parts stay fresh every
-    /// pass, but the prose — and crucially the *old* content hash — carry
-    /// over, so the deferred regeneration still happens once the gate opens.
-    @Test func openDayThrottleDefersProseWithoutLosingTheRegeneration() async throws {
+    /// The day in progress is never written up: its hash moves on every pass,
+    /// so describing it re-billed prose the next pass replaced (~2.8 calls
+    /// per task-day on the dogfood ledger). Deterministic parts stay fresh;
+    /// the prose — and the old hash — wait for midnight, and the finished
+    /// day is then written up exactly once.
+    @Test func theDayInProgressWaitsForMidnight() async throws {
         let database = try ShifuDatabase.inMemory()
         let vault = try makeVault(database)
         let backend = CountingBackend()
@@ -462,39 +463,27 @@ extension WorkNoteCompilerTests {
         let midday = day1.addingTimeInterval(12 * 3_600)
         let dayStr = WorkNoteCompiler.dayString(ms(day1), calendar: calendar)
 
-        // Gate closed: the day in progress compiles deterministically, no call.
-        try TaskGrouper.run(database: database, from: ms(day1), to: ms(midday))
-        _ = try await WorkNoteCompiler.run(
-            database: database, vault: vault, backend: backend,
-            from: ms(day1), to: ms(midday), regenerateOpenDay: false)
+        _ = try await compile(database, vault, backend: backend, from: day1, to: midday)
         #expect(backend.calls == 0)
-        let deferred = try #require(vault.workNote(
+        let open = try #require(vault.workNote(
             day: dayStr, taskKey: "topic:debugging-capture-daemon"))
-        #expect(deferred.sessionsProse == nil)
-        #expect(deferred.durationMs == 90 * 60_000)
+        #expect(open.sessionsProse == nil)
+        #expect(open.durationMs == 90 * 60_000)
 
-        // Gate open: the skip didn't swallow the change — it regenerates now.
-        _ = try await WorkNoteCompiler.run(
-            database: database, vault: vault, backend: backend,
-            from: ms(day1), to: ms(midday), regenerateOpenDay: true)
-        #expect(backend.calls == 1)
-
-        // More work arrives; a throttled pass keeps the old prose and hash…
+        // More work that afternoon: still today, still no call.
         try insertActivity(database, start: day1.addingTimeInterval(14 * 3_600), minutes: 30,
                            sampleText: "perf harness output")
-        try TaskGrouper.run(database: database, from: ms(day1), to: ms(day2))
-        _ = try await WorkNoteCompiler.run(
-            database: database, vault: vault, backend: backend,
-            from: ms(day1), to: ms(midday), regenerateOpenDay: false)
-        #expect(backend.calls == 1)
-        let stale = try #require(vault.workNote(
-            day: dayStr, taskKey: "topic:debugging-capture-daemon"))
-        #expect(stale.sessionsProse?.contains("observer leak") == true)
+        _ = try await compile(database, vault, backend: backend, from: day1,
+                              to: day1.addingTimeInterval(20 * 3_600))
+        #expect(backend.calls == 0)
 
-        // …so the next open gate still sees the change and pays exactly once.
-        _ = try await WorkNoteCompiler.run(
-            database: database, vault: vault, backend: backend,
-            from: ms(day1), to: ms(midday), regenerateOpenDay: true)
-        #expect(backend.calls == 2)
+        // The day is over: written up once, then left alone.
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(backend.calls == 1)
+        _ = try await compile(database, vault, backend: backend, from: day1, to: day2)
+        #expect(backend.calls == 1)
+        let written = try #require(vault.workNote(
+            day: dayStr, taskKey: "topic:debugging-capture-daemon"))
+        #expect(written.sessionsProse?.contains("observer leak") == true)
     }
 }

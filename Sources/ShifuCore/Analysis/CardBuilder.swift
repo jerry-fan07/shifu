@@ -77,10 +77,9 @@ public enum CardBuilder {
     /// Candidates per run; the rest wait for the next pass.
     public static let batchLimit = 40
     /// Raw-text budget per block. This is the amount one card is worth, not
-    /// what the window can hold: the grouping and clustering stages downstream
-    /// read the card instead of re-sampling, so these are the only OCR bytes
-    /// they will ever cost. (`WorkNoteCompiler` still samples raw text of its
-    /// own — see design.md §12.)
+    /// what the window can hold: the grouping, clustering and day-note stages
+    /// downstream read the card instead of re-sampling, so these are the only
+    /// OCR bytes they will ever cost.
     public static let textSampleChars = 700
     /// One card is a topic, a category, a gist and a confidence — call it 120
     /// tokens, so a full `batchLimit` batch needs ~4.8k. The old 3,000 was
