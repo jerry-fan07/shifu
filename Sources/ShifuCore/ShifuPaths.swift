@@ -13,6 +13,10 @@ public enum ShifuPaths {
 
     public static var database: URL { home.appendingPathComponent("shifu.db") }
     public static var vault: URL { home.appendingPathComponent("vault", isDirectory: true) }
+    /// The writing corpus and its derived profile (voice.md §2.1). A sibling
+    /// of the vault, never inside it: `VaultStore.allNotes()` enumerates every
+    /// `.md` under its root, and a sample is raw material rather than a note.
+    public static var voice: URL { home.appendingPathComponent("voice", isDirectory: true) }
     public static var digests: URL { home.appendingPathComponent("digests", isDirectory: true) }
     public static var logs: URL { home.appendingPathComponent("logs", isDirectory: true) }
 

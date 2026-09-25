@@ -389,7 +389,7 @@ enum Place: String, CaseIterable, Identifiable {
     case breakdown, timeline
     case themes, tasks, notes, rewind
     case due, decks
-    case radar
+    case radar, voice
     case settings
 
     var id: String { rawValue }
@@ -405,6 +405,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .due: return "Due"
         case .decks: return "Decks"
         case .radar: return "Radar"
+        case .voice: return "Voice"
         case .settings: return "Settings"
         }
     }
@@ -416,7 +417,10 @@ enum Place: String, CaseIterable, Identifiable {
         case .breakdown, .timeline: return .ledger
         case .themes, .tasks, .notes, .rewind: return .vault
         case .due, .decks: return .practice
-        case .radar: return .signals
+        // Voice sits beside the Radar deliberately (voice.md §1): the band is
+        // "what a machine could take over", and the two places answer that for
+        // chores and for prose.
+        case .radar, .voice: return .signals
         case .settings: return nil
         }
     }
@@ -429,19 +433,31 @@ enum Place: String, CaseIterable, Identifiable {
         // a instrument with nothing on it should look like one.
         case .breakdown: return store.todayMs > 0 ? store.todayTotalLabel : nil
         case .timeline: return store.todayBlockCount > 0 ? "\(store.todayBlockCount)" : nil
-        case .themes: return count(store.themes.count)
-        case .tasks: return count(store.matchingTaskCount)
-        case .notes: return count(store.noteCount)
+        default: return itemCount(store).flatMap(count)
+        }
+    }
+
+    /// The count behind every non-ledger badge. Split out of `badge` only to
+    /// keep either switch under the complexity limit as places are added.
+    @MainActor private func itemCount(_ store: LedgerStore) -> Int? {
+        switch self {
+        case .breakdown, .timeline, .settings: return nil
+        case .themes: return store.themes.count
+        case .tasks: return store.matchingTaskCount
+        case .notes: return store.noteCount
         // What is kept, not what is buffered: the buffer is always about to
         // be five minutes and saying so on a source-list row is noise.
-        case .rewind: return count(store.savedRewinds.count)
-        case .due: return count(store.dueNotes.count)
+        case .rewind: return store.savedRewinds.count
+        case .due: return store.dueNotes.count
         // Kept decks plus open offers: the number of deck-shaped things the
         // page will show, not the cards inside them — Due already counts
         // cards.
-        case .decks: return count(store.decks.count + store.deckSuggestions.count)
-        case .radar: return count(store.suggestions.count)
-        case .settings: return nil
+        case .decks: return store.decks.count + store.deckSuggestions.count
+        case .radar: return store.suggestions.count
+        // How much writing it has to go on — the one number that decides
+        // whether going there is worth it. Counted from the directory, not
+        // from a corpus walk (`VoiceStore.sampleCount`).
+        case .voice: return store.voiceSampleCount
         }
     }
 
@@ -458,6 +474,7 @@ enum Place: String, CaseIterable, Identifiable {
         case .due: DueView()
         case .decks: DecksView()
         case .radar: RadarView()
+        case .voice: VoiceView()
         case .settings: SettingsView()
         }
     }

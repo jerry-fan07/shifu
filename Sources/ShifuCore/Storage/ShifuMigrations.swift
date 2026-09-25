@@ -678,6 +678,37 @@ extension ShifuDatabase {
         }
 
         registerRewindMigrations(into: &migrator)
+
+        migrator.registerMigration("v28-voice-drafts") { db in
+            // The drafting desk's queue (voice.md §4.1). One row per request:
+            // what was asked for, what came back, and where it is in between.
+            //
+            // Only the *queue* is a table. The corpus itself is plain files
+            // under ~/Shifu/voice/ — samples are the user's own writing, and
+            // nothing about them needs a status, an index or a join. Putting
+            // them here would have made them Shifu's rather than theirs.
+            //
+            // Number-and-name per v22's reasoning: parallel workspaces mint
+            // migrations concurrently, and a bare "v28" that two branches both
+            // claim leaves the loser's silently skipped on a dogfood DB.
+            try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS voice_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    status_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    finished_at INTEGER,
+                    result TEXT,
+                    error TEXT
+                )
+                """)
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_voice_drafts_created
+                ON voice_drafts (created_at DESC)
+                """)
+        }
+
         registerDeadlineMigrations(into: &migrator)
 
         migrator.registerMigration("v29-deck-topics") { db in
