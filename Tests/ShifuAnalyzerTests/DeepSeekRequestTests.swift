@@ -35,7 +35,7 @@ import Testing
 
     /// The reasoning slot too (design.md §4.2, revised 2026-09): its daily
     /// roster audit measured ~2k tokens of prompt answered after 3–15k tokens
-    /// of billed chain-of-thought — 19% of the whole bill for a few lines of
+    /// of billed chain-of-thought — 28% of the whole bill for a few lines of
     /// JSON. The slot is still the bigger model; it just doesn't think aloud.
     @Test func theReasoningSlotAsksForThinkingToBeOffToo() throws {
         let body = try backend(.reasoning).requestBody(prompt: "hello", maxTokens: 400)
@@ -176,6 +176,8 @@ import Testing
         for role in [DeepSeekBackend.Role.fast, .reasoning] {
             let backend = try configured(role)
             #expect(backend.responseHeadroomTokens == 0)
+            // A local server is nobody's invoice: nothing waits for off-peak.
+            #expect(!backend.billsPeakHours)
             let body = backend.requestBody(prompt: "hello", maxTokens: 400)
             #expect((body["thinking"] as? [String: String])?["type"] == "disabled")
             #expect(body["max_tokens"] as? Int == 400)
@@ -238,5 +240,35 @@ import Testing
                 #expect(budget > 0, "window \(window), \(role)")
             }
         }
+    }
+}
+
+/// Which tiers DeepSeek bills on its own clock — double in its weekday peak
+/// windows — and so which ones the analyzer's slow stages wait for.
+@Suite struct DeepSeekPeakBillingTests {
+    private func configured(_ settings: [String: String]) throws -> DeepSeekBackend? {
+        let database = try ShifuDatabase.inMemory()
+        for (key, value) in settings {
+            try Settings.set(key, to: value, database: database)
+        }
+        return try DeepSeekBackend.ifConfigured(database: database)
+    }
+
+    @Test func deepSeeksOwnAPIAndShifuCloudBillPeakHours() throws {
+        let keyed = try #require(try configured([
+            Settings.analysisBackendKey: "deepseek", Settings.deepseekAPIKeyKey: "sk-test"]))
+        #expect(keyed.billsPeakHours)
+        let cloud = try #require(try configured([
+            Settings.analysisBackendKey: "shifu-cloud", Settings.shifuCloudTokenKey: "tok"]))
+        #expect(cloud.billsPeakHours)
+    }
+
+    /// A key pointed at another OpenAI-compatible provider isn't billed on
+    /// DeepSeek's clock, and nothing waits for it.
+    @Test func anotherEndpointDoesNot() throws {
+        let other = try #require(try configured([
+            Settings.analysisBackendKey: "deepseek", Settings.deepseekAPIKeyKey: "sk-test",
+            Settings.deepseekBaseURLKey: "https://api.example.com/v1"]))
+        #expect(!other.billsPeakHours)
     }
 }

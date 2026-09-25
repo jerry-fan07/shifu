@@ -190,6 +190,23 @@ if let pacer {
         + "(\(pacer.idleDutyPercent)% away)")
 }
 
+// DeepSeek bills double in its weekday peak windows (`DeepSeekPeak`), and half
+// the dogfood ledger's spend landed there. The stages whose answers are
+// measured in days — the write-up of a finished day, the weekly overviews and
+// theme stories, the daily roster audit, the weekly radar — wait the window
+// out: they run on the first pass after it, at most four hours later, and
+// read the same. The hourly block stages (cards, grouping, themes) never
+// wait: in UTC+8 the windows are most of the working day, and a day's blocks
+// sitting ungrouped until evening is a visible loss. Someone watching this
+// run (`--radar`, `--digest`) doesn't wait either, and neither does a local
+// server, which DeepSeek doesn't bill.
+let slowStagesWait = backend?.billsPeakHours == true && !watched
+    && DeepSeekPeak.contains(unixMs: nowMs)
+if slowStagesWait {
+    print("DeepSeek peak hours — day notes, overviews, stories, the roster audit "
+        + "and the radar wait for the off-peak rate")
+}
+
 // With a backend, `domain:`/`app:` container keys mint and attach only as a
 // last resort (§5.3): the semantic pass gets first claim on their time, and a
 // container becomes a task only from blocks the model finished declining.
@@ -306,15 +323,17 @@ if let backend {
             print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
-        let narrativesDue = LLMStageGate.due(
-            "themes.narratives", everyMs: 7 * 86_400_000, now: nowMs, database: database)
-        let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend.labeled("theme-narratives"),
-            onlyMissing: !narrativesDue)
-        if narrativesDue {
-            LLMStageGate.stamp("themes.narratives", now: nowMs, database: database)
+        if !slowStagesWait {
+            let narrativesDue = LLMStageGate.due(
+                "themes.narratives", everyMs: 7 * 86_400_000, now: nowMs, database: database)
+            let narrated = try await ThemeClusterer.refreshNarratives(
+                database: database, backend: backend.labeled("theme-narratives"),
+                onlyMissing: !narrativesDue)
+            if narrativesDue {
+                LLMStageGate.stamp("themes.narratives", now: nowMs, database: database)
+            }
+            if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
         }
-        if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")
     }
@@ -358,10 +377,10 @@ do {
 //
 // Daily, and only over a roster that changed since the last audit
 // (`TaskReconciler.rosterHashKey`). It ran every six hours with thinking on,
-// which measured 19% of the whole bill (2026-09-11..24) for 13 merge
-// proposals in eight weeks — a duplicate living until tomorrow's audit is a
-// smaller cost than that.
-if let reasoningBackend,
+// which measured 28% of the whole bill at current rates (2026-09-11..24) for
+// 13 merge proposals in eight weeks — a duplicate living until tomorrow's
+// audit is a smaller cost than that.
+if let reasoningBackend, !slowStagesWait,
    LLMStageGate.due("reconcile.last_ran", everyMs: 24 * 3_600_000,
                     now: nowMs, database: database) {
     do {
@@ -425,7 +444,8 @@ if let backend {
 // the day's activities changed (content-hash gate).
 do {
     let workSummary = try await WorkNoteCompiler.run(
-        database: database, vault: vault, backend: backend?.labeled("worknotes"),
+        database: database, vault: vault,
+        backend: slowStagesWait ? nil : backend?.labeled("worknotes"),
         from: from, to: nowMs)
     if workSummary.notesWritten > 0 {
         // Failures are printed, not just counted: this stage swallows them
@@ -444,7 +464,7 @@ do {
 // diary, this is the documentation. Runs right after the day notes it reads,
 // fast slot, hash-gated on *completed* days — so at most one generation per
 // task per day however often the analyzer runs.
-if let backend {
+if let backend, !slowStagesWait {
     do {
         let overviewSummary = try await TaskOverviewCompiler.run(
             database: database, vault: vault, backend: backend.labeled("task-overviews"))
@@ -477,7 +497,10 @@ do {
 // rather than raw blocks, so the "everything that isn't private" fetch this
 // block used to do is gone with the domain-altitude suggestions it produced.
 let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
-if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
+// The whole weekly block waits out a peak window, not just its model calls:
+// it stamps `radar.last_mined` on the way out, and a pass that mined without
+// describing would hide the week's radar until the next one.
+if args.contains("--radar") || (!slowStagesWait && nowMs - lastMined > 6 * 86_400_000) {
     let mineFrom = nowMs - Int64(PatternMiner.windowDays) * 86_400_000
     let candidates = try PatternMiner.mine(database: database, from: mineFrom, to: nowMs)
     let inserted = try Radar.upsert(candidates: candidates, database: database)

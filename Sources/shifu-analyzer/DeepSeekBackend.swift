@@ -23,8 +23,8 @@ import ShifuCore
 /// It is off on **both** slots (design.md §4.2, revised 2026-09). The
 /// reasoning slot used to keep it for its judgment calls, and those calls
 /// measured ~2k tokens of prompt answered after 3–15k tokens of billed
-/// chain-of-thought — 19% of the whole bill (2026-09-11..24) for a roster
-/// audit whose verdict is a few lines of JSON. The slot is still the bigger
+/// chain-of-thought — 28% of the whole bill at current rates (2026-09-11..24)
+/// for a roster audit whose verdict is a few lines of JSON. The slot is still the bigger
 /// model; it just answers the question instead of narrating its way there.
 struct DeepSeekBackend: LLMBackend {
     let name: String
@@ -43,6 +43,12 @@ struct DeepSeekBackend: LLMBackend {
     /// Duty-cycle governor for a local endpoint — see `paced`. Nil (cloud,
     /// interactive runs) means every call fires as soon as its stage asks.
     var pacer: LLMPacer?
+
+    /// Whether DeepSeek itself bills these calls — its own API, or the Shifu
+    /// Cloud proxy in front of it — and so doubles them in its peak windows
+    /// (`DeepSeekPeak`). False for a local server or any other endpoint the
+    /// base URL points at.
+    var billsPeakHours = false
 
     /// Prompt + response budget per call. Every stage sizes its batches to
     /// it (invariant 7), so this one number is how the local tier adapts the
@@ -100,6 +106,7 @@ struct DeepSeekBackend: LLMBackend {
     ) throws -> DeepSeekBackend? {
         let credential: String
         let base: String
+        let billsPeakHours: Bool
         switch try Settings.llmCredential(database: database, edition: edition) {
         case nil:
             return nil
@@ -107,19 +114,23 @@ struct DeepSeekBackend: LLMBackend {
             credential = key
             base = (try? Settings.get(Settings.deepseekBaseURLKey, database: database))
                 .flatMap { $0.isEmpty ? nil : $0 } ?? defaultBaseURL
+            billsPeakHours = URL(string: base)?.host == URL(string: defaultBaseURL)?.host
         case .shifuCloud(let token):
             guard let token else { return nil }
             credential = token
             base = ShifuCloud.baseURL(database: database)
+            billsPeakHours = true
         case .localServer:
             return localServer(role: role, database: database)
         }
         let model = (try? Settings.get(role.settingsKey, database: database))
             .flatMap { $0.isEmpty ? nil : $0 } ?? role.defaultModel
-        return DeepSeekBackend(
+        var backend = DeepSeekBackend(
             name: model, apiKey: credential, model: model,
             baseURL: base.hasSuffix("/") ? String(base.dropLast()) : base,
             database: database)
+        backend.billsPeakHours = billsPeakHours
+        return backend
     }
 
     /// The local tier: one self-hosted model serves both slots — it is one
