@@ -41,13 +41,28 @@ public enum WorkNoteCompiler {
     public static let minMinutesKey = "worknotes.min_minutes"
     static let defaultMinMinutes = 20
 
-    /// How long a finished day stays eligible for prose. A day is written up
-    /// once it is over and re-written while late grouping, merges and cards
-    /// are still settling it; after this it is history, and its prose is
-    /// carried whatever its hash says. That is what keeps `--rebuild` (and
-    /// any recompile of old days) from re-billing a vault's worth of notes,
-    /// and from blanking the ones whose raw text retention has since scrubbed.
+    /// How long a finished day's prose stays open to rewriting. A day is
+    /// written up once it is over and re-written while late grouping, merges
+    /// and cards are still settling it; after this it is history, and prose
+    /// it already has is carried whatever its hash says. That is what keeps
+    /// `--rebuild` (and any recompile of old days) from re-billing a vault's
+    /// worth of notes. A day that was *never* described is still written up
+    /// however old it is — a hole, not a rewrite (`Narration.missingOnly`).
     static let narrationHorizonMs: Int64 = 3 * 86_400_000
+
+    /// What a changed day may earn this pass.
+    enum Narration {
+        /// A finished day inside the horizon: prose is owed whenever its
+        /// evidence changed.
+        case now
+        /// The day still in progress: nothing is owed until it is over, and
+        /// the old prose *and the old hash* carry, so it still reads
+        /// "changed" once it is.
+        case deferred
+        /// A day past the horizon: carried as it is, unless it has no prose
+        /// at all.
+        case missingOnly
+    }
 
     /// Gap that splits a task's day into separate sessions. Wider than the
     /// sessionizer's 2-minute block gap on purpose: switching apps shouldn't
@@ -116,8 +131,9 @@ public enum WorkNoteCompiler {
     /// without a backend — notes ship deterministic-only.
     ///
     /// Prose is written for **finished** days only (the day containing `to`
-    /// compiles its deterministic parts and waits for midnight), and only
-    /// while a day is inside `narrationHorizonMs`. An actively-worked task's
+    /// compiles its deterministic parts and waits for midnight), and
+    /// rewritten only while a day is inside `narrationHorizonMs`. An
+    /// actively-worked task's
     /// hash moves on every pass, so describing the day in progress used to
     /// re-bill it every few hours — about 2.8 narrations per task-day on the
     /// dogfood ledger for prose the next one replaced. Today's note reads as
@@ -140,10 +156,11 @@ public enum WorkNoteCompiler {
 
         var summary = Summary()
         for day in days {
-            let narrate = day.end <= to && to - day.end < narrationHorizonMs
+            let narration: Narration = day.end > to ? .deferred
+                : to - day.end < narrationHorizonMs ? .now : .missingOnly
             let pendings = try gather(
                 day: day, database: database, vault: vault, calendar: calendar,
-                minMs: minMs, throttleNarratives: !narrate)
+                minMs: minMs, narration: narration)
             for var pending in pendings {
                 if pending.needsNarrative, let backend {
                     // The hash moves with the prose, never ahead of it: a day
@@ -327,15 +344,15 @@ public enum WorkNoteCompiler {
     /// Builds the day's pending notes: aggregates per task, computes the
     /// content hash, and decides prose carry-over vs regeneration.
     ///
-    /// `throttleNarratives` defers a changed day's prose instead of queueing
-    /// it — the day still in progress, and days past the narration horizon:
-    /// the old prose *and the old hash* carry over, so an unfinished day
-    /// still reads "changed" once it is finished and allowed to regenerate.
-    /// Writing the new hash here would be the silent failure — the deferred
-    /// regeneration would look already-done and never happen.
+    /// `narration` decides whether a changed day's prose is queued or
+    /// deferred (see `Narration`). A deferred day carries the old prose *and
+    /// the old hash*, so it still reads "changed" to whichever later pass is
+    /// allowed to regenerate. Writing the new hash here would be the silent
+    /// failure — the deferred regeneration would look already-done and never
+    /// happen.
     static func gather(
         day: (start: Int64, end: Int64), database: ShifuDatabase, vault: VaultStore,
-        calendar: Calendar, minMs: Int64, throttleNarratives: Bool = false
+        calendar: Calendar, minMs: Int64, narration: Narration = .now
     ) throws -> [Pending] {
         let fetched = try fetchDay(day: day, database: database)
         guard !fetched.rows.isEmpty else { return [] }
@@ -363,9 +380,10 @@ public enum WorkNoteCompiler {
             // because a completed day's evidence never changes again.
             let described = old?.sessionsProse?.isEmpty == false
             let unchanged = old?.contentHash == hash && (described || !substantial)
-            let deferred = !unchanged && throttleNarratives
+            let mayNarrate = narration == .now || (narration == .missingOnly && !described)
+            let deferred = !unchanged && !mayNarrate
             // A day that has earned prose this pass is in exactly the same
-            // position as a throttled one until that prose exists: the old
+            // position as a deferred one until that prose exists: the old
             // text is the best record there is, and the old hash is what
             // keeps the day eligible. Writing the new hash here was the
             // silent failure — a narrative that then failed left the day
@@ -373,7 +391,7 @@ public enum WorkNoteCompiler {
             // because a *completed* day's evidence never changes again, it
             // could never be retried. Three of the densest days in the
             // dogfood vault lost their notes that way.
-            let owed = !unchanged && substantial && !throttleNarratives
+            let owed = !unchanged && substantial && mayNarrate
             let carry = unchanged || deferred || owed
             let note = WorkNote(
                 id: old?.id ?? Note.ulid(),

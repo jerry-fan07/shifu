@@ -174,4 +174,33 @@ extension WorkNoteCompilerTests {
         #expect(note.sessionsProse?.contains("observer teardown") == true)
         #expect(note.durationMs == 120 * 60_000)
     }
+
+    /// The horizon freezes prose a day already has; it must not strand a day
+    /// that never got any — a week with the backend off, or a note the old
+    /// hash-before-prose bug blanked. That is a hole, not a rewrite.
+    @Test func aNeverDescribedDayIsWrittenUpEvenPastTheHorizon() async throws {
+        let database = try ShifuDatabase.inMemory()
+        let vault = try makeVault(database)
+        try insertActivity(database, start: day1.addingTimeInterval(9 * 3_600), minutes: 90,
+                           sampleText: "AX observer teardown")
+        // Compiled with no backend: deterministic parts only, no prose.
+        _ = try await compile(database, vault, backend: nil, from: day1, to: day2)
+
+        let backend = PromptLog()
+        let weekLater = calendar.date(byAdding: .day, value: 7, to: day1)!
+        _ = try await compile(database, vault, backend: backend, from: day1, to: weekLater)
+        #expect(backend.calls == 1)
+        let dayStr = WorkNoteCompiler.dayString(ms(day1), calendar: calendar)
+        var note = try #require(vault.workNote(day: dayStr, taskKey: evidenceTaskKey))
+        #expect(note.sessionsProse?.contains("observer teardown") == true)
+
+        // And a described day blanked out from under its hash heals the
+        // same way, however old — then settles.
+        note.sessionsProse = nil
+        try vault.saveWork(note)
+        _ = try await compile(database, vault, backend: backend, from: day1, to: weekLater)
+        #expect(backend.calls == 2)
+        _ = try await compile(database, vault, backend: backend, from: day1, to: weekLater)
+        #expect(backend.calls == 2)
+    }
 }
