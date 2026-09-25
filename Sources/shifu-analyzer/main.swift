@@ -203,8 +203,8 @@ if let pacer {
 let slowStagesWait = backend?.billsPeakHours == true && !watched
     && DeepSeekPeak.contains(unixMs: nowMs)
 if slowStagesWait {
-    print("DeepSeek peak hours — day notes, overviews, stories, the roster audit "
-        + "and the radar wait for the off-peak rate")
+    print("DeepSeek peak hours — day notes, overviews, stories, the voice profile, "
+        + "the roster audit and the radar wait for the off-peak rate")
 }
 
 // With a backend, `domain:`/`app:` container keys mint and attach only as a
@@ -417,11 +417,13 @@ if let backend {
 // fingerprint rather than on a clock, so an untouched corpus costs one
 // directory listing — and draft any request whose interactive launch never
 // happened. Fail-soft like every LLM stage; nothing in the ledger depends on
-// either one.
+// either one. The profile waits out a peak window like the other day-scale
+// stages (`--draft` freshens it itself when someone is waiting); a pending
+// draft doesn't — someone asked for it.
 if let backend {
     let voice = VoiceStore()
     do {
-        if let profile = try await VoiceProfiler.rebuildIfStale(
+        if !slowStagesWait, let profile = try await VoiceProfiler.rebuildIfStale(
             store: voice, backend: backend.labeled("voice-profile")) {
             print("voice: profile rebuilt from \(profile.sampleCount) samples "
                 + "(\(profile.wordCount) words)")

@@ -273,10 +273,11 @@ Every stage after the ledger is wrapped in its own `do/catch` that prints and
 continues. A failing LLM never blocks the ledger (design.md §10).
 
 The stages whose answers are measured in days — day-note prose, overviews,
-theme stories, the roster audit, the weekly radar block — skip a pass that
-falls in one of DeepSeek's weekday peak windows (`DeepSeekPeak`, where every
-rate doubles) when the backend is one DeepSeek bills (`billsPeakHours`), and
-run at the next pass. The hourly block stages never wait.
+theme stories, the voice profile, the roster audit, the weekly radar block —
+skip a pass that falls in one of DeepSeek's weekday peak windows
+(`DeepSeekPeak`, where every rate doubles) when the backend is one DeepSeek
+bills (`billsPeakHours`), and run at the next pass. The hourly block stages
+never wait.
 
 ---
 
