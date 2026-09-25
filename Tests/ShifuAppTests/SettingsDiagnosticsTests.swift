@@ -71,18 +71,22 @@ import Testing
 
     @Test func reportsCallsTokensAndSpend() throws {
         let database = try ShifuDatabase.inMemory()
+        let at = todayStart + 1_000
         LLMUsage.record(
             .init(
                 model: "deepseek-v4-flash", promptTokens: 900_000,
                 cachedPromptTokens: 0, completionTokens: 100_000),
-            at: todayStart + 1_000, database: database)
+            at: at, database: database)
 
         let diagnostics = SettingsDiagnostics.read(
             database: database, file: URL(fileURLWithPath: "/nonexistent"), now: now)
         #expect(diagnostics.llmCalls == 1)
         #expect(diagnostics.llmTokensLabel == "1.0M")
-        // 0.9M in at $0.14/M + 0.1M out at $0.28/M = $0.154.
-        #expect(diagnostics.llmCostLabel == "≈ $0.154")
+        // 0.9M in at $0.15/M + 0.1M out at $0.60/M = $0.195 off-peak, and
+        // DeepSeek doubles it in its peak windows — which local midnight
+        // falls in depends on the machine's time zone.
+        #expect(diagnostics.llmCostLabel
+            == (DeepSeekPeak.contains(unixMs: at) ? "≈ $0.390" : "≈ $0.195"))
     }
 
     /// A missing database file leaves a dash rather than "0.0 MB" — the two

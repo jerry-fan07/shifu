@@ -102,10 +102,19 @@ public enum LLMUsage {
         public let promptTokens: Int
         public let cachedPromptTokens: Int
         public let completionTokens: Int
+        /// The share of the three counts above billed inside DeepSeek's
+        /// peak windows (`DeepSeekPeak`), where the rate doubles. Summed
+        /// alongside rather than grouped by, so a rollup still has one row
+        /// per model (and stage).
+        public let peakPromptTokens: Int
+        public let peakCachedPromptTokens: Int
+        public let peakCompletionTokens: Int
 
         public init(
             model: String, stage: String? = nil, calls: Int, promptTokens: Int,
-            cachedPromptTokens: Int, completionTokens: Int
+            cachedPromptTokens: Int, completionTokens: Int,
+            peakPromptTokens: Int = 0, peakCachedPromptTokens: Int = 0,
+            peakCompletionTokens: Int = 0
         ) {
             self.model = model
             self.stage = stage
@@ -113,6 +122,9 @@ public enum LLMUsage {
             self.promptTokens = promptTokens
             self.cachedPromptTokens = cachedPromptTokens
             self.completionTokens = completionTokens
+            self.peakPromptTokens = peakPromptTokens
+            self.peakCachedPromptTokens = peakCachedPromptTokens
+            self.peakCompletionTokens = peakCompletionTokens
         }
     }
 
@@ -127,12 +139,16 @@ public enum LLMUsage {
     public static func totals(
         from: Int64, to: Int64, byStage: Bool = false, database: ShifuDatabase
     ) throws -> [Totals] {
-        try database.queue.read { db in
+        let peak = DeepSeekPeak.sql(column: "at_ms")
+        return try database.queue.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT model, \(byStage ? "stage" : "NULL AS stage"), COUNT(*) AS calls,
                        SUM(prompt_tokens) AS prompt_tokens,
                        SUM(cached_prompt_tokens) AS cached_prompt_tokens,
-                       SUM(completion_tokens) AS completion_tokens
+                       SUM(completion_tokens) AS completion_tokens,
+                       SUM(CASE WHEN \(peak) THEN prompt_tokens ELSE 0 END) AS peak_prompt,
+                       SUM(CASE WHEN \(peak) THEN cached_prompt_tokens ELSE 0 END) AS peak_cached,
+                       SUM(CASE WHEN \(peak) THEN completion_tokens ELSE 0 END) AS peak_completion
                 FROM llm_usage WHERE at_ms >= ? AND at_ms < ?
                 GROUP BY model\(byStage ? ", stage" : "")
                 ORDER BY prompt_tokens + completion_tokens DESC
@@ -141,7 +157,10 @@ public enum LLMUsage {
                     model: row["model"], stage: row["stage"], calls: row["calls"],
                     promptTokens: row["prompt_tokens"],
                     cachedPromptTokens: row["cached_prompt_tokens"],
-                    completionTokens: row["completion_tokens"])
+                    completionTokens: row["completion_tokens"],
+                    peakPromptTokens: row["peak_prompt"],
+                    peakCachedPromptTokens: row["peak_cached"],
+                    peakCompletionTokens: row["peak_completion"])
             }
         }
     }

@@ -583,8 +583,9 @@ public enum SettingsCatalog {
         key: LLMPrices.fastKey, section: .analysis,
         title: "Model price",
         help: "Dollars per million tokens as in/cached/out, for estimating "
-            + "daily spend. Blank uses DeepSeek's published V4 Flash rates.",
-        placeholder: "0.14/0.0028/0.28",
+            + "daily spend. Blank uses DeepSeek's published off-peak Flash rates; "
+            + "calls in DeepSeek's peak hours are counted at double.",
+        placeholder: "0.15/0.003/0.6",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
@@ -592,8 +593,8 @@ public enum SettingsCatalog {
         key: LLMPrices.reasoningKey, section: .analysis,
         title: "Reasoning model price",
         help: "Dollars per million tokens as in/cached/out. Blank uses "
-            + "DeepSeek's published V4 Pro rates.",
-        placeholder: "0.435/0.003625/0.87",
+            + "DeepSeek's published off-peak V4 Pro rates.",
+        placeholder: "0.66/0.022/1.98",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
