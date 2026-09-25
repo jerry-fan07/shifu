@@ -29,6 +29,11 @@ public struct Note: Equatable, Sendable, Identifiable {
     /// The deck this card was built for (`deck:<slug>`, §5.2). Nil for the
     /// automatic reference notes — only a deck the user asked for stamps one.
     public var deck: String?
+    /// The chapter of the deck this card arrived in — the label of the "Add
+    /// cards" request that built it (§5.2). Nil for a deck's unlabelled first
+    /// build, and always nil without a deck. Single-line by construction: the
+    /// frontmatter format is line-oriented.
+    public var section: String?
     public var confidence: Double?
     public var state: State
     public var seenCount: Int
@@ -38,8 +43,8 @@ public struct Note: Equatable, Sendable, Identifiable {
     public init(
         id: String = Note.ulid(), captured: Date = Date(), sourceApp: String? = nil,
         sourceURL: String? = nil, topic: String, taskKey: String? = nil,
-        deck: String? = nil, confidence: Double? = nil, state: State = .kept,
-        seenCount: Int = 1, srs: FSRS.State? = nil, body: String
+        deck: String? = nil, section: String? = nil, confidence: Double? = nil,
+        state: State = .kept, seenCount: Int = 1, srs: FSRS.State? = nil, body: String
     ) {
         self.id = id
         self.captured = captured
@@ -48,6 +53,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         self.topic = topic
         self.taskKey = taskKey
         self.deck = deck
+        self.section = section
         self.confidence = confidence
         self.state = state
         self.seenCount = seenCount
@@ -115,6 +121,7 @@ public struct Note: Equatable, Sendable, Identifiable {
         front.append("topic: \(topic)")
         if let taskKey { front.append("task_key: \(taskKey)") }
         if let deck { front.append("deck: \(deck)") }
+        if let section { front.append("section: \(section)") }
         if let confidence { front.append("confidence: \(String(format: "%.2f", confidence))") }
         front.append("state: \(state.rawValue)")
         if seenCount > 1 { front.append("seen_count: \(seenCount)") }
@@ -146,6 +153,7 @@ public struct Note: Equatable, Sendable, Identifiable {
             topic: topic,
             taskKey: fields["task_key"],
             deck: fields["deck"],
+            section: fields["section"],
             confidence: fields["confidence"].flatMap(Double.init),
             state: fields["state"].flatMap(State.init(rawValue:)) ?? .kept,
             seenCount: fields["seen_count"].flatMap(Int.init) ?? 1,

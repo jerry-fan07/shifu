@@ -32,7 +32,7 @@ public enum Shifu {
 /// stamps the version, and every binary in the bundle reads it back here.
 /// The edition gates which backend *choices exist* — the tier code itself is
 /// shared, so main's changes reach both bundles by ordinary merge.
-public enum Edition: String, Sendable {
+public enum Edition: String, Sendable, CaseIterable {
     case standard
     case qwen
 
