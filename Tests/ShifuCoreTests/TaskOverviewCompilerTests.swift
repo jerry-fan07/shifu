@@ -125,10 +125,15 @@ private final class OverviewBackend: LLMBackend, @unchecked Sendable {
                                                calendar: calendar)
         #expect(backend.calls == 1)
 
-        // Once that day is behind us, it counts and the document is rebuilt.
+        // Once that day is behind us it counts — at the task's next weekly
+        // revision, not the morning after (`refreshIntervalMs`).
         _ = try await TaskOverviewCompiler.run(
             database: database, vault: vault, backend: backend,
             now: calendar.date(byAdding: .day, value: 1, to: today)!, calendar: calendar)
+        #expect(backend.calls == 1)
+        _ = try await TaskOverviewCompiler.run(
+            database: database, vault: vault, backend: backend,
+            now: calendar.date(byAdding: .day, value: 7, to: today)!, calendar: calendar)
         #expect(backend.calls == 2)
         #expect(dayHeadings(in: backend.lastPrompt).count == 3)
     }

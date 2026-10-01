@@ -31,27 +31,27 @@ struct PromptPrefixTests {
         let first = WorkNoteCompiler.prompt(
             taskName: "NMF research", day: "2026-07-30",
             sessions: [.init(start: "09:12", end: "11:40")],
-            samples: "gradient descent notes", tier: tier)
+            evidence: "09:12 148m Preview: gradient descent notes", tier: tier)
         let second = WorkNoteCompiler.prompt(
             taskName: "Shifu development", day: "2026-08-01",
             sessions: [.init(start: "13:05", end: "14:20")],
-            samples: "capture ladder teardown", tier: tier)
+            evidence: "13:05 75m Xcode: capture ladder teardown", tier: tier)
 
         #expect(LLMTokens.sharedPrefixBytes(first, second) >= floor)
     }
 
-    /// The win this reordering was actually for. An open day is regenerated
-    /// every few hours over a sample list that only grows at the end, so the
-    /// later prompt must contain the earlier one's evidence verbatim, in
-    /// place — the whole earlier prompt up to its fence bills at cache rate.
+    /// A day re-described after it grew (a late assignment, a merge) sends
+    /// a log that only gained lines at the end, so the later prompt must
+    /// contain the earlier one's evidence verbatim, in place — the whole
+    /// earlier prompt up to its fence bills at cache rate.
     @Test("a grown day's prompt extends the earlier prompt's prefix")
-    func workNoteSamplesAppendOnly() {
-        let morning = "09:12 opened the proof\n---\n10:30 stuck on lemma 3"
-        let afternoon = morning + "\n---\n14:02 lemma 3 falls out of convexity"
-        func render(_ samples: String, sessions: [WorkNote.Session]) -> String {
+    func workNoteEvidenceAppendOnly() {
+        let morning = "09:12 40m Preview: opened the proof\n10:30 20m Preview: stuck on lemma 3"
+        let afternoon = morning + "\n14:02 60m Preview: lemma 3 falls out of convexity"
+        func render(_ evidence: String, sessions: [WorkNote.Session]) -> String {
             WorkNoteCompiler.prompt(
                 taskName: "NMF research", day: "2026-07-30",
-                sessions: sessions, samples: samples, tier: .detailed)
+                sessions: sessions, evidence: evidence, tier: .detailed)
         }
         let earlier = render(morning, sessions: [.init(start: "09:12", end: "11:40")])
         // The later call has a session the earlier one didn't — the exact
@@ -70,12 +70,12 @@ struct PromptPrefixTests {
     /// without moving the bytes above the cut.
     @Test("a truncated day-note prompt stays a prefix-sharer")
     func workNoteTruncationKeepsPrefix() {
-        let full = String(repeating: "screen text sample. ", count: 400)
-        func render(_ samples: String) -> String {
+        let full = String(repeating: "09:12 3m Preview: reading the proof\n", count: 400)
+        func render(_ evidence: String) -> String {
             WorkNoteCompiler.prompt(
                 taskName: "NMF research", day: "2026-07-30",
                 sessions: [.init(start: "09:12", end: "11:40")],
-                samples: samples, tier: .detailed)
+                evidence: evidence, tier: .detailed)
         }
         let cut = render(String(full.prefix(full.count * 2 / 3)))
         #expect(LLMTokens.sharedPrefixBytes(render(full), cut) >= floor)

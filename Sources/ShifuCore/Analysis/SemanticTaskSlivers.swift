@@ -120,3 +120,66 @@ extension SemanticTaskGrouper {
         }
     }
 }
+
+// Topic runs: the same pooling one level up. A carded block's topic is the
+// card pass's own words for what it was for, so consecutive blocks in one app
+// and domain whose cards name the same topic are one stretch of one intent —
+// asked about once, assigned all-or-nothing, exactly like a sliver run.
+// Replayed per analyzer run over two dogfood weeks (a pass every 1–6 h), that
+// pools 1.55–1.78× fewer candidates, and 98–99% of the pooled blocks carry the
+// task the model gave the run's majority when it was asked block by block —
+// which also means fewer calls, each carrying the full task roster.
+extension SemanticTaskGrouper {
+    /// Max gap between one carded block's end and the next same-topic
+    /// block's start before a topic run is cut. Other apps' blocks may sit
+    /// in between, as in a sliver run: a detour to Messages doesn't end the
+    /// stretch it interrupted.
+    public static let topicRunGapMs: Int64 = 30 * 60_000
+
+    /// Pools carded candidates by (app, domain, card topic) under
+    /// `topicRunGapMs`; card-less ones pass through alone. Pure, so the cut
+    /// rule is testable on a literal array.
+    static func poolByTopic(_ samples: [BlockSample]) -> [BlockSample] {
+        struct Key: Hashable {
+            var app: String
+            var domain: String?
+            var topic: String
+        }
+        var runs: [[BlockSample]] = []
+        var openRun: [Key: Int] = [:]
+        for sample in samples.sorted(by: { $0.startedAt < $1.startedAt }) {
+            let slug = BlockCard.parse(sample.card).map { TaskGrouper.slug($0.topic) } ?? ""
+            guard !slug.isEmpty else {
+                runs.append([sample])
+                continue
+            }
+            let key = Key(app: sample.appBundle, domain: sample.domain, topic: slug)
+            if let index = openRun[key], let last = runs[index].last,
+               sample.startedAt - last.endedAt <= topicRunGapMs {
+                runs[index].append(sample)
+            } else {
+                runs.append([sample])
+                openRun[key] = runs.count - 1
+            }
+        }
+        return runs.map(merged)
+    }
+
+    /// One candidate speaking for a whole topic run: the earliest member's
+    /// id as the model's handle, the longest member's card as its evidence,
+    /// every member's pages, and the pooled active time.
+    private static func merged(_ run: [BlockSample]) -> BlockSample {
+        guard run.count > 1, let first = run.first,
+              let lead = run.max(by: { $0.activeMs < $1.activeMs }) else { return run[0] }
+        var urls: [String] = []
+        for url in run.flatMap(\.urls) where !urls.contains(url) { urls.append(url) }
+        return BlockSample(
+            id: first.id, startedAt: first.startedAt,
+            endedAt: run.map(\.endedAt).max() ?? first.endedAt,
+            appBundle: first.appBundle, domain: first.domain,
+            topic: run.compactMap(\.topic).first, card: lead.card,
+            titles: [], urls: Array(urls.prefix(urlSampleLimit)), textSample: "",
+            memberIDs: run.flatMap(\.memberIDs),
+            activeMs: run.reduce(Int64(0)) { $0 + $1.activeMs })
+    }
+}

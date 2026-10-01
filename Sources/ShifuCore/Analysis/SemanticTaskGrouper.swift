@@ -84,10 +84,10 @@ public enum SemanticTaskGrouper {
     /// What the *answer* to a batch of `count` candidates will cost. Batches
     /// were sized against the prompt alone while `complete(maxTokens:)` was
     /// handed a flat 2 000 — fine at sixty candidates, a silent cliff above
-    /// ~140, where the answer no longer fits and the fast slot has no
-    /// escalation retry (`DeepSeekBackend` gates that on `thinks`). A
-    /// truncated answer is `LLMError.badResponse`, which fails the whole
-    /// pass, not one batch. Invariant 7 covers prompt *and* response.
+    /// ~140, where the answer no longer fits and there is no escalation
+    /// retry (`DeepSeekBackend.complete`). A truncated answer is
+    /// `LLMError.badResponse`, which fails the whole pass, not one batch.
+    /// Invariant 7 covers prompt *and* response.
     static func answerTokens(candidates count: Int) -> Int {
         max(responseTokenReserve, answerEnvelopeTokens + count * answerTokensPerCandidate)
     }
@@ -117,8 +117,9 @@ public enum SemanticTaskGrouper {
         public var urls: [String]
         public var textSample: String
         /// Every activity this candidate speaks for. Usually just `[id]`; a
-        /// coalesced sub-minute run (SemanticTaskSlivers.swift) carries all
-        /// its members, with `id` — the earliest — as the model's handle.
+        /// run — pooled sub-minute glances, or a topic run of carded blocks
+        /// (SemanticTaskSlivers.swift) — carries all its members, with `id`,
+        /// the earliest, as the model's handle.
         public var memberIDs: [Int64]
         /// Time actually spent, summed over `memberIDs`. For a run this is
         /// far less than `endedAt - startedAt`, the wall-clock span the

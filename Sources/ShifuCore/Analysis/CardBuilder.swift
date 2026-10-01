@@ -77,10 +77,9 @@ public enum CardBuilder {
     /// Candidates per run; the rest wait for the next pass.
     public static let batchLimit = 40
     /// Raw-text budget per block. This is the amount one card is worth, not
-    /// what the window can hold: the grouping and clustering stages downstream
-    /// read the card instead of re-sampling, so these are the only OCR bytes
-    /// they will ever cost. (`WorkNoteCompiler` still samples raw text of its
-    /// own — see design.md §12.)
+    /// what the window can hold: the grouping, clustering and day-note stages
+    /// downstream read the card instead of re-sampling, so these are the only
+    /// OCR bytes they will ever cost.
     public static let textSampleChars = 700
     /// One card is a topic, a category, a gist and a confidence — call it 120
     /// tokens, so a full `batchLimit` batch needs ~4.8k. The old 3,000 was
@@ -96,9 +95,9 @@ public enum CardBuilder {
     static let ongoingTopicWindowMs: Int64 = 14 * 86_400_000
     static let entityLimit = 4
 
-    /// The evidence for one block. Everything here passed the redaction
-    /// choke point on its way into `observations`; urls are re-redacted by
-    /// `urlToken` on the way out.
+    /// The evidence for one block — or one episode of them (`episodes`).
+    /// Everything here passed the redaction choke point on its way into
+    /// `observations`; urls are re-redacted by `urlToken` on the way out.
     public struct BlockSample: Sendable {
         public var id: Int64
         public var appBundle: String
@@ -107,9 +106,14 @@ public enum CardBuilder {
         public var titles: [String]
         public var urls: [String]
         public var textSample: String
+        /// Every block the card will be written to. Usually just `[id]`; an
+        /// episode carries all its members, with `id` — the earliest — as
+        /// the model's handle.
+        public var memberIDs: [Int64]
 
         public init(id: Int64, appBundle: String, domain: String?, ambiguous: Bool,
-                    titles: [String], urls: [String] = [], textSample: String) {
+                    titles: [String], urls: [String] = [], textSample: String,
+                    memberIDs: [Int64]? = nil) {
             self.id = id
             self.appBundle = appBundle
             self.domain = domain
@@ -117,6 +121,7 @@ public enum CardBuilder {
             self.titles = titles
             self.urls = urls
             self.textSample = textSample
+            self.memberIDs = memberIDs ?? [id]
         }
     }
 
@@ -260,17 +265,75 @@ public enum CardBuilder {
 // MARK: - Pipeline
 
 extension CardBuilder {
-    /// Card-less blocks in the window worth a card: closed (a sessionizer gap
-    /// between `ended_at` and `to` — a growing block's card would die with
-    /// the next rebuild's span change), a minute or more, non-private, and
-    /// carrying some evidence beyond the app name. System shells need no
-    /// clause here: `LedgerBuilder.rebuild` never writes one.
+    /// Max gap between one block's end and the next's start inside one
+    /// card episode (`episodes`).
+    public static let episodeGapMs: Int64 = 15 * 60_000
+
+    /// One pending block as read for episode pooling.
+    struct PendingBlock {
+        var id: Int64
+        var startedAt: Int64
+        var endedAt: Int64
+        var appBundle: String
+        var domain: String?
+        var ambiguous: Bool
+        var firstTitle: String?
+    }
+
+    /// Pools pending blocks into card episodes: same app, same domain, same
+    /// first window title, each block within `episodeGapMs` of the last —
+    /// other windows free to sit between, as in a sliver run. One card is
+    /// written for the whole episode, from evidence spread across it.
+    ///
+    /// The same window, reopened inside a quarter hour, is the same thing
+    /// being done: replayed per analyzer pass over the two latest dogfood
+    /// weeks this cards 1.32–1.35× fewer times, and 97–98% of the pooled
+    /// blocks carry the episode's majority topic when carded one by one —
+    /// even for windows whose titles say nothing ("Claude", "zsh"), which
+    /// only share a card inside one sitting. A block with no title never
+    /// pools. Pure, so the cut rule is testable on a literal array.
+    static func episodes(_ blocks: [PendingBlock]) -> [[PendingBlock]] {
+        struct Key: Hashable {
+            var app: String
+            var domain: String?
+            var title: String
+        }
+        var runs: [[PendingBlock]] = []
+        var openRun: [Key: Int] = [:]
+        for block in blocks.sorted(by: { $0.startedAt < $1.startedAt }) {
+            guard let title = block.firstTitle else {
+                runs.append([block])
+                continue
+            }
+            let key = Key(app: block.appBundle, domain: block.domain, title: title)
+            if let index = openRun[key], let last = runs[index].last,
+               block.startedAt - last.endedAt <= episodeGapMs {
+                runs[index].append(block)
+            } else {
+                runs.append([block])
+                openRun[key] = runs.count - 1
+            }
+        }
+        return runs
+    }
+
+    /// Card-less blocks in the window worth a card, pooled into episodes:
+    /// closed (a sessionizer gap between `ended_at` and `to` — a growing
+    /// block's card would die with the next rebuild's span change), a minute
+    /// or more, non-private, and carrying some evidence beyond the app name.
+    /// System shells need no clause here: `LedgerBuilder.rebuild` never
+    /// writes one. `limit` caps the blocks read, not the episodes.
     public static func pendingSamples(
         database: ShifuDatabase, from: Int64, to: Int64, limit: Int = batchLimit
     ) throws -> [BlockSample] {
         try database.queue.read { db in
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, app_bundle, domain, ambiguous FROM activities
+            let blocks = try Row.fetchAll(db, sql: """
+                SELECT id, started_at, ended_at, app_bundle, domain, ambiguous,
+                       (SELECT o.window_title FROM observations o
+                        WHERE o.session_id = activities.id AND o.window_title IS NOT NULL
+                          AND o.window_title != ''
+                        ORDER BY o.started_at LIMIT 1) AS first_title
+                FROM activities
                 WHERE ended_at > ? AND started_at < ? AND ended_at <= ?
                   AND category != 'private'
                   AND card IS NULL AND card_attempts < ?
@@ -281,15 +344,23 @@ extension CardBuilder {
                                      OR o.url IS NOT NULL))
                 ORDER BY started_at DESC LIMIT ?
                 """, arguments: [from, to, to - Sessionizer.gapThresholdMs,
-                                 maxAttempts, SemanticTaskGrouper.minBlockMs, limit])
-            return try rows.map { row in
-                let id: Int64 = row["id"]
+                                 maxAttempts, SemanticTaskGrouper.minBlockMs, limit]
+            ).map { row in
+                PendingBlock(id: row["id"], startedAt: row["started_at"],
+                             endedAt: row["ended_at"], appBundle: row["app_bundle"],
+                             domain: row["domain"], ambiguous: row["ambiguous"],
+                             firstTitle: row["first_title"])
+            }
+            return try episodes(blocks).map { episode in
+                let members = episode.map(\.id)
                 let evidence = try SemanticTaskGrouper.blockEvidence(
-                    db, blockIDs: [id], textCap: textSampleChars)
+                    db, blockIDs: members, textCap: textSampleChars)
                 return BlockSample(
-                    id: id, appBundle: row["app_bundle"], domain: row["domain"],
-                    ambiguous: row["ambiguous"], titles: evidence.titles,
-                    urls: evidence.urls, textSample: evidence.text)
+                    id: episode[0].id, appBundle: episode[0].appBundle,
+                    domain: episode[0].domain,
+                    ambiguous: episode.contains(where: \.ambiguous),
+                    titles: evidence.titles, urls: evidence.urls,
+                    textSample: evidence.text, memberIDs: members)
             }
         }
     }
@@ -339,37 +410,43 @@ extension CardBuilder {
         return summary
     }
 
-    /// Writes one batch: cards land on their rows; ambiguous blocks whose
-    /// card clears the floor are relabeled exactly as the old classifier
-    /// did (`source='llm'`, never over `source='user'`); batch ids that got
-    /// no usable card burn an attempt.
+    /// Writes one batch: each card lands on every block of its episode;
+    /// ambiguous blocks whose card clears the floor are relabeled exactly as
+    /// the old classifier did (`source='llm'`, never over `source='user'`);
+    /// every block of an episode that got no usable card burns an attempt.
+    /// `built` counts blocks carded, not calls' worth of cards.
     static func apply(
         _ verdicts: [Verdict], batch: [BlockSample], database: ShifuDatabase
     ) throws -> Summary {
-        let batchIDs = Set(batch.map(\.id))
-        let usable = verdicts.filter { batchIDs.contains($0.id) }
+        let membersByID = Dictionary(uniqueKeysWithValues: batch.map { ($0.id, $0.memberIDs) })
+        let usable = verdicts.filter { membersByID[$0.id] != nil }
         return try database.queue.write { db in
             var summary = Summary()
             var cardedIDs: Set<Int64> = []
             for verdict in usable {
-                guard let json = verdict.card.json else { continue }
-                try db.execute(sql: "UPDATE activities SET card = ? WHERE id = ?",
-                               arguments: [json, verdict.id])
+                guard let json = verdict.card.json,
+                      let members = membersByID[verdict.id] else { continue }
                 cardedIDs.insert(verdict.id)
-                summary.built += 1
-                guard verdict.confidence >= confidenceFloor else { continue }
-                try db.execute(sql: """
-                    UPDATE activities
-                    SET category = ?, topic = ?, confidence = ?, source = 'llm', ambiguous = 0
-                    WHERE id = ? AND ambiguous = 1 AND source != 'user'
-                    """, arguments: [verdict.card.category.rawValue, verdict.card.topic,
-                                     verdict.confidence, verdict.id])
-                summary.relabeled += db.changesCount
+                for id in members {
+                    try db.execute(sql: "UPDATE activities SET card = ? WHERE id = ?",
+                                   arguments: [json, id])
+                    summary.built += 1
+                    guard verdict.confidence >= confidenceFloor else { continue }
+                    try db.execute(sql: """
+                        UPDATE activities
+                        SET category = ?, topic = ?, confidence = ?, source = 'llm', ambiguous = 0
+                        WHERE id = ? AND ambiguous = 1 AND source != 'user'
+                        """, arguments: [verdict.card.category.rawValue, verdict.card.topic,
+                                         verdict.confidence, id])
+                    summary.relabeled += db.changesCount
+                }
             }
-            for id in batchIDs.subtracting(cardedIDs) {
-                try db.execute(
-                    sql: "UPDATE activities SET card_attempts = card_attempts + 1 WHERE id = ?",
-                    arguments: [id])
+            for (handle, members) in membersByID where !cardedIDs.contains(handle) {
+                for id in members {
+                    try db.execute(
+                        sql: "UPDATE activities SET card_attempts = card_attempts + 1 WHERE id = ?",
+                        arguments: [id])
+                }
             }
             return summary
         }

@@ -134,3 +134,68 @@ import Testing
         #expect(try await TaskReconciler.run(database: db, backend: TrappedBackend()) == .init())
     }
 }
+
+/// The audit's own gate: a roster it has already judged is not judged again.
+extension TaskReconcilerTests {
+    private final class CountingReconciler: LLMBackend, @unchecked Sendable {
+        let name = "counting"
+        let answer: String
+        private let lock = NSLock()
+        private var count = 0
+        init(answer: String = #"{"merges": [], "gists": []}"#) { self.answer = answer }
+        var calls: Int { lock.withLock { count } }
+        func complete(prompt: String, maxTokens: Int) async throws -> String {
+            lock.withLock { count += 1 }
+            return answer
+        }
+    }
+
+    private func seedRoster(_ db: ShifuDatabase, now: Date) throws {
+        let recent = Int64(now.timeIntervalSince1970 * 1_000)
+        try db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (key, name, gist, created_at, last_active_at)
+                VALUES ('sem:sf-trip', 'Planning the SF trip', 'Flights.', 0, ?),
+                       ('sem:thesis', 'Writing the thesis', NULL, 0, ?)
+                """, arguments: [recent, recent])
+        }
+    }
+
+    @Test func anUnchangedRosterIsNotAuditedTwice() async throws {
+        let db = try ShifuDatabase.inMemory()
+        let now = Date()
+        try seedRoster(db, now: now)
+        let backend = CountingReconciler()
+
+        _ = try await TaskReconciler.run(database: db, backend: backend, now: now)
+        #expect(backend.calls == 1)
+        // Same tasks, same names, same gists: the verdict would be the same.
+        _ = try await TaskReconciler.run(database: db, backend: backend, now: now)
+        #expect(backend.calls == 1)
+
+        // A new task is a new question — the audit runs again.
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO tasks (key, name, created_at, last_active_at)
+                VALUES ('sem:sf-travel', 'SF travel', 0, ?)
+                """, arguments: [Int64(now.timeIntervalSince1970 * 1_000)])
+        }
+        _ = try await TaskReconciler.run(database: db, backend: backend, now: now)
+        #expect(backend.calls == 2)
+    }
+
+    /// The gists an audit fills are part of the roster it leaves behind, so
+    /// they must not read as a change that buys the next day's audit.
+    @Test func gistsTheAuditFillsDoNotReopenIt() async throws {
+        let db = try ShifuDatabase.inMemory()
+        let now = Date()
+        try seedRoster(db, now: now)
+        let backend = CountingReconciler(
+            answer: #"{"merges": [], "gists": [{"task": "t2", "gist": "Drafting chapter 3."}]}"#)
+
+        let first = try await TaskReconciler.run(database: db, backend: backend, now: now)
+        #expect(first.gistsFilled == 1)
+        _ = try await TaskReconciler.run(database: db, backend: backend, now: now)
+        #expect(backend.calls == 1)
+    }
+}

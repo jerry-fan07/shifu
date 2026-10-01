@@ -229,6 +229,45 @@ private final class CountingBackend: LLMBackend, @unchecked Sendable {
         #expect(backend.calls == 2)
     }
 
+    /// Between the weekly revisions (main.swift's `themes.narratives` gate)
+    /// only a theme with no story is written: changed days on a told theme
+    /// wait, a theme the user just accepted doesn't.
+    @Test func betweenWeeklyRevisionsOnlyUntoldThemesAreWritten() async throws {
+        let db = try ShifuDatabase.inMemory()
+        let calendar = Calendar.current
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let todayStart = Int64(calendar.startOfDay(for: now).timeIntervalSince1970 * 1_000)
+        let nowMs = Int64(now.timeIntervalSince1970 * 1_000)
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                INSERT INTO themes (key, name, gist, summary, created_at, last_active_at)
+                VALUES ('thm:travel', 'Travel', 'Trips.', 'An old story.', 0, ?),
+                       ('thm:thesis', 'Thesis', NULL, NULL, 0, ?)
+                """, arguments: [nowMs, nowMs])
+        }
+        var ids: [Int64] = []
+        try seedBlock(db, ids: &ids, startedAt: todayStart - 86_400_000 + 3_600_000,
+                      domain: "united.com")
+        try seedBlock(db, ids: &ids, startedAt: todayStart - 86_400_000 + 5 * 3_600_000,
+                      domain: "overleaf.com")
+        try await db.queue.write { sqlite in
+            try sqlite.execute(sql: """
+                UPDATE activities SET theme_key = CASE domain
+                    WHEN 'overleaf.com' THEN 'thm:thesis' ELSE 'thm:travel' END
+                """)
+        }
+
+        let backend = CountingBackend(response: "The story so far.")
+        let written = try await ThemeClusterer.refreshNarratives(
+            database: db, backend: backend, onlyMissing: true, now: now, calendar: calendar)
+        #expect(written == 1)
+        let summaries = try await db.queue.read { sqlite in
+            try Row.fetchAll(sqlite, sql: "SELECT key, summary FROM themes ORDER BY key")
+                .map { "\($0["key"] as String)=\($0["summary"] as String? ?? "")" }
+        }
+        #expect(summaries == ["thm:thesis=The story so far.", "thm:travel=An old story."])
+    }
+
     @Test func themeStoreOverviewsAndDetailRollUp() async throws {
         let db = try ShifuDatabase.inMemory()
         let calendar = Calendar.current

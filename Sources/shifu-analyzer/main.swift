@@ -163,10 +163,10 @@ print("analyzed \(summary.observationsProcessed) observations → "
 // an opt-in (or with backend "off") every LLM stage is skipped and the
 // rules-only ledger stands (§10 fallback). Two model slots share the one
 // opt-in (§4.2): the fast model runs everything hourly — cards, grouping,
-// themes, notes — over card evidence; the reasoning model is reserved for
-// the daily roster reconciliation and the weekly radar, the judgment calls
-// where its billed chain-of-thought earns its price. On the local tier both
-// slots are the one model the server has loaded.
+// themes, notes — over card evidence; the bigger reasoning model is reserved
+// for the daily roster reconciliation and the weekly radar, the judgment
+// calls. Neither slot bills chain-of-thought. On the local tier both slots
+// are the one model the server has loaded.
 // The local tier means the GPU doing analysis sits under the user's hands,
 // so its calls are paced (LLMPacer): rest between bursts, harder while the
 // user is present, gentler once the screen locks or input goes idle — except
@@ -190,6 +190,23 @@ if let pacer {
         + "(\(pacer.idleDutyPercent)% away)")
 }
 
+// DeepSeek bills double in its weekday peak windows (`DeepSeekPeak`), and half
+// the dogfood ledger's spend landed there. The stages whose answers are
+// measured in days — the write-up of a finished day, the weekly overviews and
+// theme stories, the daily roster audit, the weekly radar — wait the window
+// out: they run on the first pass after it, at most four hours later, and
+// read the same. The hourly block stages (cards, grouping, themes) never
+// wait: in UTC+8 the windows are most of the working day, and a day's blocks
+// sitting ungrouped until evening is a visible loss. Someone watching this
+// run (`--radar`, `--digest`) doesn't wait either, and neither does a local
+// server, which DeepSeek doesn't bill.
+let slowStagesWait = backend?.billsPeakHours == true && !watched
+    && DeepSeekPeak.contains(unixMs: nowMs)
+if slowStagesWait {
+    print("DeepSeek peak hours — day notes, overviews, stories, the voice profile, "
+        + "the roster audit and the radar wait for the off-peak rate")
+}
+
 // With a backend, `domain:`/`app:` container keys mint and attach only as a
 // last resort (§5.3): the semantic pass gets first claim on their time, and a
 // container becomes a task only from blocks the model finished declining.
@@ -201,10 +218,9 @@ let minting: TaskGrouper.MechanicalMinting = backend == nil ? .always : .lastRes
 // Tier-2 LLM pass (§4.2) — fast model. One call per batch of closed blocks
 // distills each into a structured card (category, topic, entities, gist);
 // the same card relabels blocks the rules tier marked ambiguous. Every later
-// *grouping* stage renders cards instead of re-sampling raw text, so this is
-// where OCR text meets a prompt on the hourly path — with one exception the
-// ledger stages don't own: WorkNoteCompiler still samples `observations.text`
-// directly for its day narratives (design.md §12).
+// stage — grouping, themes, the day notes — renders cards instead of
+// re-sampling raw text, so this is the one place OCR text meets a prompt on
+// the hourly path.
 if let backend {
     do {
         let cardSummary = try await CardBuilder.run(
@@ -288,9 +304,10 @@ do {
 // initiatives. Runs after TaskGrouper so task assignments exist — which is
 // also what makes most of it free: a task's dominant theme takes its
 // unthemed blocks in SQL first, and only blocks inheritance couldn't place
-// reach the model. Fast slot with card evidence; narratives are hash-gated
-// to ~one generation per theme per day and summarize compiled facts, not
-// intent, so they ride the fast slot too. Fail-soft like every LLM stage.
+// reach the model. Fast slot with card evidence; narratives summarize
+// compiled facts, not intent, so they ride the fast slot too — hash-gated,
+// and revised weekly, though a theme with no story yet gets its first at
+// once. Fail-soft like every LLM stage.
 do {
     let inherited = try ThemeClusterer.inheritFromTasks(
         database: database, from: from, to: nowMs)
@@ -306,9 +323,17 @@ if let backend {
             print("themes (\(backend.name)): \(themeSummary.assigned) "
                 + "blocks assigned, \(themeSummary.themesProposed) themes suggested")
         }
-        let narrated = try await ThemeClusterer.refreshNarratives(
-            database: database, backend: backend.labeled("theme-narratives"))
-        if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
+        if !slowStagesWait {
+            let narrativesDue = LLMStageGate.due(
+                "themes.narratives", everyMs: 7 * 86_400_000, now: nowMs, database: database)
+            let narrated = try await ThemeClusterer.refreshNarratives(
+                database: database, backend: backend.labeled("theme-narratives"),
+                onlyMissing: !narrativesDue)
+            if narrativesDue {
+                LLMStageGate.stamp("themes.narratives", now: nowMs, database: database)
+            }
+            if narrated > 0 { print("themes: \(narrated) narratives refreshed") }
+        }
     } catch {
         print("theme clustering failed, themes stay as they were: \(error)")
     }
@@ -347,17 +372,16 @@ do {
 
 // Roster reconciliation (§5.3): the reasoning model's one scheduled call —
 // it audits the roster the fast-model stages built (duplicate efforts,
-// missing gists) instead of paying its chain-of-thought hourly. Merge
-// proposals join the suggestion queue and its gates. Stamped only on
-// success, like every LLMStageGate caller.
+// missing gists). Merge proposals join the suggestion queue and its gates.
+// Stamped only on success, like every LLMStageGate caller.
 //
-// Every six hours rather than daily (v27): this is the only pass that can
-// undo a duplicate mint, and at 24 h a second name for today's work outlived
-// the day it was minted in — long enough to collect blocks, a work note and
-// a place in the Task log. Four calls a day on the reasoning slot is the
-// one place its chain-of-thought measurably earns its price.
-if let reasoningBackend,
-   LLMStageGate.due("reconcile.last_ran", everyMs: 6 * 3_600_000,
+// Daily, and only over a roster that changed since the last audit
+// (`TaskReconciler.rosterHashKey`). It ran every six hours with thinking on,
+// which measured 28% of the whole bill at current rates (2026-09-11..24) for
+// 13 merge proposals in eight weeks — a duplicate living until tomorrow's
+// audit is a smaller cost than that.
+if let reasoningBackend, !slowStagesWait,
+   LLMStageGate.due("reconcile.last_ran", everyMs: 24 * 3_600_000,
                     now: nowMs, database: database) {
     do {
         let reconciled = try await TaskReconciler.run(
@@ -393,11 +417,13 @@ if let backend {
 // fingerprint rather than on a clock, so an untouched corpus costs one
 // directory listing — and draft any request whose interactive launch never
 // happened. Fail-soft like every LLM stage; nothing in the ledger depends on
-// either one.
+// either one. The profile waits out a peak window like the other day-scale
+// stages (`--draft` freshens it itself when someone is waiting); a pending
+// draft doesn't — someone asked for it.
 if let backend {
     let voice = VoiceStore()
     do {
-        if let profile = try await VoiceProfiler.rebuildIfStale(
+        if !slowStagesWait, let profile = try await VoiceProfiler.rebuildIfStale(
             store: voice, backend: backend.labeled("voice-profile")) {
             print("voice: profile rebuilt from \(profile.sampleCount) samples "
                 + "(\(profile.wordCount) words)")
@@ -415,22 +441,14 @@ if let backend {
 }
 
 // Work notes (vault-features.md §2.1): deterministic parts always compile;
-// narratives need a backend and regenerate only when a day's activities
-// changed (content-hash gate). The hash gate alone can't protect the day in
-// progress — active work changes it every pass — so the open day's narrative
-// additionally waits out an interval gate, while completed days regenerate
-// the moment they change. Stamped only on success, like the radar watermark.
-let openDayNarrativeIntervalMs: Int64 = 4 * 3_600_000
-let openDayDue = LLMStageGate.due(
-    "worknotes.open_day", everyMs: openDayNarrativeIntervalMs,
-    now: nowMs, database: database)
+// narratives need a backend, are written once a day is over, from the day's
+// block cards rather than its raw screen text, and are rewritten only when
+// the day's activities changed (content-hash gate).
 do {
     let workSummary = try await WorkNoteCompiler.run(
-        database: database, vault: vault, backend: backend?.labeled("worknotes"),
-        from: from, to: nowMs, regenerateOpenDay: openDayDue)
-    if openDayDue, backend != nil {
-        LLMStageGate.stamp("worknotes.open_day", now: nowMs, database: database)
-    }
+        database: database, vault: vault,
+        backend: slowStagesWait ? nil : backend?.labeled("worknotes"),
+        from: from, to: nowMs)
     if workSummary.notesWritten > 0 {
         // Failures are printed, not just counted: this stage swallows them
         // with `try?` so one bad day can't take the rest of the vault down,
@@ -448,7 +466,7 @@ do {
 // diary, this is the documentation. Runs right after the day notes it reads,
 // fast slot, hash-gated on *completed* days — so at most one generation per
 // task per day however often the analyzer runs.
-if let backend {
+if let backend, !slowStagesWait {
     do {
         let overviewSummary = try await TaskOverviewCompiler.run(
             database: database, vault: vault, backend: backend.labeled("task-overviews"))
@@ -481,7 +499,10 @@ do {
 // rather than raw blocks, so the "everything that isn't private" fetch this
 // block used to do is gone with the domain-altitude suggestions it produced.
 let lastMined = Int64((try? Settings.get("radar.last_mined", database: database)) ?? "0") ?? 0
-if args.contains("--radar") || nowMs - lastMined > 6 * 86_400_000 {
+// The whole weekly block waits out a peak window, not just its model calls:
+// it stamps `radar.last_mined` on the way out, and a pass that mined without
+// describing would hide the week's radar until the next one.
+if args.contains("--radar") || (!slowStagesWait && nowMs - lastMined > 6 * 86_400_000) {
     let mineFrom = nowMs - Int64(PatternMiner.windowDays) * 86_400_000
     let candidates = try PatternMiner.mine(database: database, from: mineFrom, to: nowMs)
     let inserted = try Radar.upsert(candidates: candidates, database: database)

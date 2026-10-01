@@ -513,19 +513,17 @@ public enum SettingsCatalog {
     public static let deepseekReasoningModel = TextSetting(
         key: Settings.deepseekReasoningModelKey, section: .analysis,
         title: "Reasoning model",
-        help: "Groups your time into tasks and themes — the judgment-heavy "
-            + "stages. Blank uses deepseek-v4-pro (thinking model, slower and "
-            + "pricier but better at naming intent).",
+        help: "The daily task-roster audit and the weekly automation radar — "
+            + "the judgment calls. Blank uses deepseek-v4-pro (bigger and "
+            + "pricier than the fast model; run without chain-of-thought).",
         placeholder: "deepseek-v4-pro",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
     // The local tier (design.md §4.2). One model serves both slots — it is
-    // one server with one model loaded — with thinking always off: at a
-    // local-sized window the stock chain-of-thought reserve would swallow
-    // every reasoning-slot prompt budget whole. State the window the server
-    // actually serves and every stage re-sizes its batches through invariant
-    // 7 — no other dial has to move.
+    // one server with one model loaded — with thinking off, as on every
+    // tier. State the window the server actually serves and every stage
+    // re-sizes its batches through invariant 7 — no other dial has to move.
     public static let localBaseURL = TextSetting(
         key: Settings.localBaseURLKey, section: .analysis,
         title: "Endpoint",
@@ -585,8 +583,9 @@ public enum SettingsCatalog {
         key: LLMPrices.fastKey, section: .analysis,
         title: "Model price",
         help: "Dollars per million tokens as in/cached/out, for estimating "
-            + "daily spend. Blank uses DeepSeek's published V4 Flash rates.",
-        placeholder: "0.14/0.0028/0.28",
+            + "daily spend. Blank uses DeepSeek's published off-peak Flash rates; "
+            + "calls in DeepSeek's peak hours are counted at double.",
+        placeholder: "0.15/0.003/0.6",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 
@@ -594,8 +593,8 @@ public enum SettingsCatalog {
         key: LLMPrices.reasoningKey, section: .analysis,
         title: "Reasoning model price",
         help: "Dollars per million tokens as in/cached/out. Blank uses "
-            + "DeepSeek's published V4 Pro rates.",
-        placeholder: "0.435/0.003625/0.87",
+            + "DeepSeek's published off-peak V4 Pro rates.",
+        placeholder: "0.66/0.022/1.98",
         visibleWhen: (key: Settings.analysisBackendKey, value: "deepseek")
     )
 

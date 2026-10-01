@@ -18,9 +18,7 @@ import Testing
         let database = try ShifuDatabase.inMemory()
         return DeepSeekBackend(
             name: role.defaultModel, apiKey: "sk-test", model: role.defaultModel,
-            baseURL: DeepSeekBackend.defaultBaseURL,
-            responseHeadroomTokens: role.responseHeadroomTokens,
-            thinks: role.thinks, database: database)
+            baseURL: DeepSeekBackend.defaultBaseURL, database: database)
     }
 
     private func thinkingType(_ body: [String: Any]) -> String? {
@@ -35,13 +33,14 @@ import Testing
         #expect(thinkingType(body) == "disabled")
     }
 
-    /// The reasoning slot's chain-of-thought is what it is bought for, so the
-    /// same field has to say so out loud rather than lean on the default —
-    /// otherwise a provider flipping that default silently guts the one slot
-    /// whose judgment the daily reconciliation depends on.
-    @Test func theReasoningSlotAsksForThinkingToStayOn() throws {
+    /// The reasoning slot too (design.md §4.2, revised 2026-09): its daily
+    /// roster audit measured ~2k tokens of prompt answered after 3–15k tokens
+    /// of billed chain-of-thought — 28% of the whole bill for a few lines of
+    /// JSON. The slot is still the bigger model; it just doesn't think aloud.
+    @Test func theReasoningSlotAsksForThinkingToBeOffToo() throws {
         let body = try backend(.reasoning).requestBody(prompt: "hello", maxTokens: 400)
-        #expect(thinkingType(body) == "enabled")
+        #expect(thinkingType(body) == "disabled")
+        #expect(body["model"] as? String == DeepSeekBackend.defaultReasoningModel)
     }
 
     /// Everything else on the wire is unchanged — the toggle is an addition,
@@ -58,30 +57,14 @@ import Testing
         #expect(JSONSerialization.isValidJSONObject(body))
     }
 
-    /// The 16k floor existed to keep a thinking model from truncating
-    /// mid-thought. Applied to a non-thinking slot it does nothing but hide
-    /// runaway generation: a stage that asks for 400 tokens and is handed a
-    /// 16,000-token allowance has no cap worth the name.
-    @Test func theFastSlotIsCappedAtWhatTheStageAskedFor() throws {
-        let fast = try backend(.fast)
-        #expect(fast.responseCap(prompt: "a short prompt", maxTokens: 400) == 400)
-    }
-
-    @Test func theReasoningSlotKeepsItsThinkingHeadroom() throws {
-        let reasoning = try backend(.reasoning)
-        #expect(reasoning.responseCap(prompt: "a short prompt", maxTokens: 400)
-            == DeepSeekBackend.thinkingHeadroomTokens)
-    }
-
-    /// Neither slot may promise more response than the window has left, or
-    /// the call is rejected outright rather than merely truncated
-    /// (CLAUDE.md invariant 7).
-    @Test func neitherSlotPromisesMoreThanTheWindowHasLeft() throws {
-        // ~3 bytes per token, so this prompt claims most of the 60k window.
-        let huge = String(repeating: "x", count: 3 * 58_000)
+    /// Each slot asks for exactly what the stage reserved — there is no
+    /// thinking headroom left to raise the cap, so a stage written for ~400
+    /// tokens of JSON is capped at 400 whichever slot it drew.
+    @Test func bothSlotsSendTheStagesOwnCap() throws {
         for role in [DeepSeekBackend.Role.fast, .reasoning] {
-            let cap = try backend(role).responseCap(prompt: huge, maxTokens: 400)
-            #expect(cap + LLMTokens.estimate(huge) <= 60_000 || cap == 400)
+            let body = try backend(role).requestBody(prompt: "hello", maxTokens: 400)
+            #expect(body["max_tokens"] as? Int == 400)
+            #expect(try backend(role).responseHeadroomTokens == 0)
         }
     }
 }
@@ -95,8 +78,7 @@ import Testing
     private func backend(_ database: ShifuDatabase) -> DeepSeekBackend {
         DeepSeekBackend(
             name: "deepseek-v4-flash", apiKey: "sk-test", model: "deepseek-v4-flash",
-            baseURL: DeepSeekBackend.defaultBaseURL, responseHeadroomTokens: 0,
-            thinks: false, database: database)
+            baseURL: DeepSeekBackend.defaultBaseURL, database: database)
     }
 
     @Test func anUnlabelledBackendCarriesNoStage() throws {
@@ -119,9 +101,6 @@ import Testing
         let plain = backend(try ShifuDatabase.inMemory())
         let labeled = plain.labeled("cards")
         #expect(labeled.model == plain.model)
-        #expect(labeled.thinks == plain.thinks)
-        #expect(labeled.responseCap(prompt: "hi", maxTokens: 400)
-            == plain.responseCap(prompt: "hi", maxTokens: 400))
         let plainBody = plain.requestBody(prompt: "hi", maxTokens: 400)
         let labeledBody = labeled.requestBody(prompt: "hi", maxTokens: 400)
         #expect(NSDictionary(dictionary: plainBody) == NSDictionary(dictionary: labeledBody))
@@ -153,10 +132,8 @@ import Testing
 
 /// The local tier (design.md §4.2): `analysis.backend = local` builds the
 /// same wire client against a self-hosted server, with no credential, one
-/// model on both slots, thinking always off, and `local.context_tokens`
-/// resizing every stage's batches through invariant 7. Thinking-off is what
-/// makes a 16k llama-server window viable — at 16k the stock 32k thinking
-/// headroom would otherwise swallow every reasoning-slot prompt budget whole.
+/// model on both slots, thinking off like every tier, and
+/// `local.context_tokens` resizing every stage's batches through invariant 7.
 @Suite struct DeepSeekLocalTierTests {
     private func configured(
         _ role: DeepSeekBackend.Role, settings: [String: String] = [:]
@@ -193,23 +170,22 @@ import Testing
         }
     }
 
-    /// Thinking stays off on both slots — no chain-of-thought requested, no
-    /// headroom reserved, responses capped at what the stage asked for —
-    /// whatever role the stage drew.
+    /// Thinking stays off on both slots — no chain-of-thought requested and
+    /// no headroom reserved — whatever role the stage drew.
     @Test func neitherSlotThinksLocally() throws {
         for role in [DeepSeekBackend.Role.fast, .reasoning] {
             let backend = try configured(role)
-            #expect(!backend.thinks)
             #expect(backend.responseHeadroomTokens == 0)
-            #expect(backend.responseCap(prompt: "a short prompt", maxTokens: 400) == 400)
+            // A local server is nobody's invoice: nothing waits for off-peak.
+            #expect(!backend.billsPeakHours)
             let body = backend.requestBody(prompt: "hello", maxTokens: 400)
             #expect((body["thinking"] as? [String: String])?["type"] == "disabled")
+            #expect(body["max_tokens"] as? Int == 400)
         }
     }
 
     /// Meanwhile a keyed DeepSeek install is untouched by the tier's
-    /// existence: 60k window, and the reasoning slot keeps its thinking and
-    /// its full headroom.
+    /// existence: the 60k window, and the reasoning slot's own model.
     @Test func theHostedTiersKeepTheirStockShape() throws {
         let database = try ShifuDatabase.inMemory()
         try Settings.set(Settings.analysisBackendKey, to: "deepseek", database: database)
@@ -219,9 +195,8 @@ import Testing
         let reasoning = try #require(
             try DeepSeekBackend.ifConfigured(database: database, role: .reasoning))
         #expect(reasoning.contextWindowTokens == DeepSeekBackend.defaultContextWindowTokens)
-        #expect(reasoning.thinks)
-        #expect(reasoning.responseHeadroomTokens
-            == DeepSeekBackend.reasoningResponseHeadroomTokens)
+        #expect(reasoning.model == DeepSeekBackend.defaultReasoningModel)
+        #expect(reasoning.responseHeadroomTokens == 0)
     }
 
     @Test func theContextSettingResizesBothSlots() throws {
@@ -265,5 +240,35 @@ import Testing
                 #expect(budget > 0, "window \(window), \(role)")
             }
         }
+    }
+}
+
+/// Which tiers DeepSeek bills on its own clock — double in its weekday peak
+/// windows — and so which ones the analyzer's slow stages wait for.
+@Suite struct DeepSeekPeakBillingTests {
+    private func configured(_ settings: [String: String]) throws -> DeepSeekBackend? {
+        let database = try ShifuDatabase.inMemory()
+        for (key, value) in settings {
+            try Settings.set(key, to: value, database: database)
+        }
+        return try DeepSeekBackend.ifConfigured(database: database)
+    }
+
+    @Test func deepSeeksOwnAPIAndShifuCloudBillPeakHours() throws {
+        let keyed = try #require(try configured([
+            Settings.analysisBackendKey: "deepseek", Settings.deepseekAPIKeyKey: "sk-test"]))
+        #expect(keyed.billsPeakHours)
+        let cloud = try #require(try configured([
+            Settings.analysisBackendKey: "shifu-cloud", Settings.shifuCloudTokenKey: "tok"]))
+        #expect(cloud.billsPeakHours)
+    }
+
+    /// A key pointed at another OpenAI-compatible provider isn't billed on
+    /// DeepSeek's clock, and nothing waits for it.
+    @Test func anotherEndpointDoesNot() throws {
+        let other = try #require(try configured([
+            Settings.analysisBackendKey: "deepseek", Settings.deepseekAPIKeyKey: "sk-test",
+            Settings.deepseekBaseURLKey: "https://api.example.com/v1"]))
+        #expect(!other.billsPeakHours)
     }
 }

@@ -58,7 +58,8 @@ Sources/ShifuCore/
   Vault/       Note, WorkNote, TaskOverview, FrontMatter, FSRS, VaultStore,
                VaultIndexer, VaultSearch, TaskStore (+TaskMerging, TaskPrune),
                ThemeStore, DeckStore, CardCandidates,
-               WorkNoteCompiler, TaskOverviewCompiler,
+               WorkNoteCompiler (+WorkNoteNarrative, WorkNoteEvidence),
+               TaskOverviewCompiler,
                DeckSuggester, DeckBuilder
 ```
 
@@ -197,8 +198,10 @@ order, and some of that ordering is load-bearing:
    the same card relabels blocks the rules layer marked `ambiguous` (applied
    only above `confidenceFloor` 0.6, never over `source='user'`). Later stages
    render the card instead of re-sampling raw text, so this is the one hourly
-   stage that reads OCR. One shot per closed block; `card_attempts` (3) only
-   guards failure paths.
+   stage that reads OCR. Blocks of one window (app, domain, first title)
+   reopened within 15 minutes are one *card episode*, carded once from
+   evidence spread across it and written to every member (`episodes`). One
+   shot per closed block; `card_attempts` (3) only guards failure paths.
 4. **`SemanticTaskGrouper.inheritFromNeighbors` then `.run`** — semantic
    grouping's free half first (design.md §5.3): an unplaced sub-minute glance
    with the same task running on both sides of it, inside one sitting,
@@ -213,7 +216,9 @@ order, and some of that ordering is load-bearing:
    glances (same app+domain, gaps to 15 min,
    `SemanticTaskSlivers.swift`) whose pooled time clears that same floor —
    one candidate at one block's token cost, assigned all-or-nothing; the
-   limit is a quota, long blocks first. Confident verdicts write
+   limit is a quota, long blocks first. Carded blocks pool the same way one
+   level up: consecutive blocks in one app and domain whose cards name the
+   same topic, within 30 minutes, are one *topic run* (`poolByTopic`). Confident verdicts write
    `activities.sem_key` and upsert `tasks` rows (LLM title + `gist`, never
    overwriting a user rename); every unplaced candidate burns one of 3
    `sem_attempts` on each of its member blocks. Fail-soft: no backend or a
@@ -234,8 +239,9 @@ order, and some of that ordering is load-bearing:
 6. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
    clustering (design.md §5.3): blocks into 3–8 broad initiatives
    (`activities.theme_key`). Runs *after* TaskGrouper so task names serve as
-   evidence. Narratives are hash-gated over *completed* days — at most one LLM
-   generation per active theme per day. Reuses SemanticTaskGrouper's
+   evidence. Narratives are hash-gated over *completed* days and revised at
+   most weekly (`themes.narratives`); a theme with no story gets its first at
+   once. Reuses SemanticTaskGrouper's
    parse/resolve engine (`"thm:"` prefix, `"new_themes"` wire key).
    **It files, it doesn't found (v17):** a key with no `themes` row becomes a
    `theme_proposals` row for the user instead, and those blocks burn an
@@ -251,8 +257,10 @@ order, and some of that ordering is load-bearing:
    rather than a clock, so an untouched corpus costs one directory listing;
    the drain is the safety net for a draft whose interactive launch never
    happened), **`WorkNoteCompiler.run`** (day notes, detailed tier for
-   work/learning-dominant days) then **`TaskOverviewCompiler.run`** (per-task
-   overview docs) — write Markdown into `~/Shifu/vault/`.
+   work/learning-dominant days; prose only for *finished* days, written from
+   the day's cards — `WorkNoteEvidence.swift` — and rewritten for three days
+   at most) then **`TaskOverviewCompiler.run`** (per-task overview docs,
+   revised at most weekly) — write Markdown into `~/Shifu/vault/`.
 9. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
    this syncs the disposable index. Runs *after* task grouping so
    `task_key` → task/project resolution is current.
@@ -263,6 +271,13 @@ order, and some of that ordering is load-bearing:
 
 Every stage after the ledger is wrapped in its own `do/catch` that prints and
 continues. A failing LLM never blocks the ledger (design.md §10).
+
+The stages whose answers are measured in days — day-note prose, overviews,
+theme stories, the voice profile, the roster audit, the weekly radar block —
+skip a pass that falls in one of DeepSeek's weekday peak windows
+(`DeepSeekPeak`, where every rate doubles) when the backend is one DeepSeek
+bills (`billsPeakHours`), and run at the next pass. The hourly block stages
+never wait.
 
 ---
 
@@ -294,6 +309,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Focus sessions read back + the focus score | [`Storage/FocusModeSessions.swift`](Sources/ShifuCore/Storage/FocusModeSessions.swift) — `overlapping`; scored by [`Analysis/FocusReport.swift`](Sources/ShifuCore/Analysis/FocusReport.swift) (mirrors `FocusModeController`'s on/off-task split); drawn by [`ShifuApp/FocusViews.swift`](Sources/ShifuApp/FocusViews.swift) behind the Breakdown picker's Focus position |
 | The LLM endpoint (DeepSeek / OpenAI-compatible) | [`shifu-analyzer/DeepSeekBackend.swift`](Sources/shifu-analyzer/DeepSeekBackend.swift) |
 | What the LLM calls cost — token accounting and its rollups | [`Storage/LLMUsage.swift`](Sources/ShifuCore/Storage/LLMUsage.swift); recorded in `DeepSeekBackend.send`, read by `shifu status` |
+| The rates it is priced at, and DeepSeek's peak windows | [`Storage/LLMPrices.swift`](Sources/ShifuCore/Storage/LLMPrices.swift) — `LLMPrices` defaults (off-peak), `DeepSeekPeak`, `LLMPriceBook` |
 | What gets redacted before disk | [`Privacy/Redactor.swift`](Sources/ShifuCore/Privacy/Redactor.swift) |
 | What is never captured at all | [`Privacy/Exclusions.swift`](Sources/ShifuCore/Privacy/Exclusions.swift) |
 | The capture ladder / rung thresholds | [`shifud/CaptureEngine.swift`](Sources/shifud/CaptureEngine.swift) |
@@ -318,6 +334,7 @@ continues. A failing LLM never blocks the ledger (design.md §10).
 | Whether a task is offered a deck | [`Vault/DeckSuggester.swift`](Sources/ShifuCore/Vault/DeckSuggester.swift) |
 | What a deck's cards are made of | [`Vault/DeckBuilder.swift`](Sources/ShifuCore/Vault/DeckBuilder.swift) |
 | Per-task-day work notes + tiering | [`Vault/WorkNoteCompiler.swift`](Sources/ShifuCore/Vault/WorkNoteCompiler.swift) |
+| What a day note is written *from* — the activity log of cards, window tallies and last-resort text | [`Vault/WorkNoteEvidence.swift`](Sources/ShifuCore/Vault/WorkNoteEvidence.swift) |
 | Per-task overview documents | [`Vault/TaskOverviewCompiler.swift`](Sources/ShifuCore/Vault/TaskOverviewCompiler.swift) |
 | Search ranking / hybrid retrieval | [`Vault/VaultSearch.swift`](Sources/ShifuCore/Vault/VaultSearch.swift) |
 | Browsing the vault; how deep a note is; what a row displays | [`Vault/VaultLibrary.swift`](Sources/ShifuCore/Vault/VaultLibrary.swift) — `Entry`, `Depth`, `Filter`, `Census` |
@@ -511,7 +528,9 @@ reminder the user already read.
 object, the only record of what a day of analysis cost. Recorded before the
 response is parsed, so a truncated call and its escalated retry both count:
 those are the expensive ones. No prices stored — they change per model and
-endpoint, so `shifu status` and any reader multiply for themselves. Rows are
+endpoint, so `shifu status` and any reader multiply for themselves
+(`LLMPriceBook`), and a rollup sums each window's peak-hour share alongside
+so DeepSeek's doubled peak rate is priced by each row's own timestamp. Rows are
 per-call, not per-day, because a daily row would need a local-midnight key and
 those strand duplicates across a time-zone change (the `task_logs` bug).
 
@@ -726,9 +745,14 @@ covered both transitions, so lift it back out of the history of
   verdicts, block cards, retry counters) is explicitly *carried* across the
   rebuild by span identity. If you add expensive derived state, add it to
   `LedgerBuilder.CarriedState` or it will be silently recomputed every hour.
-- **Content-hash gates before LLM calls.** `WorkNoteCompiler` and
-  `ThemeClusterer.refreshNarratives` regenerate prose only when the underlying
-  content hash changed. Unchanged days cost zero tokens.
+- **Content-hash gates before LLM calls.** `WorkNoteCompiler`,
+  `TaskOverviewCompiler` and `ThemeClusterer.refreshNarratives` regenerate
+  prose only when the underlying content hash changed — and a hash covers what
+  the prompt would *see* (the day note hashes its rendered card evidence, not
+  the screen text behind it), so a change the prompt can't see costs nothing.
+  Unchanged days cost zero tokens. Where an answer moves by the day or week
+  rather than with each change, an interval gate sits on top (`LLMStageGate`,
+  or a per-document timestamp like `TaskOverview.updated`).
 - **`ShifuCore` holds the logic; targets hold the wiring.** If you find
   yourself writing a pure function in `shifud` or `ShifuApp`, it probably
   belongs in `ShifuCore` where it can be tested.
