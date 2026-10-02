@@ -35,9 +35,9 @@ struct ComingUpBand: View {
                 DeadlineRow(standing: standing)
             }
             if open.isEmpty {
-                Text("A date you give Shifu is the only thing it will interrupt "
-                    + "you about — and with a time target, it can tell you how "
-                    + "far in you are.")
+                Text("A date you give Shifu — or accept from the ones it spots "
+                    + "below — is what it reminds you about, and with a time "
+                    + "target it can tell you how far in you are.")
                     .font(Instrument.sans(12))
                     .foregroundStyle(Instrument.ghost)
                     .fixedSize(horizontal: false, vertical: true)
@@ -129,15 +129,37 @@ struct DeadlineSheet: View {
     /// Non-nil when opened from a task page — the link is then not a question.
     let taskID: Int64?
     let taskName: String?
+    /// Non-nil when accepting a spotted date (design.md §4.7): the fields
+    /// arrive filled in, and recording marks the proposal accepted.
+    let proposal: DeadlineProposal?
 
-    @State private var title = ""
-    @State private var when = ""
+    @State private var title: String
+    @State private var when: String
     @State private var targetHours = ""
     @State private var refused = false
 
+    init(taskID: Int64?, taskName: String?, proposal: DeadlineProposal? = nil) {
+        self.taskID = taskID
+        self.taskName = taskName
+        self.proposal = proposal
+        _title = State(initialValue: proposal?.title ?? "")
+        _when = State(initialValue: proposal.map(Self.whenText) ?? "")
+    }
+
+    /// The proposal's date in the one form `DeadlineDate` reads back, so the
+    /// field shows what will be recorded and can be edited in place.
+    private static func whenText(_ proposal: DeadlineProposal) -> String {
+        let date = Date(timeIntervalSince1970: Double(proposal.dueAt) / 1_000)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = proposal.allDay ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(taskName.map { "A deadline for \($0)" } ?? "A deadline")
+            Text(proposal != nil ? "Record this spotted date"
+                 : taskName.map { "A deadline for \($0)" } ?? "A deadline")
                 .font(Instrument.sans(17, .semibold))
                 .foregroundStyle(Instrument.ink)
 
@@ -182,8 +204,13 @@ struct DeadlineSheet: View {
     }
 
     private func record() {
-        let added = store.addDeadline(
-            title: title, when: when, taskID: taskID, targetHours: targetHours)
+        let added: Bool
+        if let proposal {
+            added = store.acceptSpotted(proposal, title: title, when: when, targetHours: targetHours)
+        } else {
+            added = store.addDeadline(
+                title: title, when: when, taskID: taskID, targetHours: targetHours)
+        }
         if added { dismiss() } else { refused = true }
     }
 

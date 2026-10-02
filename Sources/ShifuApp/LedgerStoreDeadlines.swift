@@ -28,7 +28,13 @@ extension LedgerStore {
     func refreshDeadlines() {
         guard let database = try? db() else { return }
         deadlines = (try? DeadlineStore.open(database: database)) ?? []
+        spotted = (try? DeadlineProposalStore.pending(database: database)) ?? []
     }
+
+    /// The spotted dates worth a row: normal and above. Low sits behind a
+    /// count — it exists so a dismissal is remembered, not to be read.
+    var spottedShown: [DeadlineProposal] { spotted.filter { $0.tier >= .normal } }
+    var spottedFolded: [DeadlineProposal] { spotted.filter { $0.tier < .normal } }
 
     func deadlines(forTask taskID: Int64) -> [DeadlineHorizon.Standing] {
         guard let database = try? db() else { return [] }
@@ -74,6 +80,40 @@ extension LedgerStore {
             database: database)
         refreshSoon()
         return true
+    }
+
+    // MARK: - Spotted dates (design.md §4.7)
+
+    /// Accepting a spotted date mints the deadline in the user's words. The
+    /// date arrives as text like `addDeadline`'s, prefilled from the proposal
+    /// so an untouched sheet records exactly what was spotted.
+    @discardableResult
+    func acceptSpotted(
+        _ proposal: DeadlineProposal, title: String, when: String, targetHours: String = ""
+    ) -> Bool {
+        guard let database = try? db(), let id = proposal.id,
+              let parsed = DeadlineDate.parse(when) else { return false }
+        let target = targetHours.isEmpty ? nil : DeadlineDate.parseEffort(targetHours)
+        guard (try? DeadlineProposalStore.accept(
+            id, title: title, dueAt: parsed.dueAt, allDay: parsed.allDay,
+            targetMs: target, database: database)) != nil
+        else { return false }
+        refreshSoon()
+        return true
+    }
+
+    func dismissSpotted(_ proposal: DeadlineProposal) {
+        if let database = try? db(), let id = proposal.id {
+            try? DeadlineProposalStore.dismiss(id, database: database)
+        }
+        refreshSoon()
+    }
+
+    func dismissAllSpotted() {
+        if let database = try? db() {
+            _ = try? DeadlineProposalStore.dismissAll(database: database)
+        }
+        refreshSoon()
     }
 
     func markDeadlineDone(_ deadlineID: Int64, done: Bool = true) {

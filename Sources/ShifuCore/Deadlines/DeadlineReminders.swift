@@ -22,11 +22,15 @@ public enum DeadlineReminders {
         public var enabled: Bool
         public var progress: Bool
         public var hour: Int
+        /// Whether dates the scout spotted may be announced (§4.7). Gated by
+        /// `enabled` too: off is off.
+        public var spotted: Bool
 
-        public init(enabled: Bool, progress: Bool, hour: Int) {
+        public init(enabled: Bool, progress: Bool, hour: Int, spotted: Bool = true) {
             self.enabled = enabled
             self.progress = progress
             self.hour = hour
+            self.spotted = spotted
         }
     }
 
@@ -34,7 +38,8 @@ public enum DeadlineReminders {
         Preferences(
             enabled: Settings.value(SettingsCatalog.remindersEnabled, database: database) == "on",
             progress: Settings.value(SettingsCatalog.remindersProgress, database: database) == "on",
-            hour: Settings.value(SettingsCatalog.remindersHour, database: database))
+            hour: Settings.value(SettingsCatalog.remindersHour, database: database),
+            spotted: Settings.value(SettingsCatalog.remindersSpotted, database: database) == "on")
     }
 
     /// Everything that should be delivered right now, in the order it should be
@@ -65,6 +70,7 @@ public enum DeadlineReminders {
     /// people to say no.
     public static func hasSomethingToRemind(database: ShifuDatabase) throws -> Bool {
         try !DeadlineStore.open(database: database).isEmpty
+            || SpottedNotices.hasSomethingToAnnounce(database: database)
     }
 
     /// Marks one announcement delivered. Called *after* the notification is

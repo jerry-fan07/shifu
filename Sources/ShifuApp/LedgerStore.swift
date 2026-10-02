@@ -106,6 +106,9 @@ final class LedgerStore: ObservableObject {
     /// `comingUp`/`pressingDeadlines` in LedgerStoreDeadlines.swift, which is
     /// also what fills it — hence no `private(set)`, like `rewindBuffer`.
     @Published var deadlines: [DeadlineHorizon.Standing] = []
+    /// Dates the scout spotted and the user has not ruled on (design.md
+    /// §4.7), most pressing first. Filled beside `deadlines`.
+    @Published var spotted: [DeadlineProposal] = []
     @Published private(set) var themes: [ThemeStore.Overview] = []
     /// Initiatives the clusterer wants to found, shown below the Themes grid.
     /// Nothing here is a theme until the user says so (design.md §5.3).

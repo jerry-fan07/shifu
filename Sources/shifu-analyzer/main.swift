@@ -300,6 +300,37 @@ do {
     print("task grouping failed (retries next run): \(error)")
 }
 
+// Spotted dates (§4.7): read the window's new observations for dated
+// commitments and rank them into the proposal queue. Deterministic and
+// free, so it runs with or without a backend, and after TaskGrouper so a
+// sighting can carry the task its block was filed to. Fail-soft: a throw
+// leaves the watermark where it was and the next pass reads the same rows.
+do {
+    let scouted = try DeadlineScoutRun.run(database: database, now: nowMs, reset: rebuildAll)
+    if scouted.created > 0 || scouted.expired > 0 {
+        print("spotted dates: \(scouted.hits) sightings in \(scouted.observationsRead) observations, "
+            + "\(scouted.created) new, \(scouted.expired) expired")
+    }
+} catch {
+    print("deadline scout failed (retries next run): \(error)")
+}
+
+// The model's second opinion on what was spotted (§4.7): a veto, a better
+// title, a tier moved one step. Fast slot, one shot per proposal, over a
+// batch of at most forty — a labelling call, not a judgment call. Without
+// it the scout's ranking stands whole.
+if let backend {
+    do {
+        let judged = try await DeadlineScoutJudge.run(
+            database: database, backend: backend.labeled("deadline-judge"), now: nowMs)
+        if judged.judged > 0 {
+            print("spotted dates (\(backend.name)): \(judged.judged) judged, \(judged.dropped) dropped")
+        }
+    } catch {
+        print("deadline judge failed (retries next run): \(error)")
+    }
+}
+
 // Theme layer (§5.3): the second, independent clustering into broad
 // initiatives. Runs after TaskGrouper so task assignments exist — which is
 // also what makes most of it free: a task's dominant theme takes its

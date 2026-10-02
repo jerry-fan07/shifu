@@ -48,7 +48,11 @@ Sources/ShifuCore/
                pixels), RewindSettings, RewindRequest (+SnipRegion), RewindTimeline,
                RewindPlayback (the transport's arithmetic), SnipNote
   Deadlines/   DeadlineHorizon (the announcement policy, pure), DeadlineStore,
-               DeadlineDate (the one date parser), DeadlineCopy, DeadlineReminders
+               DeadlineDate (the one date parser), DeadlineCopy, DeadlineReminders;
+               spotted dates (§4.7): SpottedDate (reads dates out of screen text),
+               DeadlineScout (+ScoutLexicon, the ranking), DeadlineScoutRun (the
+               stage), DeadlineProposalStore, DeadlineScoutJudge (LLM, optional),
+               SpottedNotices (the roll-up policy)
   Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
                Workload (+WorkloadBuckets, WorkloadCopy, WorkloadStore — the Load
                reading, design.md §4.6),
@@ -238,7 +242,18 @@ order, and some of that ordering is load-bearing:
    flag, so reap and mint cannot disagree.
    **Runs before extraction on purpose** so `activities.task_id` exists when
    notes are born and can be stamped into their frontmatter.
-6. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
+6. **`DeadlineScoutRun.run`, then `DeadlineScoutJudge.run`** — spotted dates
+   (design.md §4.7). The scout reads every observation past its watermark
+   (`deadline_scout.last_observation_id`, on observation ids because a rebuild
+   reassigns `session_id`), line by line, for a date beside a trigger word or
+   written as a bound, scores it on named signals (where it was seen, how it
+   was written, what it is not — opening hours, search results, feeds, code,
+   history) and upserts `deadline_proposals` by `<due day>|<words>`; a repeat
+   sighting folds in and never changes status. Deterministic, no backend
+   needed, after TaskGrouper so a sighting carries its block's task. The judge
+   then shows the fast model up to forty unjudged proposals: veto, reword, or
+   move the tier one step — never mint. One shot per proposal.
+7. **`ThemeClusterer.run` + `refreshNarratives`** — the second, independent
    clustering (design.md §5.3): blocks into 3–8 broad initiatives
    (`activities.theme_key`). Runs *after* TaskGrouper so task names serve as
    evidence. Narratives are hash-gated over *completed* days and revised at
@@ -250,10 +265,10 @@ order, and some of that ordering is load-bearing:
    attempt like any unplaced one — the model *has* answered, so re-asking
    every hour would buy the same verdict twice. The proposal remembers the
    block ids, so accepting it a week later still files them.
-7. **`TaskMerges.writeSignatures`** — re-derives durable per-block signatures
+8. **`TaskMerges.writeSignatures`** — re-derives durable per-block signatures
    while the source window titles still exist (they die with the 14-day
    retention).
-8. **`DeckBuilder.drainPending`** (decks whose requested build never ran),
+9. **`DeckBuilder.drainPending`** (decks whose requested build never ran),
    **`VoiceProfiler.rebuildIfStale`** + **`VoiceDrafter.drainPending`**
    (voice.md §3.3, §4.1 — the profile is gated on the corpus *fingerprint*
    rather than a clock, so an untouched corpus costs one directory listing;
@@ -263,10 +278,10 @@ order, and some of that ordering is load-bearing:
    the day's cards — `WorkNoteEvidence.swift` — and rewritten for three days
    at most) then **`TaskOverviewCompiler.run`** (per-task overview docs,
    revised at most weekly) — write Markdown into `~/Shifu/vault/`.
-9. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
+10. **`VaultIndexer.reconcile`** — the Markdown tree is the source of truth;
    this syncs the disposable index. Runs *after* task grouping so
    `task_key` → task/project resolution is current.
-10. **Weekly block** (`PatternMiner` → `Radar` → merge/theme/deck suggestions),
+11. **Weekly block** (`PatternMiner` → `Radar` → merge/theme/deck suggestions),
     then the **daily digest**. Note `TaskMerges.autoMerge`
     is *not* in it: it drains the stored suggestion queue rather than minting
     it, so it runs beside `TaskStore.prune` every pass, and needs no embedder.
@@ -329,6 +344,12 @@ never wait.
 | What `2026-08-30` / `friday` / `+10d` mean — one parser for the CLI *and* the app | [`Deadlines/DeadlineDate.swift`](Sources/ShifuCore/Deadlines/DeadlineDate.swift) |
 | Whether a reminder is delivered at all, and the settings behind it | [`Deadlines/DeadlineReminders.swift`](Sources/ShifuCore/Deadlines/DeadlineReminders.swift) — poll-only through the DB, never a scheduled `UNNotificationRequest`; delivered by [`ShifuApp/DeadlineNotifier.swift`](Sources/ShifuApp/DeadlineNotifier.swift) because `shifud` has no bundle identity |
 | Deadlines on screen — the Coming-up band, a row, the sheet | [`ShifuApp/DeadlineViews.swift`](Sources/ShifuApp/DeadlineViews.swift); actions are [`ShifuApp/LedgerStoreDeadlines.swift`](Sources/ShifuApp/LedgerStoreDeadlines.swift), the terminal half is [`shifu-cli/DueCommand.swift`](Sources/shifu-cli/DueCommand.swift) |
+| Reading a date out of screen text — "Sep 25 at 12:00PM", "by Monday 11:59", relative to when it was *seen* | [`Deadlines/SpottedDate.swift`](Sources/ShifuCore/Deadlines/SpottedDate.swift) — not `DeadlineDate`, which parses typed input |
+| What makes a spotted date a hit, and how it is ranked — the signals and the tier cut points | [`Deadlines/DeadlineScout.swift`](Sources/ShifuCore/Deadlines/DeadlineScout.swift) (`scanLine`, `Tally`, `Tier.of`); the word lists and place lists are [`Deadlines/ScoutLexicon.swift`](Sources/ShifuCore/Deadlines/ScoutLexicon.swift) |
+| The `deadline_proposals` table — sightings fold in, dismissals hold, accepting mints a deadline | [`Deadlines/DeadlineProposalStore.swift`](Sources/ShifuCore/Deadlines/DeadlineProposalStore.swift); the row is [`Models/DeadlineProposal.swift`](Sources/ShifuCore/Models/DeadlineProposal.swift); the hourly pass and its watermark are [`Deadlines/DeadlineScoutRun.swift`](Sources/ShifuCore/Deadlines/DeadlineScoutRun.swift) |
+| The model's second opinion on a spotted date — veto, reword, one tier either way | [`Deadlines/DeadlineScoutJudge.swift`](Sources/ShifuCore/Deadlines/DeadlineScoutJudge.swift) |
+| When a spotted date may be announced — one roll-up a day, urgent once, each named once | [`Deadlines/SpottedNotices.swift`](Sources/ShifuCore/Deadlines/SpottedNotices.swift); posted by the same [`ShifuApp/DeadlineNotifier.swift`](Sources/ShifuApp/DeadlineNotifier.swift) poll |
+| Spotted dates on screen — the band under Coming up, the prefilled sheet | [`ShifuApp/SpottedViews.swift`](Sources/ShifuApp/SpottedViews.swift); actions in [`ShifuApp/LedgerStoreDeadlines.swift`](Sources/ShifuApp/LedgerStoreDeadlines.swift); `shifu due spotted / accept / dismiss / scan` is [`shifu-cli/DueSpottedCommand.swift`](Sources/shifu-cli/DueSpottedCommand.swift) — `scan --dry` is the calibration harness |
 | What a front is, every Load threshold, the six verdicts | [`Analysis/Workload.swift`](Sources/ShifuCore/Analysis/Workload.swift) — the fold into rolling weeks is [`Analysis/WorkloadBuckets.swift`](Sources/ShifuCore/Analysis/WorkloadBuckets.swift), the wording [`Analysis/WorkloadCopy.swift`](Sources/ShifuCore/Analysis/WorkloadCopy.swift) (shared by the page and `shifu load`), the read [`Analysis/WorkloadStore.swift`](Sources/ShifuCore/Analysis/WorkloadStore.swift) |
 | The Load page — hero, the eight-week band, the two lists, the table | [`ShifuApp/LoadView.swift`](Sources/ShifuApp/LoadView.swift); its one read is [`ShifuApp/LedgerStoreLoad.swift`](Sources/ShifuApp/LedgerStoreLoad.swift) (on appear, never in `refresh()`); the terminal half is [`shifu-cli/LoadCommand.swift`](Sources/shifu-cli/LoadCommand.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
@@ -370,7 +391,7 @@ never wait.
 
 ## 4. Data model
 
-The schema is defined *only* as migrations v1–v29 in
+The schema is defined *only* as migrations v1–v30 in
 [`Storage/ShifuDatabase.swift`](Sources/ShifuCore/Storage/ShifuDatabase.swift).
 This is the consolidated current shape. **Never edit a shipped migration** —
 add a new one (see §7).
@@ -509,10 +530,10 @@ samples are the user's own writing and nothing about them needs a status or a
 join.)
 
 **`deadlines`** (v29, design.md §4.5) — the one table Shifu never derives.
-Every other row here comes from the screen; a deadline is typed, and §4.5
-records the measurement (a month of real screen text, ~0 actionable dated
-commitments, 14/15 date-shaped hits being Shifu's own UI) behind refusing to
-infer one. Deliberately **not** a `tasks.due_at` column: `TaskPrune.prune` and
+Every other row here comes from the screen; a deadline is typed **or accepted
+from a spotted one** (v30, below), and §4.5 records the measurement (a month
+of real screen text, ~0 actionable dated commitments, 14/15 date-shaped hits
+being Shifu's own UI) behind refusing to infer one outright. Deliberately **not** a `tasks.due_at` column: `TaskPrune.prune` and
 `TaskStore.merge` both `DELETE FROM tasks`, so the FK is nullable with
 `ON DELETE SET NULL` and the promise outlives the task, losing only what it
 measured. That nullability also lets a commitment predate any task and lets one
@@ -525,6 +546,21 @@ the overdue notice) and `progress_notch` (highest quarter already reported) are
 the reminder ledger — in the database rather than in the notification centre's
 delivered list, because clearing Notification Center must not re-arm every
 reminder the user already read.
+
+**`deadline_proposals`** (v30, design.md §4.7) — dates the scout spotted on
+screen, ranked, waiting for a yes. `key` unique = `<due day>|<slug of the
+words around the date>`, app and window deliberately excluded (one RSVP line,
+four Mail titles). `base_score` is the best single sighting, `score` adds up
+to +3 for distinct days seen, `tier` 0–3 is what the band and the roll-up
+read; stored rather than derived so a threshold change re-tiers on the next
+sighting, not retroactively under a dismissal. `status` new → accepted
+(`deadline_id` set, `ON DELETE SET NULL`) / dismissed (held against every
+later sighting) / expired (day passed undecided). `notified_at` is the
+announcement ledger — named once, ever. `judged` is the model's one shot.
+`task_id` is the sighting block's task, `ON DELETE SET NULL` like
+`deadlines.task_id`. Index on `(status, tier, due_at)`: every read is "what is
+open, most pressing first". Watermark `deadline_scout.last_observation_id` and
+roll-up day `spotted.last_rollup_day` live in `settings`.
 
 **`llm_usage`** (v19, one row per billed response, written by
 `DeepSeekBackend.send` through `LLMUsage.record`) — `prompt_tokens` /

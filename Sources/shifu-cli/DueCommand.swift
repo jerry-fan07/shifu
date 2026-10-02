@@ -24,12 +24,13 @@ func commandDue(_ arguments: [String]) throws {
     case "rm":
         try dueRemove(Array(arguments.dropFirst()), db: db)
     default:
-        print(dueUsage)
+        // spotted / accept / dismiss / scan, or the usage (design.md §4.7).
+        try commandDueSpotted(verb, Array(arguments.dropFirst()), db: db)
     }
 }
 
 let dueUsage = """
-usage: shifu due [list|add|set|done|open|rm]
+usage: shifu due [list|add|set|done|open|rm|spotted|accept|dismiss|scan]
   due [--all]                 what is coming up (--all includes kept promises)
   due add "<title>" <when> [--task <id|name>] [--target <hours>]
   due set <id> [<when>] [--title <t>] [--task <id|name>] [--target <h>]
@@ -37,6 +38,11 @@ usage: shifu due [list|add|set|done|open|rm]
   due done <id>               mark it kept — goes quiet immediately
   due open <id>               reopen it
   due rm <id>                 forget it entirely
+  due spotted [--all]         dates Shifu spotted on screen, ranked (--all: every tier and status)
+  due accept <id> [--title <t>] [--on <when>] [--task <id|name>] [--target <h>]
+                              record a spotted date as a deadline
+  due dismiss <id|all>        forget a spotted date — it will not be spotted again
+  due scan [--all] [--dry]    run the scout now (--all from the oldest text kept; --dry prints only)
 
   <when>  2026-08-30 · 2026-08-30 17:00 · today · tomorrow · friday · +10d · +2w
   hours   20 · 20h · 90m — the effort you mean to put in, which is what turns
@@ -170,7 +176,7 @@ private func dueRemove(_ arguments: [String], db: ShifuDatabase) throws {
 
 /// A task by row id, or by a name match — typing the name is what a person has
 /// to hand, and the id is what they have after one `shifu due` listing.
-private func resolveTask(_ text: String, db: ShifuDatabase) throws -> Int64? {
+func resolveTask(_ text: String, db: ShifuDatabase) throws -> Int64? {
     if let id = Int64(text) {
         let exists = try db.queue.read { sqlite in
             try Int.fetchOne(sqlite, sql: "SELECT 1 FROM tasks WHERE id = ?", arguments: [id])
@@ -200,7 +206,7 @@ private func resolveTask(_ text: String, db: ShifuDatabase) throws -> Int64? {
 /// The flag shapes this command uses: `--key value`, `--flag`, and bare
 /// positionals. Small enough to spell out; the CLI has no argument parser and
 /// design.md §12 already logs that main.swift's `args` handling wants one.
-private struct DueFlags {
+struct DueFlags {
     var positional: [String] = []
     private var values: [String: String] = [:]
     private var present: Set<String> = []

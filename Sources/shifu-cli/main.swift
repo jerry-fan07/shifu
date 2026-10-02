@@ -20,6 +20,7 @@ usage: shifu <command>
   due add "<title>" <when> [--task <id|name>] [--target <hours>]
                  record one: 2026-08-30, tomorrow, friday, +10d
   due done|open|rm <id>
+  due spotted    dates Shifu spotted on screen, ranked — accept <id> / dismiss <id> / scan
                  mark one kept, reopen it, or forget it
   load [--themes]
                  the week's hours across every front at once, and whether

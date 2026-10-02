@@ -100,40 +100,66 @@ final class DeadlineNotifier: NSObject {
                 }
             }
         }
-        guard let announcements = try? DeadlineReminders.due(database: database),
-              !announcements.isEmpty
-        else {
+        let announcements = (try? DeadlineReminders.due(database: database)) ?? []
+        // Spotted dates (design.md §4.7) ride the same poll and the same
+        // ledger discipline: at most one roll-up a day, each proposal named
+        // once, stamped after the post.
+        let notices = (try? SpottedNotices.due(database: database)) ?? []
+        guard !announcements.isEmpty || !notices.isEmpty else {
             trace("nothing due")
             return
         }
-        trace("\(announcements.count) due")
+        trace("\(announcements.count) due, \(notices.count) spotted")
         for announcement in announcements {
             deliver(announcement, database: database)
+        }
+        for notice in notices {
+            deliver(notice, database: database)
+        }
+    }
+
+    private func deliver(_ notice: SpottedNotice, database: ShifuDatabase) {
+        // A spotted date never beeps, urgent or not: it is a guess, and a
+        // guess that makes a sound is the one people switch the feature off
+        // over.
+        post(identifier: notice.identifier, title: notice.title, body: notice.body, sound: false) {
+            try? SpottedNotices.record(notice, database: database)
         }
     }
 
     private func deliver(
         _ announcement: DeadlineAnnouncement, database: ShifuDatabase
     ) {
-        let content = UNMutableNotificationContent()
-        content.title = announcement.title
-        content.body = announcement.body
         // Overdue is the one that earns a sound. The rest are news, and news
         // that beeps is the thing people switch reminders off over.
-        if case .overdue = announcement.kind { content.sound = .default }
-        // `trigger: nil` is deliver-now. The identifier is stable per
-        // (deadline, notice) so a duplicate add can only ever replace, never
-        // stack — a second belt behind the row's own ledger.
-        let request = UNNotificationRequest(
-            identifier: Self.identifier(for: announcement), content: content, trigger: nil)
+        var overdue = false
+        if case .overdue = announcement.kind { overdue = true }
+        post(identifier: Self.identifier(for: announcement), title: announcement.title,
+             body: announcement.body, sound: overdue) {
+            try? DeadlineReminders.record(announcement, database: database)
+        }
+    }
+
+    /// The two-line banner. `trigger: nil` is deliver-now. The identifier is
+    /// stable per notice so a duplicate add can only ever replace, never
+    /// stack — a second belt behind each row's own ledger. `stamp` runs only
+    /// on a successful hand-over, and off the main actor's critical path: a
+    /// reminder the system refused must stay unsaid so the next tick can try
+    /// again.
+    private func post(
+        identifier: String, title: String, body: String, sound: Bool,
+        stamp: @escaping @MainActor () -> Void
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if sound { content.sound = .default }
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         center.add(request) { [weak self] error in
-            // Stamped only on a successful hand-over, and off the main actor's
-            // critical path: a reminder the system refused must stay unsaid so
-            // the next tick can try again.
             Task { @MainActor in
                 guard let error else {
-                    self?.trace("posted \(Self.identifier(for: announcement))")
-                    try? DeadlineReminders.record(announcement, database: database)
+                    self?.trace("posted \(identifier)")
+                    stamp()
                     return
                 }
                 self?.trace("post refused: \(error)")

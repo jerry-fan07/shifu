@@ -22,7 +22,7 @@ Shifu is a local-first, always-on observer that captures what is on your screen 
 2. **Minimalist.** In every dimension: a UI with the fewest possible surfaces (one menu bar item, one window, one review card), features that earn their place or don't ship, plain formats over clever ones (Markdown, SQLite), and a codebase small enough to audit. When in doubt, leave it out — every addition must justify itself against this principle.
 3. **Private by default.** All raw captures stay on-device. LLM analysis is cloud-based (DeepSeek — see §4.2), but nothing leaves the machine until the user opts in — choosing the hosted Shifu Cloud backend, or supplying their own API key — and even then only derived, redacted text samples are sent — never raw pixels or raw captures. *(Revised 2026-07: v1 aspired to on-device-only analysis; Apple Foundation Models' 4k window, weak labels, and macOS 26+ gate made that path useless in practice.)*
 4. **Trustworthy.** The user can inspect, export, and delete everything. Sensitive apps and sites are excluded by default. There is a single obvious kill switch.
-5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications. *(Qualified 2026-08-17 by §4.5: Shifu does interrupt for a **deadline the user typed themselves**, on a fixed five-notice schedule per promise. What this principle forbids is a feed — Shifu volunteering its own findings — and that stands: nothing infers a deadline, so with none recorded the Mac is silent.)*
+5. **Useful without babysitting.** Insights arrive as a daily digest and an on-demand dashboard, not a stream of notifications. *(Qualified 2026-08-17 by §4.5: Shifu does interrupt for a **deadline the user typed themselves**, on a fixed five-notice schedule per promise. Qualified again 2026-10-02 by §4.7: Shifu may also name a **date it spotted on screen** — once, in at most one roll-up banner a day, and only when its ranking puts it in the two upper tiers. What this principle still forbids is a feed: a spotted date is a proposal, never a deadline, and nothing is said about it twice. With nothing typed and nothing ranked high, the Mac is silent.)*
 
 ### Non-goals (v1)
 
@@ -313,6 +313,12 @@ source of false positives, which is a feedback loop. Dates are typed; **progress
 is observed**. That split is the feature: nobody else can tell you that you are
 6 h into a 20 h promise, and Shifu should not pretend to know the promise.
 
+*(Revisited 2026-10-02, §4.7, on new evidence: the corpus changed when the
+semester started. Deadlines are still never **recorded** from the screen — but
+they are now **spotted**, ranked, and proposed into a queue the user accepts
+from, which is the narrow shape §12 asked for. A `deadlines` row is still only
+ever typed or accepted.)*
+
 **Storage.** One `deadlines` table, deliberately not a `tasks.due_at` column.
 Tasks are derived: `TaskGrouper` mints them, `TaskPrune.prune` and
 `TaskStore.merge` `DELETE` them. A hand-typed date on a row a pipeline deletes
@@ -468,6 +474,147 @@ By task / By theme lens; rows open the task or theme. `shifu load [--themes]`
 prints the same reading. The read is one query on page appear, never on the
 store's refresh — eight weeks is ~10k rows and `refresh()` fires on every
 menu open. No migration, no setting, no model.
+
+### 4.7 Spotted dates — the scout, the ranking, the roll-up
+
+A **spotted date** is a dated commitment Shifu read off the screen and ranked,
+waiting for the user to accept or dismiss it. It is a *proposal*: a row in
+`deadline_proposals`, never in `deadlines`. Accepting one mints a deadline (in
+the user's words, with a time target if they add one) and from then on §4.5
+applies unchanged. Dismissing one is remembered by key forever, the way
+`theme_proposals` remembers. Nothing here is reminded about on a schedule.
+
+**Why this exists after §4.5 said not to build it.** §4.5's measurement stands
+for the corpus it measured: a month of summer screen text in which essentially
+every "due" was marketing copy, an abstract discussion, or Shifu reading its
+own review queue. §12 asked that it not be revisited without new evidence and
+named the honest shape if it were. The evidence arrived with the semester. On
+**2026-10-02** the two weeks of real text still in the dogfood database were
+re-read: 81,491 observations, 36,431 lines carrying a date shape, **6,660 of
+them beside a trigger word** — and this time the sample was full of genuine
+commitments: `Late Due Date: Sep 25 at 12:00PM` on a Gradescope dashboard
+(14 sightings), `Midterm 1: October 14. Midterm 2: Nov 11` on a course
+announcement, `RSVP here by Monday, September 28` and `Interview invitation
+offered, sign up by Monday 11:59` in Mail, `TIP applications close September
+20th`, `Grade Option changes by October 6`, `accept the offer by Sunday Sep 20`,
+`RevenueCat Shipaton closes September 30`. The noise classes were just as
+clear and just as nameable: dining-hall hours (`Sharpe Refectory closes dinner
+in 28 minutes. Ivy Room opens Sunday at 5 PM`, hundreds of sightings), sports
+and social posts with dates in them, Google search results, dated filenames in
+terminals, `Last opened by me May 30, 2026`, past-tense history. That is a
+ranking problem, and ranking problems are what a scorer with named signals is
+for.
+
+**The scout** (`DeadlineScout`, pure) reads each observation's window title
+and text line by line. A line is a hit when it has a *date* and either a
+*trigger word* or the date written as a *bound* ("by Monday"). `SpottedDate`
+is the reader — deliberately not `DeadlineDate`, which parses typed input and
+refuses what it is unsure of; this one has to accept every shape a syllabus,
+an email or a dashboard uses, and resolves every ambiguity the way a reader
+would: a year-less date is the next one coming, a weekday is the next one
+coming (the same weekday is today only while its clock is still ahead),
+`11:59` with no meridiem is a deadline's 11:59 and so is night, and anything
+already past *when it was seen* is a record, not a deadline. Resolution is
+against the observation's `started_at`, never the clock now. Dates further
+than 180 days out are not yet "coming up". One hit per line, on its first
+date, so a syllabus line listing four due dates is one row and not four.
+
+**The ranking** is an additive score with every signal named
+(`shifu due scan --dry` prints them), mapped to four tiers:
+
+- *Trigger strength* 0–3 and a *category prior*: `exam`/`submission` +2,
+  `application`/`admin`/`travel` +1, `event` 0, `offer`/`release` −2. "due",
+  "deadline", "closes", "no later than" and "by <date>" are 3; "submit",
+  "RSVP", "register", "interview", "payment" are 2; "meeting", "workshop",
+  "hackathon" are 1; "starts", "launches", "available" are 0. `due to` and
+  `ends up` are idioms, not triggers.
+- *Where it was seen*: Mail, Calendar, Messages and the course and job surfaces
+  (Gradescope, Canvas, Ed, Workday, Handshake, Greenhouse, `.edu`…) +2; the
+  block filed to a task +1; feeds, sports, markets and news −3; terminals,
+  editors, agents and the user's own dev server −2; a search-results tab or
+  Mail's search list −2.
+- *How it was written*: a clock time +1, a weekday with its date +1, a relative
+  word ("tomorrow") −1, a bare numeric `9/17` −1, addressed to "you" +1, more
+  than 90 days out −1, a wall of text −1/−2.
+- *What it is not*: opening hours −6 (a clock right after "opens"/"closes"
+  with no calendar date, "in 28 minutes", "Mon–Thu", "dining"), a timestamp
+  on a thing −3 (`Last opened by me`, `Posted`), past tense before the date −2,
+  a dated filename −3, a year earlier than the one it was seen in −2.
+- *Repetition*: +1 per additional calendar day the same line was on screen,
+  capped at +3 — a date the user keeps running into.
+
+Tiers: **critical ≥ 9, high 6–8, normal 2–5, low ≤ 1**; below −3 is not even
+a remembered row. Calibrated on the 2026-10-02 copy: 4,409 sightings → 1,119
+distinct proposals → **46 critical, 264 high, 524 normal, 285 low**, where the
+critical tier was graded submissions, exam logistics and "sign up by Monday
+11:59" with essentially no noise, high was application closings and dated
+invitations, and the dining dashboard, the YouTube match and the search
+results landed at the bottom. Shifu's own windows are never a source. The
+cut points live in `DeadlineScout.Tier.of` and are re-earned against a
+dogfood copy, never from fixtures.
+
+**The judge** (`DeadlineScoutJudge`, fast slot, optional). When a backend is
+configured, up to forty unjudged proposals a pass go to the model with their
+evidence line and window: it may *veto* (the row is dismissed and remembered),
+*reword* the title into the user's intent ("MATH 1560 HW4" for `Late Due
+Date` on the MATH 1560 dashboard), correct the category, and move the tier by
+**at most one step**. It may not mint a proposal the scout did not find. One
+shot per proposal (`judged`), the whole batch spent whether or not every id was
+answered, token-budgeted (invariant 7). With no backend the scout's ranking
+stands whole — the judge improves wording; it is not the feature.
+
+**Storage.** `deadline_proposals` (v30), `key` unique =
+`<due day>|<slug of the words around the date>` — the app and the window are
+deliberately not part of it, because the same RSVP line appeared under four
+Mail window titles. A repeat sighting folds in (sightings, distinct days, the
+better score and its wording, a task if the row had none) and never changes
+status. `task_id` and `deadline_id` are nullable FKs with `ON DELETE SET NULL`.
+A proposal whose day passes undecided becomes `expired`, still blocking the
+same line from returning as news. The scout runs on every analyzer pass after
+`TaskGrouper` (so a sighting can carry its block's task), over observations
+past a watermark on `observations.id` (stable across ledger rebuilds, unlike
+`session_id`); `--rebuild` resets it. Reading stops at the first row still
+inside the daemon's dedupe TTL *whatever its id* — the dashboard the user keeps
+returning to is an old row that is still growing while newer glances close
+around it, and advancing past it would lose it for good. A replayed sighting
+(`--rebuild`, `scan --all`) may bring better wording but counts nothing
+twice, so a rebuild alone cannot lift a row into the tiers that earn a banner. A full-history pass over 81k
+observations measured ~15 s; the hourly increment is milliseconds.
+
+**What gets said.** `SpottedNotices` is bounded more tightly than
+`DeadlineHorizon`, because the thing announced is a guess:
+
+- Only **high** and **critical** proposals are ever posted. Normal and low
+  live in the app and `shifu due spotted` only.
+- **One roll-up a day**, at `reminders.hour`, naming the three soonest not
+  yet named ("Shifu spotted 4 dates — Grant — in 4 days · RSVP — in 6 days ·
+  Thesis — Oct 11 · and 1 more"). A roll-up whose hour passed while Shifu was
+  closed goes out on the next poll. The day is stamped in `spotted.last_rollup_day`.
+- **A critical proposal due within two days is announced at once**, once — a
+  Saturday sighting of "sign up by Monday 11:59" cannot wait for Monday's
+  roll-up. Several at once are still **one banner per poll** ("5 spotted dates
+  due within 2 days — …"): the first pass after an install backfills two weeks
+  of text, and nine critical rows due today must not be nine banners.
+- Every proposal is named **at most once, ever** (`notified_at`), stamped after
+  the post like §4.5. Accepting, dismissing or expiring takes it out of any
+  roll-up. A spotted date never beeps.
+- `reminders.spotted` (default on, hidden when reminders are off) silences all
+  of it; the queue stays readable. Default *on* is the one judgment call here,
+  made because the feature was asked for as an alert and the bound is one
+  banner a day; it is a single setting to flip.
+
+Delivery rides `DeadlineNotifier`'s poll, and the permission prompt's gate
+(`hasSomethingToRemind`) now counts a high-ranked proposal as something to
+grant for — otherwise a user with no typed deadline would never be asked, and
+nothing would ever post.
+
+**Surfaces.** A *Spotted* band under Coming up on the Tasks page (critical ‼
+and high ! marked, normal plain, low folded behind a count; hover for Add /
+Dismiss; Add opens the deadline sheet prefilled so the wording can be fixed
+before it is recorded); `shifu due spotted [--all]`, `accept <id>`,
+`dismiss <id|all>`, and `scan [--all] [--dry]` — the last being the
+calibration harness, run against a dogfood copy. The Reminders section's
+promise now reads honestly: Shifu never *records* a deadline on its own.
 
 ---
 
@@ -1260,8 +1407,15 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
     invokes `shifu vault bench` and parses its output, so deleting it breaks
     `make perf`.
 - **Deadlines, three follow-ups the shipped shape left open (§4.5).**
-  - **Inferring a deadline from the screen — measured against, not merely
-    deferred.** Do not build this without new evidence. On 2026-08-17 the real
+  - **Inferring a deadline from the screen — measured against 2026-08-17,
+    built 2026-10-02 on new evidence (§4.7).** The semester changed the
+    corpus: a re-read of the real text found 6,660 dated trigger lines with
+    graded due dates, exam dates, RSVP bounds and application closings in
+    them. It shipped in exactly the narrow shape below asked for — a dated
+    shape, in an app that is not Shifu, proposed into a queue the user accepts
+    from — plus a ranking, and with notification bounded to one roll-up a day
+    for the two upper tiers. The original note stands as the record of why
+    the first measurement said no. On 2026-08-17 the real
     dogfood DB carried 875 observations of "due"/"deadline" language across 479
     blocks, and sampling found no actionable dated commitment in any of them:
     marketing copy, a newsletter subject, a LinkedIn bio, an AI chat discussing

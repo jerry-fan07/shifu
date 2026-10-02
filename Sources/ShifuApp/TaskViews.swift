@@ -25,6 +25,10 @@ struct TasksView: View {
                 ComingUpBand()
                     .padding(.top, 16)
                     .padding(.bottom, 14)
+                // Spotted sits under Coming up and only when it has contents:
+                // it is the inbox the band above is fed from (design.md
+                // §4.7), and an empty inbox has nothing to say.
+                SpottedBand()
                 Rule(weight: .section)
                     .padding(.bottom, 12)
                 if store.filteredTasks.isEmpty {
