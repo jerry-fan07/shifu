@@ -21,6 +21,9 @@ usage: shifu <command>
                  record one: 2026-08-30, tomorrow, friday, +10d
   due done|open|rm <id>
                  mark one kept, reopen it, or forget it
+  load [--themes]
+                 the week's hours across every front at once, and whether
+                 that is holding — what to give time, what has gone quiet
   forget last <2h|1d> | app <bundle-id> | all --yes
                  delete captured data (range, per-app, or everything)
   vault search <query> [--task <name>] [--kind <kind>] [--since <7d>] [--exact]
@@ -510,6 +513,7 @@ func run() throws {
         "resume": commandResume,
         "review": commandReview,
         "due": { try commandDue(Array(args.dropFirst())) },
+        "load": { try commandLoad(Array(args.dropFirst())) },
         "forget": { try commandForget(Array(args.dropFirst())) },
         "vault": { try commandVault(Array(args.dropFirst())) },
         "encrypt": commandEncrypt,
