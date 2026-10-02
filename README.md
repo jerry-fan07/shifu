@@ -105,6 +105,9 @@ shifu due add "Thesis draft" friday --task thesis --target 20h
                         if it slips, and reports each quarter of the target as
                         your logged time crosses it
 shifu due done <id>     mark it kept — goes quiet immediately
+shifu load [--themes]   the week's hours across every front at once, and
+                        whether that is holding: what to give time, what has
+                        gone quiet (no tokens — read straight off the ledger)
 shifu forget last 2h    delete a time range (raw + derived)
 shifu forget app <id>   purge one app's data
 shifu forget all --yes  delete everything

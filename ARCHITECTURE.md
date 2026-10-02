@@ -15,7 +15,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 | `ShifuCore` | library | Models, storage, and every pure/testable rule. All 5 targets link it. | never |
 | `shifud` | executable | Capture daemon. LaunchAgent, headless, runs for weeks. | **forbidden** |
 | `shifu-analyzer` | executable | Batch analysis worker. Spawned hourly by `shifud`, or on demand. | only binary allowed |
-| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `due`, `forget`, `vault`, `encrypt`. | never |
+| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `due`, `load`, `forget`, `vault`, `encrypt`. | never |
 | `ShifuApp` | executable | SwiftUI desktop app + menu bar item. | never |
 
 **The one architectural fact to internalize: there is no IPC.** No sockets, no
@@ -50,6 +50,8 @@ Sources/ShifuCore/
   Deadlines/   DeadlineHorizon (the announcement policy, pure), DeadlineStore,
                DeadlineDate (the one date parser), DeadlineCopy, DeadlineReminders
   Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
+               Workload (+WorkloadBuckets, WorkloadCopy, WorkloadStore — the Load
+               reading, design.md §4.6),
                SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
                TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
                Radar (+RadarDescriber), DigestGenerator, Embedder
@@ -327,6 +329,8 @@ never wait.
 | What `2026-08-30` / `friday` / `+10d` mean — one parser for the CLI *and* the app | [`Deadlines/DeadlineDate.swift`](Sources/ShifuCore/Deadlines/DeadlineDate.swift) |
 | Whether a reminder is delivered at all, and the settings behind it | [`Deadlines/DeadlineReminders.swift`](Sources/ShifuCore/Deadlines/DeadlineReminders.swift) — poll-only through the DB, never a scheduled `UNNotificationRequest`; delivered by [`ShifuApp/DeadlineNotifier.swift`](Sources/ShifuApp/DeadlineNotifier.swift) because `shifud` has no bundle identity |
 | Deadlines on screen — the Coming-up band, a row, the sheet | [`ShifuApp/DeadlineViews.swift`](Sources/ShifuApp/DeadlineViews.swift); actions are [`ShifuApp/LedgerStoreDeadlines.swift`](Sources/ShifuApp/LedgerStoreDeadlines.swift), the terminal half is [`shifu-cli/DueCommand.swift`](Sources/shifu-cli/DueCommand.swift) |
+| What a front is, every Load threshold, the six verdicts | [`Analysis/Workload.swift`](Sources/ShifuCore/Analysis/Workload.swift) — the fold into rolling weeks is [`Analysis/WorkloadBuckets.swift`](Sources/ShifuCore/Analysis/WorkloadBuckets.swift), the wording [`Analysis/WorkloadCopy.swift`](Sources/ShifuCore/Analysis/WorkloadCopy.swift) (shared by the page and `shifu load`), the read [`Analysis/WorkloadStore.swift`](Sources/ShifuCore/Analysis/WorkloadStore.swift) |
+| The Load page — hero, the eight-week band, the two lists, the table | [`ShifuApp/LoadView.swift`](Sources/ShifuApp/LoadView.swift); its one read is [`ShifuApp/LedgerStoreLoad.swift`](Sources/ShifuApp/LedgerStoreLoad.swift) (on appear, never in `refresh()`); the terminal half is [`shifu-cli/LoadCommand.swift`](Sources/shifu-cli/LoadCommand.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
 | The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |
