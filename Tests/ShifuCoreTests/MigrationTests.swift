@@ -77,7 +77,8 @@ import Testing
             "theme_proposals", "theme_proposal_blocks", "theme_suggestions",
             "rules", "exclusions", "settings", "suggestions", "srs_reviews",
             "focus_mode_sessions", "task_merge_suggestions",
-            "vault_index", "vault_fts", "vault_vectors"
+            "vault_index", "vault_fts", "vault_vectors",
+            "deadlines", "deadline_proposals"
         ]
         let database = try ShifuDatabase.inMemory()
         try database.queue.read { db in

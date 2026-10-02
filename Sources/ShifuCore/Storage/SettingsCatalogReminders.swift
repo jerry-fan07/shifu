@@ -56,4 +56,32 @@ extension SettingsCatalog {
         defaultValue: 9, range: 5...22, step: 1, unit: .hourOfDay,
         visibleWhen: (key: "reminders.enabled", value: "on")
     )
+
+    // Spotted dates (design.md §4.7). On by default *with* the bound stated
+    // in the detail: a date Shifu spotted is never reminded about on the
+    // five-notice schedule — it earns one line in one roll-up banner a day,
+    // and only the two upper tiers do. Accepting it is what turns it into a
+    // deadline with a schedule of its own.
+    public static let remindersSpotted = ChoiceSetting(
+        key: "reminders.spotted", section: .reminders,
+        title: "Spotted dates",
+        help: "Shifu reads the dates on your screen — a due date on a course "
+            + "page, an application that closes, an RSVP — and ranks them. "
+            + "The ones that look important can be announced once, in one "
+            + "morning roll-up, for you to accept or dismiss.",
+        options: [
+            .init(
+                value: "on", label: "On",
+                detail: "At most one roll-up a day at the reminder time, naming "
+                    + "up to three newly spotted dates ranked high or critical. "
+                    + "A critical one due within two days is announced at once, "
+                    + "once. Nothing is reminded about again unless you accept it."),
+            .init(
+                value: "off", label: "Off",
+                detail: "Spotted dates still gather in the Tasks page and in "
+                    + "`shifu due spotted`; nothing is announced.")
+        ],
+        defaultValue: "on",
+        visibleWhen: (key: "reminders.enabled", value: "on")
+    )
 }

@@ -43,8 +43,9 @@ public enum SettingsSection: String, CaseIterable, Sendable {
             return "How raw captures become tasks, themes and cards — and what "
                 + "leaves this Mac to do it."
         case .reminders:
-            return "The only thing Shifu will interrupt you about: a date you "
-                + "gave it, and how far into the work you are."
+            return "The only things Shifu will interrupt you about: a date you "
+                + "gave it, how far into the work you are, and — once — a date "
+                + "it spotted that looks important."
         case .privacy:
             return "What Shifu refuses to look at. Exclusions are enforced in the "
                 + "daemon before capture, so excluded content never reaches the "
@@ -75,9 +76,10 @@ public enum SettingsSection: String, CaseIterable, Sendable {
             return "Saved changes reach the running daemon on its next "
                 + "heartbeat. No restart."
         case .reminders:
-            return "Shifu never invents a deadline. Nothing here is reminded "
-                + "unless you typed the date yourself, so an empty list is a "
-                + "silent Mac."
+            return "Shifu never records a deadline on its own. A date it spots "
+                + "on screen is a proposal until you accept it — named at most "
+                + "once, in one roll-up a day — and only a deadline you typed "
+                + "or accepted is ever reminded about again."
         case .privacy:
             return "Exclusions apply to capture, not just display — excluded text "
                 + "is never written."
@@ -615,7 +617,7 @@ public enum SettingsCatalog {
     ]
     public static let domainLists: [DomainListSetting] = [focusModeDistractingDomains]
     public static let choices: [ChoiceSetting] = [
-        analysisBackend, rewindRecording, remindersEnabled, remindersProgress
+        analysisBackend, rewindRecording, remindersEnabled, remindersProgress, remindersSpotted
     ]
     public static let texts: [TextSetting] = [
         shifuCloudBaseURL,

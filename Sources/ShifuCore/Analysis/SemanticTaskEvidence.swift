@@ -197,7 +197,7 @@ extension SemanticTaskGrouper {
     /// "app, ghostty, github.com" names one of the three.
     static let bundleWrapperTails: Set<String> = ["app", "desktop", "mac", "macos", "osx"]
 
-    static func shortBundle(_ bundle: String) -> String {
+    public static func shortBundle(_ bundle: String) -> String {
         let parts = bundle.split(separator: ".").map(String.init)
         guard let last = parts.last else { return bundle }
         if parts.count > 2, bundleWrapperTails.contains(last.lowercased()) {

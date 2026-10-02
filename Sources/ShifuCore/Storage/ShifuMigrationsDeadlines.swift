@@ -74,4 +74,55 @@ extension ShifuDatabase {
             try db.create(index: "idx_deadlines_task", on: "deadlines", columns: ["task_id"])
         }
     }
+
+    /// Spotted dates (design.md §4.7): the queue the scout proposes into.
+    /// Its own function so it registers *after* `v29-deck-topics` — the
+    /// migrator runs in registration order and `MigrationTests` holds the
+    /// numbers to it.
+    static func registerDeadlineProposalMigrations(into migrator: inout DatabaseMigrator) {
+        migrator.registerMigration("v30-deadline-proposals") { db in
+            // One row per (due day, words around the date). `key` is unique
+            // for the same reason `theme_proposals.key` is: a repeat sighting
+            // updates the row, and a dismissal is remembered against every
+            // future sighting of the same thing. Nothing here is a deadline —
+            // accepting mints a `deadlines` row and records its id.
+            try db.create(table: "deadline_proposals") { table in
+                table.autoIncrementedPrimaryKey("id")
+                table.column("key", .text).notNull().unique()
+                table.column("title", .text).notNull()
+                table.column("context", .text)
+                table.column("due_at", .integer).notNull()
+                table.column("all_day", .integer).notNull().defaults(to: 1)
+                table.column("category", .text).notNull()
+                // The best single sighting's score, the score with repetition
+                // added, and the tier that score lands in — stored rather
+                // than derived so a threshold change re-tiers on the next
+                // sighting, not retroactively under a dismissal.
+                table.column("base_score", .integer).notNull()
+                table.column("score", .integer).notNull()
+                table.column("tier", .integer).notNull()
+                table.column("evidence", .text).notNull()
+                table.column("source_app", .text).notNull()
+                table.column("source_domain", .text)
+                // SET NULL like `deadlines.task_id`: tasks are pruned and
+                // merged, and a proposal should not vanish with one.
+                table.column("task_id", .integer).references("tasks", onDelete: .setNull)
+                table.column("sightings", .integer).notNull().defaults(to: 1)
+                table.column("seen_days", .integer).notNull().defaults(to: 1)
+                table.column("first_seen", .integer).notNull()
+                table.column("last_seen", .integer).notNull()
+                table.column("status", .text).notNull().defaults(to: "new")
+                table.column("deadline_id", .integer).references("deadlines", onDelete: .setNull)
+                // The notification ledger: a proposal is named in a banner at
+                // most once, ever, and this is what says it was.
+                table.column("notified_at", .integer)
+                table.column("judged", .integer).notNull().defaults(to: 0)
+                table.column("created_at", .integer).notNull()
+            }
+            // Every read is "what is open, most pressing first".
+            try db.create(
+                index: "idx_deadline_proposals_open", on: "deadline_proposals",
+                columns: ["status", "tier", "due_at"])
+        }
+    }
 }

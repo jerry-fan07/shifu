@@ -731,6 +731,8 @@ extension ShifuDatabase {
             }
         }
 
+        registerDeadlineProposalMigrations(into: &migrator)
+
         return migrator
     }
 }
