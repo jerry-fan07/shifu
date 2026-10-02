@@ -15,7 +15,7 @@ Shifu is five binaries over one SQLite database and one Markdown folder.
 | `ShifuCore` | library | Models, storage, and every pure/testable rule. All 5 targets link it. | never |
 | `shifud` | executable | Capture daemon. LaunchAgent, headless, runs for weeks. | **forbidden** |
 | `shifu-analyzer` | executable | Batch analysis worker. Spawned hourly by `shifud`, or on demand. | only binary allowed |
-| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `due`, `forget`, `vault`, `encrypt`. | never |
+| `shifu-cli` (product `shifu`) | executable | `log`, `status`, `pause`, `review`, `due`, `load`, `forget`, `vault`, `encrypt`. | never |
 | `ShifuApp` | executable | SwiftUI desktop app + menu bar item. | never |
 
 **The one architectural fact to internalize: there is no IPC.** No sockets, no
@@ -54,6 +54,8 @@ Sources/ShifuCore/
                stage), DeadlineProposalStore, DeadlineScoutJudge (LLM, optional),
                SpottedNotices (the roll-up policy)
   Analysis/    Sessionizer, RulesClassifier, CardBuilder, LedgerBuilder,
+               Workload (+WorkloadBuckets, WorkloadCopy, WorkloadStore — the Load
+               reading, design.md §4.6),
                SemanticTaskGrouper (+SemanticTaskEvidence), ThemeClusterer, TaskGrouper,
                TaskMerges (+TaskAutoMerge), PatternMiner (+PatternMinerEvidence),
                Radar (+RadarDescriber), DigestGenerator, Embedder
@@ -348,6 +350,8 @@ never wait.
 | The model's second opinion on a spotted date — veto, reword, one tier either way | [`Deadlines/DeadlineScoutJudge.swift`](Sources/ShifuCore/Deadlines/DeadlineScoutJudge.swift) |
 | When a spotted date may be announced — one roll-up a day, urgent once, each named once | [`Deadlines/SpottedNotices.swift`](Sources/ShifuCore/Deadlines/SpottedNotices.swift); posted by the same [`ShifuApp/DeadlineNotifier.swift`](Sources/ShifuApp/DeadlineNotifier.swift) poll |
 | Spotted dates on screen — the band under Coming up, the prefilled sheet | [`ShifuApp/SpottedViews.swift`](Sources/ShifuApp/SpottedViews.swift); actions in [`ShifuApp/LedgerStoreDeadlines.swift`](Sources/ShifuApp/LedgerStoreDeadlines.swift); `shifu due spotted / accept / dismiss / scan` is [`shifu-cli/DueSpottedCommand.swift`](Sources/shifu-cli/DueSpottedCommand.swift) — `scan --dry` is the calibration harness |
+| What a front is, every Load threshold, the six verdicts | [`Analysis/Workload.swift`](Sources/ShifuCore/Analysis/Workload.swift) — the fold into rolling weeks is [`Analysis/WorkloadBuckets.swift`](Sources/ShifuCore/Analysis/WorkloadBuckets.swift), the wording [`Analysis/WorkloadCopy.swift`](Sources/ShifuCore/Analysis/WorkloadCopy.swift) (shared by the page and `shifu load`), the read [`Analysis/WorkloadStore.swift`](Sources/ShifuCore/Analysis/WorkloadStore.swift) |
+| The Load page — hero, the eight-week band, the two lists, the table | [`ShifuApp/LoadView.swift`](Sources/ShifuApp/LoadView.swift); its one read is [`ShifuApp/LedgerStoreLoad.swift`](Sources/ShifuApp/LedgerStoreLoad.swift) (on appear, never in `refresh()`); the terminal half is [`shifu-cli/LoadCommand.swift`](Sources/shifu-cli/LoadCommand.swift) |
 | Review scheduling / intervals | [`Vault/FSRS.swift`](Sources/ShifuCore/Vault/FSRS.swift) |
 | Note file format on disk | [`Vault/Note.swift`](Sources/ShifuCore/Vault/Note.swift), [`Vault/FrontMatter.swift`](Sources/ShifuCore/Vault/FrontMatter.swift) |
 | The card JSON shape + LaTeX repairs | [`Vault/CardCandidates.swift`](Sources/ShifuCore/Vault/CardCandidates.swift) — shared by all three card prompts |

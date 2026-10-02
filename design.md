@@ -392,6 +392,89 @@ not allowed for this application") whatever it is signed with — it has to sit 
 a real app location — and the refusal correctly left the row *unstamped*, which
 is the stamp-after-post ordering doing its job.
 
+### 4.6 Load — work rate across every front at once
+
+The ledger says where the hours went. The Time page can show that Tuesday
+was eight hours of work; what nothing on it can say is whether *enough* of
+those hours reached each of the things you are in the middle of, or whether
+the whole set is more than the hours you have been giving it. That is the
+question of someone carrying several projects at once — drop one, or push
+harder? — and **Load** answers it from rows that already exist, with zero
+tokens: `Workload` (ShifuCore) reads eight rolling weeks of blocks and the
+open deadlines and returns one verdict and two lists.
+
+**A front** is one thing being carried: a task whose time is mostly work or
+learning, with an hour or more across the last four weeks, or any task an
+open deadline rides on. The dominance vote counts classified categories
+only — unclassified and private sit it out, the way `FocusReport` scores
+them — because a task whose OCR mostly came back unlabelled is still the
+learning it was (task 2420 on the 2026-10-02 dogfood ledger: 1.2 h
+unclassified over 1.1 h learning and nothing else). "Checking Instagram" is
+never a front. A second lens makes themes the unit instead: the initiatives
+the user named, voted the same way, so "Personal Communication" is not a
+project either.
+
+**Weeks are rolling**, seven days ending now, eight of them, so "this week"
+is always a whole week rather than Monday-so-far. Index 0 is this week;
+weeks 1–4 are the history everything is measured against.
+
+**Per front:** this week's hours, the four-week mean, the eight weeks as a
+sparkline, and a status — *new* (first seen within a fortnight), *rising*
+(≥1.5× the mean), *steady*, *slipping*, *quiet* (untouched a fortnight).
+Slipping is deliberately hard to earn: the front must have been worked in two
+of weeks 1–3, its mean must be at least an hour a week — the smallest habit
+worth a word; on the dogfood ledger the fronts under it were a lab setup and a
+reading list, both finished rather than neglected — and this week must be
+under a quarter of it. A front with an open deadline carries a **pace**: the
+remaining target over the days left is what it *needs* per week, against what
+it is *getting* — the last seven days, or, for a promise younger than a week,
+the days since it was made scaled up. *Behind* is a margin (needed > 1.25×
+getting), not an equality. An overdue promise is flagged, never divided by
+zero into infinite demand; a date-only one carries no demand; a met target is
+neither behind nor demand. Deadlines are per task, so the theme lens shows
+none — it is about the hours.
+
+**The week:** *capacity* is the focused hours — time on a work- or
+learning-dominant task whatever the block's own label, plus unplaced work and
+learning blocks (the NMF task alone carried 11 h of unclassified blocks in a
+month; a work-and-learning-labels-only figure would silently drop them).
+*Tracked* is every hour. The *baseline* is the median of weeks 1–4, and
+exists only once three of them have anything in them. *Effective fronts* is
+exp(entropy) of this week's shares — the number of fronts the week *behaved*
+like, so twelve at twenty minutes behind one at six hours reads ~5, not 13.
+*Demand* is the sum of needed paces.
+
+**The verdict**, one of six, in priority order, each sentence naming the
+figures it was fitted from: *too early* (no baseline yet); *over-committed*
+(demand exceeds the larger of this week's capacity and the baseline — a date,
+a target or a front has to move); *spread thin* (five or more effective
+fronts with two or more slipping — fewer, deeper); *slack* (capacity under
+70% of baseline **while tracked time held at 80% or more of its own** — the
+hours were there and the fronts didn't get them); *away* (both fell — a
+lighter week at the screen, nothing to correct); *holding*. The tracked-time
+clause is what keeps slack honest: on the dogfood ledger weeks 3 and 5 back
+held 3.7 h and 2.0 h of focus against neighbours of 17–35 h, and Shifu
+cannot tell a vacation from a slump by focused hours alone, so without it the
+verdict the user actually asked for — "spend more time focusing" — would fire
+on every trip.
+
+**The two lists come before the verdict in importance.** With these
+thresholds the verdict reads *holding* most weeks, which is correct, and the
+user's question is answered by the rows: *Give time* — slipping fronts,
+behind-pace deadlines, overdue ones with effort still owed (deadlines first,
+nearest date first, then the larger habit) — and *Quiet — finished, or
+dropped?*, fronts untouched a fortnight with nothing promised against them.
+Tasks never close in Shifu, so the page asks rather than tells.
+
+**Surfaces.** The *Load* place in the Ledger band beside Breakdown and
+Timeline — hero capacity, a band of eight weeks (focused column in the
+tracked well, baseline ruled across, so slack is a short column in a tall
+well and away is both short), the verdict, the two lists, the table with a
+By task / By theme lens; rows open the task or theme. `shifu load [--themes]`
+prints the same reading. The read is one query on page appear, never on the
+store's refresh — eight weeks is ~10k rows and `refresh()` fires on every
+menu open. No migration, no setting, no model.
+
 ### 4.7 Spotted dates — the scout, the ranking, the roll-up
 
 A **spotted date** is a dated commitment Shifu read off the screen and ranked,
@@ -1362,6 +1445,23 @@ Exclusions (§8) are not settings — they live in the `exclusions` table, merge
     bundled into the deadline work: a login item is a claim on the user's
     machine that wants its own consent beat in onboarding, not a side effect of
     typing a date.
+
+- **Load, three follow-ups the shipped shape left open (§4.6).**
+  - **A stated weekly target.** The baseline is self-derived (median of the
+    last four weeks), so slack means "below your own norm", never "below what
+    you meant to do". A `load.target_hours` setting would make *holding* a
+    claim against intent — and would need its own honest answer to the first
+    weeks of a semester, when the norm has not yet formed.
+  - **A line in the digest and the menu bar.** The verdict is one sentence
+    and the menu bar panel already carries the nearest deadline; "spread thin
+    · 2 slipping" belongs beside it. Deliberately not shipped with the page:
+    a verdict delivered where it cannot be checked against its figures is the
+    kind of claim §4.6 was built to avoid.
+  - **Deadlines on the theme lens.** Deadlines are per task, so a theme's
+    row shows no pace even when one of its tasks is behind. Rolling the
+    soonest task deadline up to the theme is a small change once there is a
+    real theme with real deadlines to check it against — the dogfood ledger
+    had none on 2026-10-02.
 
 ---
 

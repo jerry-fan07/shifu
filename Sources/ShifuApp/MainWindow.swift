@@ -386,7 +386,7 @@ enum Region: String, CaseIterable, Identifiable {
 
 /// Everywhere the source list can take you.
 enum Place: String, CaseIterable, Identifiable {
-    case breakdown, timeline
+    case breakdown, timeline, load
     case themes, tasks, notes, rewind
     case due, decks
     case radar, voice
@@ -398,6 +398,7 @@ enum Place: String, CaseIterable, Identifiable {
         switch self {
         case .breakdown: return "Breakdown"
         case .timeline: return "Timeline"
+        case .load: return "Load"
         case .themes: return "Themes"
         case .tasks: return "Tasks"
         case .notes: return "Notes"
@@ -414,7 +415,7 @@ enum Place: String, CaseIterable, Identifiable {
     /// foot rather than listed under a region.
     var region: Region? {
         switch self {
-        case .breakdown, .timeline: return .ledger
+        case .breakdown, .timeline, .load: return .ledger
         case .themes, .tasks, .notes, .rewind: return .vault
         case .due, .decks: return .practice
         // Voice sits beside the Radar deliberately (voice.md §1): the band is
@@ -441,7 +442,9 @@ enum Place: String, CaseIterable, Identifiable {
     /// keep either switch under the complexity limit as places are added.
     @MainActor private func itemCount(_ store: LedgerStore) -> Int? {
         switch self {
-        case .breakdown, .timeline, .settings: return nil
+        // Load's own figures come from an eight-week read the rail must not
+        // repeat on every refresh; the row says where it is, not how much.
+        case .breakdown, .timeline, .load, .settings: return nil
         case .themes: return store.themes.count
         case .tasks: return store.matchingTaskCount
         case .notes: return store.noteCount
@@ -467,6 +470,7 @@ enum Place: String, CaseIterable, Identifiable {
         switch self {
         case .breakdown: LedgerView(mode: .breakdown)
         case .timeline: LedgerView(mode: .timeline)
+        case .load: LoadView()
         case .themes: ThemesView()
         case .tasks: TasksView()
         case .notes: NotesView()
